@@ -496,7 +496,8 @@ function QueueScreen({ token, onOpenTicket }) {
   const [selected, setSelected] = useState(new Set());
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkLoading, setBulkLoading] = useState('');
-  const longPressRef = useRef(null);
+  const longPressRef  = useRef(null);
+  const touchStartPos = useRef(null);  // track touch start position to ignore scroll-taps
 
   useEffect(() => {
     setLoading(true);
@@ -537,7 +538,9 @@ function QueueScreen({ token, onOpenTicket }) {
     return 'neutral';
   }
 
-  function startLongPress(key) {
+  function startLongPress(key, e) {
+    const touch = e?.touches?.[0];
+    touchStartPos.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
     longPressRef.current = setTimeout(() => {
       setBulkMode(true);
       setSelected(prev => new Set([...prev, key]));
@@ -546,9 +549,18 @@ function QueueScreen({ token, onOpenTicket }) {
   function cancelLongPress() {
     if (longPressRef.current) clearTimeout(longPressRef.current);
   }
+  function hasMoved(e) {
+    if (!touchStartPos.current) return false;
+    const touch = e?.changedTouches?.[0];
+    if (!touch) return false;
+    const dx = Math.abs(touch.clientX - touchStartPos.current.x);
+    const dy = Math.abs(touch.clientY - touchStartPos.current.y);
+    return dx > 8 || dy > 8;  // 8px threshold — ignore tiny finger wobble
+  }
 
-  function handleCardPress(ticket) {
+  function handleCardPress(ticket, e) {
     cancelLongPress();
+    if (hasMoved(e)) return;  // user was scrolling, not tapping
     if (bulkMode) {
       setSelected(prev => {
         const next = new Set(prev);
@@ -614,8 +626,8 @@ function QueueScreen({ token, onOpenTicket }) {
                 <div
                   key={ticket.key}
                   className={`vp-ticket-card${isSelected ? ' selected' : ''}`}
-                  onTouchStart={() => startLongPress(ticket.key)}
-                  onTouchEnd={() => handleCardPress(ticket)}
+                  onTouchStart={e => startLongPress(ticket.key, e)}
+                  onTouchEnd={e => handleCardPress(ticket, e)}
                   onTouchMove={cancelLongPress}
                   onMouseDown={() => startLongPress(ticket.key)}
                   onMouseUp={() => handleCardPress(ticket)}
@@ -716,12 +728,13 @@ function ValidatorScreen({ ticket, token, userName, onBack }) {
       .finally(() => setEnrichLoading(false));
   }, [ticket.key]);
 
+  const dedup = str => [...new Set((str||'').split(',').map(s=>s.trim()).filter(Boolean))].join(', ');
   const buildBody = () => ({
     client: ticket.client,
     ticket_key: ticket.key,
     sendout_id: selectedSendout || enrichData?.sendout_id,
-    gsheet_tags: enrichData?.gsheet_tags,
-    exclude_tags: enrichData?.gsheet_exclude_tags,
+    gsheet_tags:  dedup(enrichData?.gsheet_tags),
+    exclude_tags: dedup(enrichData?.gsheet_exclude_tags),
     leaflet_url: enrichData?.leaflet_url,
   });
 
@@ -888,8 +901,11 @@ function ValidatorScreen({ ticket, token, userName, onBack }) {
                 <MCard padding="12px 14px">
                   <MCheckRow kind={enrichData.jira_ok === false ? 'fail' : 'ok'} label="JIRA fetch" value={enrichData.jira_ok === false ? 'Failed' : 'OK'} />
                   <MCheckRow kind={enrichData.dma_match === false ? 'warn' : 'ok'} label="DMA match" value={enrichData.dma_match === false ? 'No match' : 'Matched'} />
-                  {enrichData.gsheet_tags && (
-                    <MCheckRow kind="ok" label="G-Sheet tags" value={enrichData.gsheet_tags} />
+                  {enrichData.tags_source === 'registry' && (
+                    <MCheckRow kind="ok" label="📝 Registry tags" value={`${(enrichData.gsheet_tags||'').split(',').filter(s=>s.trim()).length} include / ${(enrichData.gsheet_exclude_tags||'').split(',').filter(s=>s.trim()).length} exclude · G-Sheet ignored`} />
+                  )}
+                  {enrichData.tags_source !== 'registry' && enrichData.gsheet_tags && (
+                    <MCheckRow kind="ok" label="📋 G-Sheet tags" value={enrichData.gsheet_tags} />
                   )}
                 </MCard>
               </>
@@ -1016,7 +1032,6 @@ function ValidatorScreen({ ticket, token, userName, onBack }) {
    ═════════════════════════════════════════════════════════════════════════ */
 function OrphansScreen({ token }) {
   const [daysAhead, setDaysAhead] = useState('7');
-  const [daysBack, setDaysBack] = useState('5');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
@@ -1025,7 +1040,7 @@ function OrphansScreen({ token }) {
     setLoading(true);
     setError('');
     try {
-      const data = await mapi('GET', `/api/orphan-scan?days_ahead=${daysAhead}&days_back=${daysBack}`, null, token);
+      const data = await mapi('GET', `/api/orphan-scan?days_ahead=${daysAhead}&days_back=0`, null, token);
       setResult(data);
     } catch (err) {
       setError(err.message);
@@ -1079,10 +1094,6 @@ function OrphansScreen({ token }) {
           <div style={{ flex: 1 }}>
             <MOverline style={{ marginBottom: 5 }}>Days Ahead</MOverline>
             <input type="number" className="vp-select" value={daysAhead} onChange={e => setDaysAhead(e.target.value)} min="0" max="60" style={{ textAlign: 'center' }} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <MOverline style={{ marginBottom: 5 }}>Days Back</MOverline>
-            <input type="number" className="vp-select" value={daysBack} onChange={e => setDaysBack(e.target.value)} min="0" max="60" style={{ textAlign: 'center' }} />
           </div>
           <MButton variant="primary" onClick={runScan} disabled={loading} style={{ flexShrink: 0 }}>
             {loading ? <Spinner /> : 'Scan'}

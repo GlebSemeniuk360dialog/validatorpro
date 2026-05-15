@@ -460,10 +460,12 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
   const allFilteredSelected = filtered.length>0 && filtered.every(r=>selected.has(r.key));
 
   const statusDot = s => {
+    if (!s) return { c:t.fg[4], label:'—' };
     if (s==='In Progress') return { c:t.warn.base, label:'Active' };
     if (s==='Open')        return { c:t.brand.base, label:'Open' };
     if (s==='Resolved' || s==='Done') return { c:t.fg[4], label:'Done' };
-    return { c:t.fg[4], label: s?.split(' ')[0] || '—' };
+    // Truncate long statuses to first word so they fit the column
+    return { c:t.fg[4], label: s.length > 8 ? s.slice(0,8)+'…' : s };
   };
 
   const runBulk = async (mode) => {
@@ -533,7 +535,7 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
       {filtered.length>0&&(
         <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
           {/* Header */}
-          <div style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 70px', padding:'10px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3], alignItems:'center' }}>
+          <div style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 90px', padding:'10px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3], alignItems:'center' }}>
             <div><input type="checkbox" checked={allFilteredSelected} onChange={toggleAll} title="Select all" /></div>
             <div>ID</div><div>Summary</div><div>Client</div><div>Date</div><div>Status</div>
           </div>
@@ -542,7 +544,7 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
             const ds = statusDot(r.status);
             return (
               <div key={r.key} onClick={()=>toggle(r.key)}
-                style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 70px', padding:'11px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isSel?t.brand.soft:'transparent', cursor:'pointer', transition:'background .12s', alignItems:'center' }}>
+                style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 90px', padding:'11px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isSel?t.brand.soft:'transparent', cursor:'pointer', transition:'background .12s', alignItems:'center' }}>
                 <div onClick={e=>e.stopPropagation()}>
                   <input type="checkbox" checked={isSel} onChange={()=>toggle(r.key)} />
                 </div>
@@ -618,12 +620,13 @@ function TicketPanel({ ticket, clients, token, onBack }) {
       .finally(() => setSendoutsLoading(false));
   }, [client, token]);
 
-  // Helper: build G-Sheet extra fields for API calls
+  // Helper: build tag fields for API calls — registry takes priority over G-Sheet; dedup tags
   // NOTE: server ValidateRequest / AiAuditRequest use "exclude_tags" (not "gsheet_exclude_tags")
+  const dedup = str => [...new Set((str||'').split(',').map(s=>s.trim()).filter(Boolean))].join(', ');
   const gsheetBody = enrichData ? {
-    gsheet_tags:  enrichData.gsheet_tags         || '',
-    exclude_tags: enrichData.gsheet_exclude_tags || '',
-    leaflet_url:  enrichData.leaflet_url         || '',
+    gsheet_tags:  dedup(enrichData.tags_source === 'registry' ? enrichData.gsheet_tags : enrichData.gsheet_tags),
+    exclude_tags: dedup(enrichData.tags_source === 'registry' ? enrichData.gsheet_exclude_tags : enrichData.gsheet_exclude_tags),
+    leaflet_url:  enrichData.leaflet_url || '',
   } : {};
 
   const runValidate = async () => {
@@ -666,13 +669,15 @@ function TicketPanel({ ticket, clients, token, onBack }) {
       <HudPanel>
         <div style={{ display:'flex', alignItems:'center', gap:14 }}>
           <Button variant="ghost" onClick={onBack}>← Back to queue</Button>
-          <div style={{ display:'flex', alignItems:'center', gap:10, fontFamily:t.font.mono, fontSize:13, color:t.fg[2] }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10, fontFamily:t.font.mono, fontSize:13, color:t.fg[2], minWidth:0 }}>
             <Led kind="accent" pulse />
-            <span style={{color:t.fg[1],letterSpacing:'0.04em'}}>{ticketKey}</span>
-            <span style={{color:t.fg[4]}}>·</span>
-            <span>{client}</span>
-            <span style={{color:t.fg[4]}}>·</span>
-            <span style={{color:t.fg[3]}}>{ticket.date}</span>
+            <span style={{color:t.fg[1],letterSpacing:'0.04em',flexShrink:0}}>{ticketKey}</span>
+            <span style={{color:t.fg[4],flexShrink:0}}>·</span>
+            <span style={{color:t.fg[1],fontFamily:t.font.sans,fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ticket.summary}</span>
+            <span style={{color:t.fg[4],flexShrink:0}}>·</span>
+            <span style={{flexShrink:0}}>{client}</span>
+            <span style={{color:t.fg[4],flexShrink:0}}>·</span>
+            <span style={{color:t.fg[3],flexShrink:0}}>{ticket.date}</span>
           </div>
           <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:10 }}>
             {loading&&<span className="vp-spinner" />}
@@ -719,19 +724,22 @@ function TicketPanel({ ticket, clients, token, onBack }) {
           {sendoutId&&(
             <div style={{ display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
               <div style={{ fontSize:11, color:t.fg[3] }}>Sendout ID: <code style={{ fontFamily:t.font.mono, background:t.bg.surface3, padding:'1px 5px', borderRadius:3, fontSize:11, color:t.fg[2] }}>{sendoutId}</code></div>
-              {enrichData && enrichData.gsheet_tags && (() => {
+              {enrichData && (() => {
                 const src = enrichData.tags_source;
-                const icon = src === 'registry' ? '📝' : '📋';
-                const label = src === 'registry' ? 'Registry' : 'G-Sheet';
-                const color = src === 'registry' ? t.brand.text : t.fg[3];
-                const incl = enrichData.gsheet_tags.split(',').filter(s=>s.trim()).length;
+                const incl = (enrichData.gsheet_tags||'').split(',').filter(s=>s.trim()).length;
                 const excl = (enrichData.gsheet_exclude_tags||'').split(',').filter(s=>s.trim()).length;
-                return (
-                  <div style={{ fontSize:11, color, fontWeight: src==='registry' ? 600 : 400 }}>
-                    {icon} {label} tags: <span style={{ color:t.fg[2] }}>{incl} include / {excl} exclude</span>
-                    {src==='registry' && <span style={{ marginLeft:6, padding:'1px 6px', background:t.brand.soft, border:`1px solid ${t.brand.ring}`, borderRadius:999, fontSize:10, color:t.brand.text }}>registry</span>}
+                if (src === 'registry') return (
+                  <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'2px 8px', borderRadius:999, background:t.brand.soft, border:`1px solid ${t.brand.ring}`, fontSize:11, fontWeight:600, color:t.brand.text }}>
+                    📝 Registry tags: {incl} include / {excl} exclude
+                    <span style={{ opacity:.6, fontWeight:400 }}>· G-Sheet ignored</span>
                   </div>
                 );
+                if (src === 'gsheet' && (incl > 0 || excl > 0)) return (
+                  <div style={{ fontSize:11, color:t.fg[3] }}>
+                    📋 G-Sheet tags: <span style={{ color:t.fg[2] }}>{incl} include / {excl} exclude</span>
+                  </div>
+                );
+                return null;
               })()}
               {enrichData && enrichData.leaflet_url && (
                 <div style={{ fontSize:11, color:t.fg[3] }}>🔗 Leaflet: <a href={enrichData.leaflet_url} target="_blank" rel="noopener" style={{ color:t.brand.text, textDecoration:'none' }}>linked</a></div>
@@ -797,7 +805,7 @@ function TicketPanel({ ticket, clients, token, onBack }) {
                   : <Badge kind="ok">All checks passed</Badge>}
 
                 {aiResult.confidence != null && aiResult.confidence >= 0 && (() => {
-                  const pct = Math.round(aiResult.confidence * 100);
+                  const pct = Math.round(aiResult.confidence);  // already 0-100
                   const low = pct < 60;
                   return (
                     <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:600, background: low ? t.warn.soft : t.ok.soft, color: low ? t.warn.base : t.ok.base, border:`1px solid ${low ? t.warn.ring : t.ok.ring}` }}>
@@ -808,7 +816,7 @@ function TicketPanel({ ticket, clients, token, onBack }) {
               </div>
 
               {/* Low-confidence warning */}
-              {aiResult.confidence != null && aiResult.confidence >= 0 && aiResult.confidence < 0.6 && (
+              {aiResult.confidence != null && aiResult.confidence >= 0 && aiResult.confidence < 60 && (
                 <div style={{ padding:'10px 14px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12 }}>
                   ⚠️ AI confidence is below 60% — the result may be unreliable. Consider reviewing the sendout manually before approving.
                 </div>
@@ -954,7 +962,6 @@ function OrphanRow({ r }) {
 
 function OrphanScanner({ token }) {
   const [daysAhead, setDaysAhead] = useState(7);
-  const [daysBack,  setDaysBack]  = useState(5);
   const [loading, setLoading]     = useState(false);
   const [scanData, setScanData]   = useState(null);   // {results, jira_count, gsheet_count}
   const [showOk, setShowOk]       = useState(false);
@@ -963,7 +970,7 @@ function OrphanScanner({ token }) {
   const runScan = async () => {
     setLoading(true); setError(''); setScanData(null);
     try {
-      const data = await api('GET', `/api/orphan-scan?days_ahead=${daysAhead}&days_back=${daysBack}`, null, token);
+      const data = await api('GET', `/api/orphan-scan?days_ahead=${daysAhead}&days_back=0`, null, token);
       // Handle both old (array) and new (object) response shapes
       if (Array.isArray(data)) setScanData({ results: data, jira_count: null, gsheet_count: null });
       else setScanData(data);
@@ -998,12 +1005,6 @@ function OrphanScanner({ token }) {
             <Overline style={{ marginBottom:4 }}>Days ahead</Overline>
             <input type="number" min={1} max={30} value={daysAhead}
               onChange={e=>setDaysAhead(Number(e.target.value))}
-              style={{ width:70, padding:'8px 10px', borderRadius:4, border:`1px solid ${t.border.input}`, fontFamily:t.font.mono, fontSize:13, color:t.fg[1], background:t.bg.surface2, outline:'none' }} />
-          </div>
-          <div style={{ flex:'0 0 auto' }}>
-            <Overline style={{ marginBottom:4 }}>Days back</Overline>
-            <input type="number" min={0} max={30} value={daysBack}
-              onChange={e=>setDaysBack(Number(e.target.value))}
               style={{ width:70, padding:'8px 10px', borderRadius:4, border:`1px solid ${t.border.input}`, fontFamily:t.font.mono, fontSize:13, color:t.fg[1], background:t.bg.surface2, outline:'none' }} />
           </div>
           <div style={{ display:'flex', alignItems:'flex-end', gap:10, paddingBottom:0, marginTop:20 }}>
@@ -1053,7 +1054,7 @@ function OrphanScanner({ token }) {
           </div>
 
           {orphans.length === 0 && (
-            <div style={{ padding:'16px 20px', borderRadius:6, background:t.ok.soft, border:`1px solid ${t.ok.ring}`, color:t.ok.base, fontSize:14, fontWeight:500 }}>✅ All sendouts are tracked in JIRA and G-Sheet (−{daysBack}d / +{daysAhead}d window).</div>
+            <div style={{ padding:'16px 20px', borderRadius:6, background:t.ok.soft, border:`1px solid ${t.ok.ring}`, color:t.ok.base, fontSize:14, fontWeight:500 }}>✅ All sendouts are tracked in JIRA and G-Sheet (+{daysAhead}d window).</div>
           )}
 
           {results.length > 0 && (
