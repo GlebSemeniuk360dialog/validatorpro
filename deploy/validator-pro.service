@@ -1,0 +1,26 @@
+[Unit]
+Description=Validator Pro — FastAPI server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=validatorpro
+Group=validatorpro
+WorkingDirectory=/opt/validator-pro
+EnvironmentFile=/opt/validator-pro/.env
+ExecStart=/opt/validator-pro/.venv/bin/python -m uvicorn server:app \
+    --host 127.0.0.1 \
+    --port 8502 \
+    --workers 2
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Harden the process a little
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
