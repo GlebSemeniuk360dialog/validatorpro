@@ -1843,8 +1843,18 @@ function App() {
     } catch(e) { alert('Slack test failed: ' + e.message); }
   };
 
-  // Load queue on mount if already logged in
-  useEffect(()=>{ if(token){ fetchQueue(); fetchClients(); fetchSlackStatus(); } }, []);
+  // Load queue on mount if already logged in — also validate the stored token
+  useEffect(()=>{
+    if (!token) return;
+    // Ping the server to check the token is still valid
+    api('GET', '/api/clients', null, token)
+      .then(data => { setClients(data); fetchQueue(); fetchSlackStatus(); })
+      .catch(() => {
+        // Token rejected (server restarted, session expired) — force re-login
+        localStorage.removeItem('vp_token'); localStorage.removeItem('vp_name');
+        setToken(''); setUserName('');
+      });
+  }, []);
 
   if (!token) return <Login onSignIn={signIn} />;
 
