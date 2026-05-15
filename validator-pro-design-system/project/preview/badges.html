@@ -1,0 +1,24 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="card-base.css">
+<style>
+.badge { display:inline-block; padding: 3px 10px; border-radius:999px; font-size: 11px; font-weight: 600; font-family: var(--font-sans); }
+.b-ok     { background:#00d4aa18; color:#00d4aa; border:1px solid #00d4aa33; }
+.b-danger { background:#ff4d6d18; color:#ff4d6d; border:1px solid #ff4d6d33; }
+.b-warn   { background:#ffb54718; color:#ffb547; border:1px solid #ffb54733; }
+.b-info   { background:#3d4bff18; color:#a0aaff; border:1px solid #3d4bff33; }
+</style></head>
+<body><div class="card">
+  <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+    <span class="badge b-ok">All checks passed</span>
+    <span class="badge b-danger">3 issue(s) found</span>
+    <span class="badge b-warn">Similarity 64%</span>
+    <span class="badge b-info">Static RCS Template</span>
+  </div>
+  <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+    <span class="badge b-ok">Similarity 97%</span>
+    <span class="badge b-danger">Similarity 42%</span>
+    <span class="badge b-warn">Manual review required</span>
+    <span class="badge b-info">Automated — no JIRA required</span>
+  </div>
+  <div style="color:var(--fg-3); font-size:11px; line-height:1.6;">Pill, 20px radius. Status-tinted: <code>color18</code> fill, <code>color33</code> border, full-opacity text. Sentence case, never icons inside.</div>
+</div></body></html>

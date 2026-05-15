@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="card-base.css"></head>
+<body><div class="card">
+  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px;">
+    <div style="background:var(--bg-surface-1); border:1px solid var(--border-1); border-radius:6px; padding:14px 16px;">
+      <div class="overline" style="margin-bottom:8px;">— Validations</div>
+      <div class="readout tnum"><span class="v">24</span></div>
+      <div style="font-family:var(--font-mono); font-size:10px; color:var(--ok); margin-top:4px; letter-spacing:.08em;">▲ +6 vs yesterday</div>
+    </div>
+    <div style="background:var(--bg-surface-1); border:1px solid var(--border-1); border-radius:6px; padding:14px 16px;">
+      <div class="overline" style="margin-bottom:8px;">— Pass rate</div>
+      <div class="readout tnum"><span class="v ok">83%</span></div>
+      <div style="font-family:var(--font-mono); font-size:10px; color:var(--fg-3); margin-top:4px; letter-spacing:.08em;">20 / 24</div>
+    </div>
+    <div style="background:var(--bg-surface-1); border:1px solid var(--border-1); border-radius:6px; padding:14px 16px;">
+      <div class="overline" style="margin-bottom:8px;">— Avg audit</div>
+      <div class="readout tnum"><span class="v accent">2.4<span style="color:var(--fg-3); font-size:11px;">s</span></span></div>
+      <div style="font-family:var(--font-mono); font-size:10px; color:var(--accent); margin-top:4px; letter-spacing:.08em;">gemini-2.5-pro</div>
+    </div>
+    <div style="background:var(--bg-surface-1); border:1px solid var(--border-1); border-radius:6px; padding:14px 16px;">
+      <div class="overline" style="margin-bottom:8px;">— Alerts fired</div>
+      <div class="readout tnum"><span class="v danger">03</span></div>
+      <div style="font-family:var(--font-mono); font-size:10px; color:var(--danger); margin-top:4px; letter-spacing:.08em;">▼ last 1h</div>
+    </div>
+  </div>
+  <div style="color:var(--fg-3); font-size:11px; line-height:1.6;">Telemetry-style readout — overline label, mono value with tabular numerals, sub-line with delta or context. Lead numeric digits are zero-padded (<code>03</code>) for tabular alignment.</div>
+</div></body></html>

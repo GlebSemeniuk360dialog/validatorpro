@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="card-base.css">
+<style>
+.diff { background:#0d0f18; border:1px solid var(--border-1); border-radius:4px; padding:12px; }
+.line { font-family:var(--font-mono); font-size:11px; padding:2px 6px; border-radius:3px; margin-bottom:1px; white-space:pre-wrap; }
+.add { background:#00d4aa18; color:#00d4aa; }
+.rem { background:#ff4d6d18; color:#ff4d6d; }
+.ctx { color:#5a5f7a; }
+</style></head>
+<body><div class="card">
+  <div class="diff">
+    <div class="line ctx">  Hallo {{1}}, hier sind die neuesten Angebote</div>
+    <div class="line rem">- für deine Filiale in {{shop_city}}.</div>
+    <div class="line add">+ für deine Filiale in {{shop_city}} {{shop_address}}.</div>
+    <div class="line ctx">  Gültig vom {{leaflet_start_date}} bis {{leaflet_end_date}}.</div>
+    <div class="line ctx"></div>
+    <div class="line rem">- Viele Grüße — ALDI SÜD</div>
+    <div class="line add">+ Viele Grüße</div>
+    <div class="line add">+ ALDI SÜD - Hier bin ich richtig.</div>
+  </div>
+  <div style="color:var(--fg-3); font-size:11px; line-height:1.6;">Unified diff. Sits inside a near-black surface (<code>#0d0f18</code>) — the only place in the app where a child surface is <em>darker</em> than its parent.</div>
+</div></body></html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="card-base.css">
+<style>
+.field { display:flex; flex-direction:column; gap:6px; }
+.field label { font-size:13px; color:var(--fg-1); }
+.field input, .field select {
+  background: #1a1d2e; border: 1px solid #2a2d42; color: var(--fg-1);
+  border-radius:4px; padding: 9px 12px; font-family: var(--font-sans); font-size: 13px;
+  outline: none;
+}
+.field input::placeholder { color: #5a5f7a; }
+.field input:focus { border-color: #3d4bff; box-shadow: 0 0 0 3px #3d4bff33; }
+.cap { font-size: 11px; color: var(--fg-3); }
+</style></head>
+<body><div class="card">
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+    <div class="field">
+      <label>🎫 Ticket ID</label>
+      <input value="MAS-4141" />
+    </div>
+    <div class="field">
+      <label>Sendout ID (override)</label>
+      <input placeholder="Sendout ID auto-detected — override if needed" />
+      <div class="cap">Sendout found: <code style="font-family:var(--font-mono); background:var(--bg-surface-3); padding:1px 5px; border-radius:3px; font-size:11px;">9b3f-8e8c-2c4f-aaaa</code></div>
+    </div>
+    <div class="field">
+      <label>🎯 Client Context</label>
+      <select><option>ALDI Sued</option></select>
+    </div>
+    <div class="field">
+      <label>Username</label>
+      <input style="border-color:#3d4bff; box-shadow:0 0 0 3px #3d4bff33;" value="gleb" />
+      <div class="cap">Focus state — 3px brand ring</div>
+    </div>
+  </div>
+</div></body></html>

@@ -1,0 +1,24 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="card-base.css">
+<style>
+.report { background:#12141f; border:1px solid var(--border-1); border-radius:6px; padding:20px 24px; font-size:13px; line-height:1.9; color:var(--fg-1); }
+.report.has-errors { border-color:#ff4d6d44; }
+.report.all-ok { border-color:#00d4aa44; }
+.h3 { font-size:11px; font-weight:600; color:#a0aaff; text-transform:uppercase; letter-spacing:.05em; margin:14px 0 4px; }
+.li { padding:2px 0 2px 10px; line-height:1.7; }
+.pass { color:#00d4aa; } .fail { color:#ff4d6d; } .warn { color:#ffb547; }
+code { background:#1e2235; padding:1px 5px; border-radius:3px; font-family:var(--font-mono); font-size:11px; }
+strong { color:var(--fg-1); font-weight:600; }
+em { color:#c8cadc; font-style:italic; }
+</style></head>
+<body><div class="card">
+  <span style="display:inline-block; padding:3px 10px; border-radius:999px; font-size:11px; font-weight:600; background:#ff4d6d18; color:#ff4d6d; border:1px solid #ff4d6d33;">2 issue(s) found</span>
+  <div class="report has-errors">
+    <div class="h3">Body comparison</div>
+    <div class="li"><span class="pass">✅</span> Greeting matches JIRA</div>
+    <div class="li"><span class="pass">✅</span> Date placeholders match: <code>{{leaflet_start_date}}</code></div>
+    <div class="li"><span class="fail">❌</span> Footer line missing — <em>JIRA: "Hier bin ich richtig" / API: "(empty)"</em></div>
+    <div class="h3">CTA</div>
+    <div class="li"><span class="fail">❌</span> Button text mismatch: <strong>"Zum Prospekt"</strong> not in API set <code>["Mehr erfahren"]</code></div>
+  </div>
+</div></body></html>

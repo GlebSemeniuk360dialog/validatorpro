@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <title>Validator Pro — UI Kit</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%230d0f18'/%3E%3Cpath d='M34 8 L18 36 L28 36 L26 56 L46 26 L36 26 L38 8 Z' fill='%233d4bff'/%3E%3C/svg%3E" />
+
+  <link rel="stylesheet" href="../../colors_and_type.css" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #f6f8fb; color: #0f1828; }
+    #app { font-family: 'Space Grotesk', system-ui, sans-serif; }
+    body::-webkit-scrollbar { width: 10px; }
+    body::-webkit-scrollbar-track { background: #f0f3f7; }
+    body::-webkit-scrollbar-thumb { background: #d6dce5; border-radius: 5px; }
+    [role="button"], div[onclick] { outline: none; }
+
+    @keyframes vp-led-pulse {
+      0%, 100% { opacity: 1;    filter: brightness(1);   }
+      50%      { opacity: 0.55; filter: brightness(1.4); }
+    }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script src="tokens.js"></script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script type="text/babel" src="Primitives.jsx"></script>
+  <script type="text/babel" src="Shell.jsx"></script>
+  <script type="text/babel" src="Login.jsx"></script>
+  <script type="text/babel" src="Queue.jsx"></script>
+  <script type="text/babel" src="Validator.jsx"></script>
+  <script type="text/babel" src="OrphanScanner.jsx"></script>
+  <script type="text/babel" src="Dashboard.jsx"></script>
+
+  <script type="text/babel">
+    const { useState } = React;
+
+    function App() {
+      const [user, setUser]     = useState(null);          // null = not signed in
+      const [tab, setTab]       = useState('Validator');   // Validator · Orphan Scanner · Dashboard
+      const [loaded, setLoaded] = useState(null);          // currently loaded ticket → opens ValidatorPanel
+      const [selected, setSelected] = useState(new Set());
+
+      if (!user) return <Login onSignIn={setUser} />;
+
+      return (
+        <div style={{ display: 'flex', minHeight: '100vh', background: tokens.bg.app }} data-screen-label="01 Validator Pro Shell">
+          <Sidebar
+            user={user}
+            onSignOut={() => setUser(null)}
+            onRefreshSheet={() => {}}
+            onClearCache={() => {}}
+          />
+          <main style={{ flex: 1, minWidth: 0 }}>
+            <Topbar title="Sendout Validator Pro" />
+            <MainTabs active={tab} onChange={(t) => { setTab(t); setLoaded(null); }} />
+
+            <div style={{ padding: '20px 28px' }}>
+              {tab === 'Validator' && !loaded && (
+                <Queue onLoad={setLoaded} selected={selected} setSelected={setSelected} />
+              )}
+              {tab === 'Validator' && loaded && (
+                <ValidatorPanel ticket={loaded} onBack={() => setLoaded(null)} />
+              )}
+              {tab === 'Orphan Scanner' && <OrphanScanner />}
+              {tab === 'Dashboard'      && <Dashboard />}
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('app')).render(<App />);
+  </script>
+</body>
+</html>

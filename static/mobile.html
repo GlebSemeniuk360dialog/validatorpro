@@ -1,0 +1,1488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <title>Validator Pro — Mobile</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { font-family: 'Space Grotesk', system-ui, sans-serif; background: #f6f8fb; margin: 0; -webkit-tap-highlight-color: transparent; }
+
+    @keyframes vp-led-pulse { 0%,100%{opacity:1} 50%{opacity:.5;filter:brightness(1.4)} }
+    @keyframes vp-slide-in  { from{transform:translateX(-100%)} to{transform:translateX(0)} }
+    @keyframes vp-spin      { to{transform:rotate(360deg)} }
+    @keyframes vp-fade-in   { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+    .vp-spinner { display:inline-block;width:14px;height:14px;border:2px solid #0fb5b540;border-top-color:#0fb5b5;border-radius:50%;animation:vp-spin .7s linear infinite; }
+    .vp-spinner-lg { display:inline-block;width:28px;height:28px;border:3px solid #0fb5b530;border-top-color:#0fb5b5;border-radius:50%;animation:vp-spin .8s linear infinite; }
+
+    .mobile-result-html { font-size:12px; overflow-x:hidden; line-height:1.5; }
+    .mobile-result-html table { width:100% !important; font-size:11px; border-collapse:collapse; }
+    .mobile-result-html td, .mobile-result-html th { padding:4px 6px; border:1px solid #e6eaef; }
+    .mobile-result-html h2, .mobile-result-html h3 { font-size:13px; margin:8px 0 4px; }
+    .mobile-result-html pre { white-space:pre-wrap; word-break:break-all; font-size:10px; }
+    .mobile-result-html img { max-width:100% !important; height:auto; }
+
+    .chip-row { display:flex; gap:6px; overflow-x:auto; padding-bottom:4px; scrollbar-width:none; }
+    .chip-row::-webkit-scrollbar { display:none; }
+
+    .vp-tab-bar { display:flex; border-top:1px solid #e6eaef; background:#ffffff; padding-bottom:env(safe-area-inset-bottom,8px); }
+    .vp-tab-btn { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; padding:8px 4px 6px; border:none; background:none; cursor:pointer; font-family:'Space Grotesk',sans-serif; font-size:10px; font-weight:500; color:#8893a3; min-height:52px; transition:color .15s; }
+    .vp-tab-btn.active { color:#0fb5b5; }
+    .vp-tab-btn svg { transition:stroke .15s; }
+
+    .vp-card { background:#ffffff; border:1px solid #e6eaef; border-radius:10px; }
+    .vp-select { width:100%; padding:10px 12px; border:1px solid #d6dce5; border-radius:8px; background:#ffffff; font-family:'Space Grotesk',sans-serif; font-size:13px; color:#0f1828; outline:none; appearance:none; -webkit-appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238893a3' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 10px center; padding-right:32px; }
+    .vp-select:focus { border-color:#0fb5b5; box-shadow:0 0 0 2px #0fb5b540; }
+
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { opacity:1; }
+
+    .vp-fade { animation:vp-fade-in .2s ease both; }
+
+    .vp-ticket-card { background:#ffffff; border:1px solid #e6eaef; border-radius:10px; padding:12px 14px; cursor:pointer; transition:box-shadow .15s, border-color .15s; -webkit-user-select:none; user-select:none; }
+    .vp-ticket-card:active { box-shadow:0 0 0 2px #0fb5b540; border-color:#0fb5b5; }
+    .vp-ticket-card.selected { border-color:#0fb5b5; box-shadow:0 0 0 2px #0fb5b520; }
+
+    .vp-seg-tab { flex:1; padding:7px 4px; border:none; background:none; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:500; color:#8893a3; border-bottom:2px solid transparent; cursor:pointer; transition:color .15s, border-color .15s; white-space:nowrap; }
+    .vp-seg-tab.active { color:#0fb5b5; border-bottom-color:#0fb5b5; }
+
+    .vp-check-row { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid #f0f3f7; }
+    .vp-check-row:last-child { border-bottom:none; }
+
+    .vp-readout-label { font-family:'JetBrains Mono',monospace; font-size:9px; font-weight:500; letter-spacing:.12em; text-transform:uppercase; color:#8893a3; margin-bottom:2px; }
+    .vp-readout-value { font-family:'JetBrains Mono',monospace; font-size:13px; font-weight:500; color:#0f1828; }
+
+    .vp-overline { font-family:'JetBrains Mono',monospace; font-size:9px; font-weight:500; letter-spacing:.14em; text-transform:uppercase; color:#8893a3; }
+
+    .vp-section-header { display:flex; align-items:center; gap:8px; margin:16px 0 10px; }
+    .vp-section-header::before { content:'—'; color:#0fb5b5; font-size:12px; }
+    .vp-section-header span { font-family:'JetBrains Mono',monospace; font-size:9px; font-weight:500; letter-spacing:.14em; text-transform:uppercase; color:#475068; }
+    .vp-section-header::after { content:''; flex:1; height:1px; background:#e6eaef; }
+
+    .vp-corner { position:absolute; width:10px; height:10px; }
+    .vp-corner-tl { top:0; left:0; border-top:1.5px solid; border-left:1.5px solid; border-radius:2px 0 0 0; }
+    .vp-corner-tr { top:0; right:0; border-top:1.5px solid; border-right:1.5px solid; border-radius:0 2px 0 0; }
+    .vp-corner-bl { bottom:0; left:0; border-bottom:1.5px solid; border-left:1.5px solid; border-radius:0 0 0 2px; }
+    .vp-corner-br { bottom:0; right:0; border-bottom:1.5px solid; border-right:1.5px solid; border-radius:0 0 2px 0; }
+
+    .long-press-hint { font-size:10px; color:#aab3c1; text-align:center; padding:4px 0; }
+  </style>
+</head>
+<body style="margin:0;background:#f6f8fb;">
+  <div id="root" style="height:100dvh;overflow:hidden;display:flex;flex-direction:column;"></div>
+
+<script>
+window.tokens = {
+  bg: { app:'#f6f8fb', appSoft:'#f0f3f7', surface1:'#ffffff', surface2:'#f6f8fb', surface3:'#eef2f7' },
+  border: { base:'#e6eaef', input:'#d6dce5', hud:'#b3dfdf' },
+  fg: { 1:'#0f1828', 2:'#475068', 3:'#8893a3', 4:'#aab3c1' },
+  brand: { base:'#0fb5b5', hover:'#0ca0a0', soft:'#0fb5b515', ring:'#0fb5b540', text:'#0a8080', slide:'#0a8080', glow:'0 0 12px rgba(15,181,181,0.22)', glowSm:'0 0 6px rgba(15,181,181,0.30)', dark:'#0e2a2a' },
+  accent: { base:'#00a8c8', soft:'#00a8c815', ring:'#00a8c840', glow:'0 0 6px rgba(0,168,200,0.30)' },
+  ok:     { base:'#0c8f4a', soft:'#0c8f4a15', soft2:'#0c8f4a08', ring:'#0c8f4a40', glow:'0 0 6px rgba(12,143,74,0.30)' },
+  danger: { base:'#dc2626', soft:'#dc262615', soft2:'#dc262608', ring:'#dc262640', glow:'0 0 6px rgba(220,38,38,0.32)' },
+  warn:   { base:'#c47d0a', soft:'#c47d0a15', soft2:'#c47d0a08', ring:'#c47d0a40', glow:'0 0 6px rgba(196,125,10,0.30)' },
+  info:   { base:'#0a8080', soft:'#0fb5b515', ring:'#0fb5b540' },
+  font: { sans:"'Space Grotesk',system-ui,sans-serif", mono:"'JetBrains Mono',ui-monospace,monospace", display:"'Space Grotesk',sans-serif" },
+};
+
+/* Global panel interactivity for injected result HTML */
+function showTab(id, btn) {
+  document.querySelectorAll('.vp-panel').forEach(function(p){ p.classList.remove('active'); });
+  document.querySelectorAll('.vp-nav-btn').forEach(function(b){ b.classList.remove('active'); });
+  var panel = document.getElementById('vp-panel-' + id);
+  if (panel) panel.classList.add('active');
+  if (btn) btn.classList.add('active');
+}
+function toggleSlide(uid) {
+  var body = document.getElementById(uid);
+  var arr  = document.getElementById('arr_' + uid);
+  if (!body) return;
+  var isOpen = body.style.display === 'block';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (arr) arr.classList.toggle('open', !isOpen);
+}
+function toggleVis(uid) {
+  var el = document.getElementById(uid);
+  if (!el) return;
+  var hidden = el.style.display === 'none' || el.style.display === '';
+  el.style.display = hidden ? 'block' : 'none';
+}
+</script>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+const T = window.tokens;
+
+/* ── API helper ─────────────────────────────────────────────────────────── */
+async function mapi(method, path, body, token) {
+  const resp = await fetch(path, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || resp.statusText);
+  }
+  return resp.json();
+}
+
+/* ── Date helpers ───────────────────────────────────────────────────────── */
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const target = new Date(dateStr);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  target.setHours(0, 0, 0, 0);
+  return Math.round((target - now) / 86400000);
+}
+function countdownColor(d) {
+  if (d === null) return T.fg[4];
+  if (d <= 2) return T.danger.base;
+  if (d <= 4) return T.warn.base;
+  return T.fg[3];
+}
+function fmtDate(str) {
+  if (!str) return '—';
+  try { return new Date(str).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }); }
+  catch { return str; }
+}
+
+/* ── Primitives ─────────────────────────────────────────────────────────── */
+function MLed({ kind = 'ok', pulse = false, size = 8 }) {
+  const colors = { ok: T.ok.base, danger: T.danger.base, warn: T.warn.base, info: T.brand.base, neutral: T.fg[4], active: T.ok.base, inactive: T.fg[4] };
+  return (
+    <span style={{
+      display: 'inline-block', width: size, height: size, borderRadius: '50%',
+      background: colors[kind] || T.fg[4], flexShrink: 0,
+      animation: pulse ? 'vp-led-pulse 1.4s ease-in-out infinite' : 'none',
+      boxShadow: pulse ? `0 0 6px ${colors[kind] || T.fg[4]}88` : 'none',
+    }} />
+  );
+}
+
+function MCorners({ color = T.border.hud, inset = 0 }) {
+  const style = { borderColor: color };
+  return (
+    <>
+      <span className="vp-corner vp-corner-tl" style={{ ...style, top: inset, left: inset }} />
+      <span className="vp-corner vp-corner-tr" style={{ ...style, top: inset, right: inset }} />
+      <span className="vp-corner vp-corner-bl" style={{ ...style, bottom: inset, left: inset }} />
+      <span className="vp-corner vp-corner-br" style={{ ...style, bottom: inset, right: inset }} />
+    </>
+  );
+}
+
+function MCard({ title, children, style, padding = '14px' }) {
+  return (
+    <div className="vp-card" style={{ padding, position: 'relative', ...style }}>
+      {title && <div className="vp-overline" style={{ marginBottom: 10 }}>{title}</div>}
+      {children}
+    </div>
+  );
+}
+
+function MBadge({ kind = 'neutral', children, style }) {
+  const map = {
+    ok:      { bg: T.ok.soft,      color: T.ok.base      },
+    danger:  { bg: T.danger.soft,  color: T.danger.base  },
+    warn:    { bg: T.warn.soft,    color: T.warn.base     },
+    info:    { bg: T.info.soft,    color: T.info.base     },
+    neutral: { bg: T.bg.surface3,  color: T.fg[3]         },
+    brand:   { bg: T.brand.soft,   color: T.brand.text    },
+  };
+  const s = map[kind] || map.neutral;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', padding: '2px 7px',
+      borderRadius: 999, fontSize: 10, fontWeight: 600, letterSpacing: '.04em',
+      fontFamily: T.font.mono, background: s.bg, color: s.color, whiteSpace: 'nowrap', ...style
+    }}>
+      {children}
+    </span>
+  );
+}
+
+function MTag({ kind = 'neutral', children }) {
+  const map = { excl: { bg: T.danger.soft, color: T.danger.base }, incl: { bg: T.ok.soft, color: T.ok.base }, neutral: { bg: T.bg.surface3, color: T.fg[3] } };
+  const s = map[kind] || map.neutral;
+  return (
+    <span style={{
+      display: 'inline-flex', padding: '1px 6px', borderRadius: 4,
+      fontSize: 10, fontFamily: T.font.mono, background: s.bg, color: s.color, whiteSpace: 'nowrap',
+    }}>
+      {children}
+    </span>
+  );
+}
+
+function MCheckRow({ kind = 'ok', label, value }) {
+  const map = { ok: { color: T.ok.base, icon: '✓' }, fail: { color: T.danger.base, icon: '✗' }, warn: { color: T.warn.base, icon: '!' }, info: { color: T.brand.base, icon: 'i' } };
+  const s = map[kind] || map.info;
+  return (
+    <div className="vp-check-row">
+      <span style={{ width: 18, height: 18, borderRadius: '50%', border: `1.5px solid ${s.color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: s.color, fontWeight: 700, flexShrink: 0 }}>{s.icon}</span>
+      <span style={{ fontSize: 12, color: T.fg[2], flex: 1 }}>{label}</span>
+      {value && <span style={{ fontSize: 11, fontFamily: T.font.mono, color: T.fg[3] }}>{value}</span>}
+    </div>
+  );
+}
+
+function MButton({ variant = 'primary', onClick, children, style, disabled, fullWidth, size = 'md' }) {
+  const map = {
+    primary: { bg: T.brand.base,   color: '#fff',       border: 'none',            hover: T.brand.hover  },
+    ghost:   { bg: 'transparent',  color: T.brand.text, border: `1.5px solid ${T.brand.base}`, },
+    soft:    { bg: T.brand.soft,   color: T.brand.text, border: 'none',            },
+    danger:  { bg: T.danger.base,  color: '#fff',       border: 'none',            },
+    dark:    { bg: T.brand.dark,   color: '#fff',       border: 'none',            },
+    neutral: { bg: T.bg.surface3,  color: T.fg[2],      border: `1px solid ${T.border.base}` },
+  };
+  const s = map[variant] || map.primary;
+  const pad = size === 'sm' ? '7px 14px' : '11px 18px';
+  const fs  = size === 'sm' ? 12 : 13;
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+        padding: pad, borderRadius: 8, fontSize: fs, fontWeight: 600,
+        fontFamily: T.font.sans, cursor: disabled ? 'not-allowed' : 'pointer',
+        border: s.border || 'none', background: disabled ? T.bg.surface3 : s.bg,
+        color: disabled ? T.fg[4] : s.color, width: fullWidth ? '100%' : undefined,
+        transition: 'opacity .15s', opacity: disabled ? .6 : 1, minHeight: 44,
+        WebkitTapHighlightColor: 'transparent', ...style
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function MInput({ value, onChange, placeholder, type = 'text', icon, style }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <div style={{ position: 'relative', ...style }}>
+      {icon && <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: T.fg[3], pointerEvents: 'none' }}>{icon}</span>}
+      <input
+        type={type}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        style={{
+          width: '100%', padding: icon ? '11px 12px 11px 34px' : '11px 12px',
+          border: `1.5px solid ${focused ? T.brand.base : T.border.input}`,
+          borderRadius: 8, fontSize: 13, fontFamily: T.font.sans, background: '#fff',
+          color: T.fg[1], outline: 'none', minHeight: 44,
+          boxShadow: focused ? `0 0 0 2px ${T.brand.ring}` : 'none',
+          transition: 'border-color .15s, box-shadow .15s',
+        }}
+      />
+    </div>
+  );
+}
+
+function MBracket({ children }) {
+  return (
+    <span style={{ fontFamily: T.font.mono, fontSize: 10, letterSpacing: '.08em', color: T.brand.text }}>
+      [ {children} ]
+    </span>
+  );
+}
+
+function MReadout({ label, value, valueKind, sub, subKind, size = 'md' }) {
+  const kindColor = { ok: T.ok.base, danger: T.danger.base, warn: T.warn.base, info: T.brand.base };
+  const fs = size === 'lg' ? 18 : size === 'sm' ? 11 : 13;
+  return (
+    <div>
+      <div className="vp-readout-label">{label}</div>
+      <div className="vp-readout-value" style={{ fontSize: fs, color: valueKind ? kindColor[valueKind] : T.fg[1] }}>{value || '—'}</div>
+      {sub && <div style={{ fontSize: 10, fontFamily: T.font.mono, color: subKind ? kindColor[subKind] : T.fg[4], marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function MOverline({ children, style }) {
+  return <div className="vp-overline" style={style}>{children}</div>;
+}
+
+function MSectionHeader({ children, style }) {
+  return (
+    <div className="vp-section-header" style={style}>
+      <span>{children}</span>
+    </div>
+  );
+}
+
+function MUrlRow({ icon, url, kind = 'neutral' }) {
+  const color = kind === 'ok' ? T.ok.base : kind === 'danger' ? T.danger.base : T.fg[3];
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: `1px solid ${T.border.base}` }}>
+      <span style={{ color, flexShrink: 0 }}>{icon}</span>
+      <a href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, fontFamily: T.font.mono, color: T.brand.text, textDecoration: 'none', wordBreak: 'break-all', flex: 1 }}>{url}</a>
+    </div>
+  );
+}
+
+function Spinner() { return <span className="vp-spinner" />; }
+function SpinnerLg() { return <div style={{ display: 'flex', justifyContent: 'center', padding: 32 }}><span className="vp-spinner-lg" /></div>; }
+
+function ErrorBox({ msg, onDismiss }) {
+  if (!msg) return null;
+  return (
+    <div style={{ background: T.danger.soft, border: `1px solid ${T.danger.ring}`, borderRadius: 8, padding: '10px 12px', marginBottom: 12, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+      <MLed kind="danger" />
+      <span style={{ fontSize: 12, color: T.danger.base, flex: 1 }}>{msg}</span>
+      {onDismiss && <button onClick={onDismiss} style={{ background: 'none', border: 'none', cursor: 'pointer', color: T.danger.base, fontSize: 14, lineHeight: 1, padding: 0 }}>✕</button>}
+    </div>
+  );
+}
+
+/* ── Tab Icons ──────────────────────────────────────────────────────────── */
+function IconValidator({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 12l2 2 4-4" /><rect x="3" y="3" width="18" height="18" rx="3" />
+    </svg>
+  );
+}
+function IconOrphans({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+    </svg>
+  );
+}
+function IconDashboard({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" />
+      <rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" />
+    </svg>
+  );
+}
+function IconProfile({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+/* ── Logo SVG ───────────────────────────────────────────────────────────── */
+function LogoMark({ size = 28 }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 152 152" fill="none">
+      <g filter="url(#m_f0)">
+        <path d="M1 37.5C1 16.7893 17.7893 0 38.5 0H151V112.5C151 133.211 134.211 150 113.5 150H1V37.5Z" fill="#092F32"/>
+      </g>
+      <path fillRule="evenodd" clipRule="evenodd" d="M87.6479 93.9958C97.596 93.9958 105.667 85.4746 105.809 75.001V74.9971C105.809 64.3788 97.8734 55.9984 87.6479 55.9984C77.7032 55.9984 69.487 64.5169 69.487 74.9971C69.487 85.4759 77.5622 93.9958 87.6479 93.9958ZM75.231 74.9971C75.231 67.6007 80.8421 61.7425 87.6479 61.7425C94.588 61.7425 99.9264 67.4557 100.065 74.9997C100.063 82.2573 94.4511 88.2518 87.6479 88.2518C80.8421 88.2518 75.231 82.3936 75.231 74.9971Z" fill="#FDFDFD"/>
+      <path d="M121.859 56.8617C125.813 56.8617 129.269 57.6276 132.225 59.1594C135.218 60.6555 137.515 62.8285 139.118 65.6784C140.757 68.4926 141.576 71.7877 141.576 75.5637C141.576 79.3398 140.757 82.6171 139.118 85.3957C137.515 88.1742 135.218 90.3116 132.225 91.8078C129.269 93.2683 125.813 93.9986 121.859 93.9986H109.729V56.8617H121.859ZM121.859 89.0292C126.205 89.0292 129.536 87.8536 131.851 85.5025C134.167 83.1514 135.325 79.8385 135.325 75.5637C135.325 71.2534 134.167 67.887 131.851 65.4646C129.536 63.0423 126.205 61.8311 121.859 61.8311H115.821V89.0292H121.859Z" fill="#FDFDFD"/>
+      <defs>
+        <filter id="m_f0" x="0" y="0" width="152" height="152" filterUnits="userSpaceOnUse">
+          <feFlood floodOpacity="0" result="bg"/>
+          <feColorMatrix in="SourceAlpha" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="alpha"/>
+          <feOffset dy="0.667"/>
+          <feGaussianBlur stdDeviation="0.333"/>
+          <feComposite in2="alpha" operator="out"/>
+          <feColorMatrix values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/>
+          <feBlend in2="bg" result="shadow"/>
+          <feBlend in="SourceGraphic" in2="shadow"/>
+        </filter>
+      </defs>
+    </svg>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOGIN SCREEN
+   ═════════════════════════════════════════════════════════════════════════ */
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const data = await mapi('POST', '/api/auth/login', { username, password });
+      onLogin({ token: data.token, name: data.name || username });
+    } catch (err) {
+      setError(err.message || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px 20px', background: T.bg.app }}>
+      {/* HUD panel */}
+      <div style={{ position: 'relative', width: '100%', maxWidth: 360, background: T.bg.surface1, border: `1px solid ${T.border.hud}`, borderRadius: 14, padding: '32px 24px', boxShadow: T.brand.glow }}>
+        <MCorners color={T.brand.base} />
+
+        {/* Header */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 28, gap: 10 }}>
+          <LogoMark size={44} />
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: T.fg[1], textAlign: 'center', letterSpacing: '-.01em' }}>Validator Pro</div>
+            <div style={{ fontSize: 11, fontFamily: T.font.mono, color: T.fg[3], textAlign: 'center', letterSpacing: '.1em', marginTop: 2 }}>MOBILE · 360DIALOG</div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: T.ok.soft, padding: '4px 12px', borderRadius: 999 }}>
+            <MLed kind="ok" pulse size={6} />
+            <span style={{ fontSize: 10, fontFamily: T.font.mono, color: T.ok.base, letterSpacing: '.08em' }}>SYSTEM ONLINE</span>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <ErrorBox msg={error} onDismiss={() => setError('')} />
+          <MInput
+            value={username}
+            onChange={setUsername}
+            placeholder="Username"
+            type="text"
+            icon={
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            }
+          />
+          <MInput
+            value={password}
+            onChange={setPassword}
+            placeholder="Password"
+            type="password"
+            icon={
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            }
+          />
+          <MButton variant="primary" fullWidth disabled={loading || !username || !password} style={{ marginTop: 4 }}>
+            {loading ? <><Spinner /> Signing in…</> : 'Sign in'}
+          </MButton>
+        </form>
+
+        <div style={{ marginTop: 18, textAlign: 'center', fontSize: 10, fontFamily: T.font.mono, color: T.fg[4], letterSpacing: '.06em' }}>
+          VALIDATOR PRO · SECURE SESSION
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   QUEUE SCREEN
+   ═════════════════════════════════════════════════════════════════════════ */
+function QueueScreen({ token, onOpenTicket }) {
+  const [tickets, setTickets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState(new Set());
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkLoading, setBulkLoading] = useState('');
+  const longPressRef = useRef(null);
+
+  useEffect(() => {
+    setLoading(true);
+    mapi('GET', '/api/queue', null, token)
+      .then(data => { setTickets(Array.isArray(data) ? data : []); setError(''); })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return tickets
+      .filter(t => {
+        if (!q) return true;
+        return (t.key || '').toLowerCase().includes(q)
+          || (t.summary || '').toLowerCase().includes(q)
+          || (t.client || '').toLowerCase().includes(q);
+      })
+      .slice()
+      .sort((a, b) => {
+        // Closest upcoming date first; past dates sorted to the bottom
+        const today = new Date().toISOString().slice(0, 10);
+        const da = a.date || '9999-99-99';
+        const db = b.date || '9999-99-99';
+        const aFuture = da >= today;
+        const bFuture = db >= today;
+        if (aFuture !== bFuture) return aFuture ? -1 : 1;  // future before past
+        return aFuture ? da.localeCompare(db) : db.localeCompare(da); // future: asc, past: desc
+      });
+  }, [tickets, search]);
+
+  function statusKind(s) {
+    if (!s) return 'neutral';
+    const l = s.toLowerCase();
+    if (l.includes('pass') || l.includes('ok') || l.includes('done')) return 'ok';
+    if (l.includes('fail') || l.includes('error')) return 'danger';
+    if (l.includes('warn') || l.includes('pending')) return 'warn';
+    return 'neutral';
+  }
+
+  function startLongPress(key) {
+    longPressRef.current = setTimeout(() => {
+      setBulkMode(true);
+      setSelected(prev => new Set([...prev, key]));
+    }, 600);
+  }
+  function cancelLongPress() {
+    if (longPressRef.current) clearTimeout(longPressRef.current);
+  }
+
+  function handleCardPress(ticket) {
+    cancelLongPress();
+    if (bulkMode) {
+      setSelected(prev => {
+        const next = new Set(prev);
+        if (next.has(ticket.key)) next.delete(ticket.key);
+        else next.add(ticket.key);
+        if (next.size === 0) setBulkMode(false);
+        return next;
+      });
+    } else {
+      onOpenTicket(ticket);
+    }
+  }
+
+  async function bulkAction(action) {
+    setBulkLoading(action);
+    const keys = Array.from(selected);
+    const endpoint = action === 'check' ? '/api/validate' : '/api/ai-audit';
+    try {
+      for (const key of keys) {
+        const ticket = tickets.find(t => t.key === key);
+        if (ticket) {
+          await mapi('POST', endpoint, { client: ticket.client, ticket_key: ticket.key }, token).catch(() => {});
+        }
+      }
+    } finally {
+      setBulkLoading('');
+      setBulkMode(false);
+      setSelected(new Set());
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Header */}
+      <div style={{ padding: '14px 16px 0', background: T.bg.surface1, borderBottom: `1px solid ${T.border.base}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <LogoMark size={22} />
+          <div style={{ fontSize: 15, fontWeight: 700, color: T.fg[1], flex: 1 }}>Ticket Queue</div>
+          <MBracket>LIVE</MBracket>
+        </div>
+        <MInput value={search} onChange={setSearch} placeholder="Search tickets…" icon={
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        } style={{ marginBottom: 10 }} />
+      </div>
+
+      {/* Content */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 16px 24px' }}>
+        {!bulkMode && <div className="long-press-hint">Long-press a card to select multiple</div>}
+
+        <ErrorBox msg={error} onDismiss={() => setError('')} />
+
+        {loading ? <SpinnerLg /> : filtered.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 40, color: T.fg[4], fontSize: 13 }}>
+            {search ? 'No tickets match your search.' : 'Queue is empty.'}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {filtered.map(ticket => {
+              const d = daysUntil(ticket.date);
+              const dColor = countdownColor(d);
+              const isSelected = selected.has(ticket.key);
+              return (
+                <div
+                  key={ticket.key}
+                  className={`vp-ticket-card${isSelected ? ' selected' : ''}`}
+                  onTouchStart={() => startLongPress(ticket.key)}
+                  onTouchEnd={() => handleCardPress(ticket)}
+                  onTouchMove={cancelLongPress}
+                  onMouseDown={() => startLongPress(ticket.key)}
+                  onMouseUp={() => handleCardPress(ticket)}
+                  onMouseLeave={cancelLongPress}
+                  onContextMenu={e => { e.preventDefault(); setBulkMode(true); setSelected(prev => new Set([...prev, ticket.key])); }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                    {bulkMode && (
+                      <div style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${isSelected ? T.brand.base : T.border.input}`, background: isSelected ? T.brand.base : '#fff', flexShrink: 0, marginTop: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {isSelected && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="1.8" strokeLinecap="round"/></svg>}
+                      </div>
+                    )}
+                    <MLed kind={statusKind(ticket.status)} pulse={statusKind(ticket.status) === 'warn'} size={8} style={{ marginTop: 4 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                        <span style={{ fontSize: 11, fontFamily: T.font.mono, fontWeight: 600, color: T.brand.text }}>{ticket.key}</span>
+                        <MBadge kind={statusKind(ticket.status)}>{ticket.status || 'Pending'}</MBadge>
+                        <span style={{ marginLeft: 'auto', fontSize: 10, fontFamily: T.font.mono, color: dColor, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                          {d !== null ? (d === 0 ? 'Today' : d > 0 ? `T-${d}d` : `T+${Math.abs(d)}d`) : '—'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: T.fg[1], marginBottom: 3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                        {ticket.summary || '(No summary)'}
+                      </div>
+                      <div style={{ fontSize: 11, color: T.fg[3] }}>
+                        <span style={{ fontWeight: 600, color: T.fg[2] }}>{ticket.client}</span>
+                        {ticket.date && <span> · {fmtDate(ticket.date)}</span>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Bulk action bar */}
+      {bulkMode && (
+        <div style={{ padding: '10px 16px', background: T.brand.dark, display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 'calc(10px + env(safe-area-inset-bottom,0px))' }}>
+          <span style={{ fontSize: 12, color: '#fff', flex: 1, fontWeight: 600 }}>{selected.size} selected</span>
+          <MButton variant="neutral" size="sm" onClick={() => { setBulkMode(false); setSelected(new Set()); }}>Cancel</MButton>
+          <MButton variant="soft" size="sm" onClick={() => bulkAction('check')} disabled={!!bulkLoading}>
+            {bulkLoading === 'check' ? <Spinner /> : '⚡'} Bulk Check
+          </MButton>
+          <MButton variant="primary" size="sm" onClick={() => bulkAction('ai')} disabled={!!bulkLoading}>
+            {bulkLoading === 'ai' ? <Spinner /> : '🤖'} AI Audit
+          </MButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   VALIDATOR SCREEN (ticket drilldown)
+   ═════════════════════════════════════════════════════════════════════════ */
+function ValidatorScreen({ ticket, token, userName, onBack }) {
+  const [subTab, setSubTab] = useState('setup');
+  const [enrichData, setEnrichData] = useState(null);
+  const [enrichLoading, setEnrichLoading] = useState(false);
+  const [enrichError, setEnrichError] = useState('');
+  const [sendouts, setSendouts] = useState([]);
+  const [selectedSendout, setSelectedSendout] = useState('');
+  const [checkResult, setCheckResult] = useState(null);
+  const [checkLoading, setCheckLoading] = useState(false);
+  const [checkError, setCheckError] = useState('');
+  const [aiResult, setAiResult] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [approveLoading, setApproveLoading] = useState('');
+  const [approveError, setApproveError] = useState('');
+  const [approveToast, setApproveToast] = useState(null); // { msg, kind }
+
+  // Auto-enrich on mount
+  useEffect(() => {
+    setEnrichLoading(true);
+    setEnrichError('');
+    mapi('POST', '/api/ticket/enrich', {
+      client: ticket.client,
+      ticket_key: ticket.key,
+      jira_date: ticket.date,
+      jira_summary: ticket.summary,
+    }, token)
+      .then(data => {
+        setEnrichData(data);
+        setSelectedSendout(data.sendout_id || '');
+        // Fetch sendouts for client
+        return mapi('GET', `/api/sendouts/${encodeURIComponent(ticket.client)}`, null, token);
+      })
+      .then(s => {
+        if (!Array.isArray(s)) { setSendouts([]); return; }
+        const today = new Date().toISOString().slice(0, 10);
+        const plus7 = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+        setSendouts(s.filter(x => x.date && x.date >= today && x.date <= plus7));
+      })
+      .catch(err => setEnrichError(err.message))
+      .finally(() => setEnrichLoading(false));
+  }, [ticket.key]);
+
+  const buildBody = () => ({
+    client: ticket.client,
+    ticket_key: ticket.key,
+    sendout_id: selectedSendout || enrichData?.sendout_id,
+    gsheet_tags: enrichData?.gsheet_tags,
+    exclude_tags: enrichData?.gsheet_exclude_tags,
+    leaflet_url: enrichData?.leaflet_url,
+  });
+
+  async function runCheck() {
+    setCheckLoading(true);
+    setCheckError('');
+    try {
+      const data = await mapi('POST', '/api/validate', buildBody(), token);
+      setCheckResult(data);
+      setSubTab('check');
+    } catch (err) {
+      setCheckError(err.message);
+    } finally {
+      setCheckLoading(false);
+    }
+  }
+
+  async function runAudit() {
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const data = await mapi('POST', '/api/ai-audit', buildBody(), token);
+      setAiResult(data);
+      setSubTab('ai');
+    } catch (err) {
+      setAiError(err.message);
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  async function handleApprove(verdict) {
+    setApproveLoading(verdict);
+    setApproveError('');
+    try {
+      await mapi('POST', `/api/approve/${encodeURIComponent(ticket.key)}`, { approver: userName || token, verdict }, token);
+      const toast = verdict === 'approve'
+        ? { msg: '✓ Approved', kind: 'ok' }
+        : { msg: '✕ Rejected', kind: 'danger' };
+      setApproveToast(toast);
+      setTimeout(() => setApproveToast(null), 2500);
+    } catch (err) {
+      setApproveError(err.message);
+    } finally {
+      setApproveLoading('');
+    }
+  }
+
+  const d = daysUntil(ticket.date);
+  const tabs = [
+    { id: 'setup', label: 'Setup' },
+    { id: 'check', label: 'Check' },
+    { id: 'ai',    label: 'AI'    },
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Approve/Reject toast */}
+      {approveToast && (
+        <div style={{
+          position: 'fixed', bottom: 72, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 9999, pointerEvents: 'none',
+          background: approveToast.kind === 'ok' ? T.ok.base : T.danger.base,
+          color: '#fff', fontFamily: T.font.sans, fontSize: 13, fontWeight: 700,
+          padding: '10px 22px', borderRadius: 999,
+          boxShadow: approveToast.kind === 'ok' ? T.ok.glow : T.danger.glow,
+          animation: 'vp-fade-in .18s ease both',
+          whiteSpace: 'nowrap',
+        }}>
+          {approveToast.msg}
+        </div>
+      )}
+      {/* Header */}
+      <div style={{ padding: '12px 16px 0', background: T.bg.surface1, borderBottom: `1px solid ${T.border.base}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <button onClick={onBack} style={{ background: 'none', border: 'none', cursor: 'pointer', color: T.brand.text, fontSize: 13, fontWeight: 600, padding: '4px 0', display: 'flex', alignItems: 'center', gap: 4, minHeight: 36 }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+            Queue
+          </button>
+          <MBracket>LIVE</MBracket>
+        </div>
+        <div style={{ fontSize: 11, fontFamily: T.font.mono, color: T.brand.text, fontWeight: 600, marginBottom: 3 }}>{ticket.key}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: T.fg[1], marginBottom: 6, lineHeight: 1.3 }}>{ticket.summary}</div>
+        <div style={{ fontSize: 11, color: T.fg[3], marginBottom: 10 }}>
+          <span style={{ fontWeight: 600, color: T.fg[2] }}>{ticket.client}</span>
+          {ticket.date && <span> · {fmtDate(ticket.date)}</span>}
+          {d !== null && <span style={{ color: countdownColor(d), fontWeight: 600 }}> · T-{d}d</span>}
+        </div>
+
+        {/* Action row */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <MButton variant="soft" size="sm" onClick={runCheck} disabled={checkLoading || enrichLoading} style={{ flex: 1 }}>
+            {checkLoading ? <Spinner /> : '⚡'} Regular Check
+          </MButton>
+          <MButton variant="primary" size="sm" onClick={runAudit} disabled={aiLoading || enrichLoading} style={{ flex: 1 }}>
+            {aiLoading ? <Spinner /> : '🤖'} AI Audit
+          </MButton>
+        </div>
+
+        {/* Sub-tabs */}
+        <div style={{ display: 'flex', borderTop: `1px solid ${T.border.base}`, margin: '0 -16px' }}>
+          {tabs.map(tab => (
+            <button key={tab.id} className={`vp-seg-tab${subTab === tab.id ? ' active' : ''}`} onClick={() => setSubTab(tab.id)}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Sub-tab content */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px 24px' }}>
+
+        {/* ── Setup tab ── */}
+        {subTab === 'setup' && (
+          <div className="vp-fade">
+            <ErrorBox msg={enrichError} onDismiss={() => setEnrichError('')} />
+            {enrichLoading ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: 32 }}>
+                <SpinnerLg />
+                <div style={{ fontSize: 12, color: T.fg[3], fontFamily: T.font.mono }}>Enriching ticket…</div>
+              </div>
+            ) : enrichData ? (
+              <>
+                <MSectionHeader>Ticket Info</MSectionHeader>
+                <MCard padding="14px">
+                  {[
+                    { label: 'Client',      value: enrichData.client      || ticket.client },
+                    { label: 'Ticket ID',   value: enrichData.ticket_key  || ticket.key   },
+                    { label: 'Sendout ID',  value: enrichData.sendout_id  || '—'          },
+                    { label: 'Sendout Date',value: fmtDate(enrichData.sendout_date || ticket.date) },
+                  ].map(row => (
+                    <div key={row.label} style={{ display: 'flex', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${T.border.base}` }}>
+                      <div className="vp-readout-label" style={{ flex: '0 0 100px', marginBottom: 0 }}>{row.label}</div>
+                      <div style={{ fontSize: 12, fontFamily: T.font.mono, color: T.fg[1], flex: 1 }}>{row.value}</div>
+                    </div>
+                  ))}
+                  {enrichData.leaflet_url && (
+                    <MUrlRow icon="🔗" url={enrichData.leaflet_url} kind="info" />
+                  )}
+                </MCard>
+
+                {sendouts.length > 0 && (
+                  <>
+                    <MSectionHeader>Sendout</MSectionHeader>
+                    <MCard padding="14px">
+                      <MOverline style={{ marginBottom: 8 }}>Select Sendout</MOverline>
+                      <select
+                        className="vp-select"
+                        value={selectedSendout}
+                        onChange={e => setSelectedSendout(e.target.value)}
+                      >
+                        <option value="">— no sendouts within 7 days —</option>
+                        {sendouts.map(s => (
+                          <option key={s.id || s} value={s.id || s}>
+                            {s.name || s.id || s}
+                          </option>
+                        ))}
+                      </select>
+                    </MCard>
+                  </>
+                )}
+
+                <MSectionHeader>Pre-flight</MSectionHeader>
+                <MCard padding="12px 14px">
+                  <MCheckRow kind={enrichData.jira_ok === false ? 'fail' : 'ok'} label="JIRA fetch" value={enrichData.jira_ok === false ? 'Failed' : 'OK'} />
+                  <MCheckRow kind={enrichData.dma_match === false ? 'warn' : 'ok'} label="DMA match" value={enrichData.dma_match === false ? 'No match' : 'Matched'} />
+                  {enrichData.gsheet_tags && (
+                    <MCheckRow kind="ok" label="G-Sheet tags" value={enrichData.gsheet_tags} />
+                  )}
+                </MCard>
+              </>
+            ) : !enrichError ? (
+              <div style={{ textAlign: 'center', color: T.fg[4], padding: 32, fontSize: 13 }}>No enrichment data.</div>
+            ) : null}
+          </div>
+        )}
+
+        {/* ── Check tab ── */}
+        {subTab === 'check' && (
+          <div className="vp-fade">
+            <ErrorBox msg={checkError} onDismiss={() => setCheckError('')} />
+            {!checkResult ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: '40px 20px', textAlign: 'center' }}>
+                <div style={{ fontSize: 40 }}>⚡</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: T.fg[1] }}>No check run yet</div>
+                <div style={{ fontSize: 12, color: T.fg[3] }}>Run a regular check to see results here.</div>
+                <MButton variant="soft" onClick={runCheck} disabled={checkLoading || enrichLoading}>
+                  {checkLoading ? <Spinner /> : '⚡'} Run Regular Check
+                </MButton>
+              </div>
+            ) : (
+              <>
+                {checkResult.schedule_ok != null && (
+                  <div style={{ background: checkResult.schedule_ok ? T.ok.soft : T.danger.soft, border: `1px solid ${checkResult.schedule_ok ? T.ok.ring : T.danger.ring}`, borderRadius: 8, padding: '10px 14px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <MLed kind={checkResult.schedule_ok ? 'ok' : 'danger'} size={8} />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: checkResult.schedule_ok ? T.ok.base : T.danger.base }}>
+                      Schedule: {checkResult.schedule_ok ? 'On track' : 'Issue detected'}
+                    </span>
+                  </div>
+                )}
+                {checkResult.html ? (
+                  <div className="mobile-result-html" dangerouslySetInnerHTML={{ __html: checkResult.html }} />
+                ) : (
+                  <MCard padding="14px">
+                    <pre style={{ fontSize: 11, fontFamily: T.font.mono, color: T.fg[2], whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {JSON.stringify(checkResult, null, 2)}
+                    </pre>
+                  </MCard>
+                )}
+                {/* Approve / Reject — available as soon as a check is run */}
+                <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${T.border.base}` }}>
+                  <ErrorBox msg={approveError} onDismiss={() => setApproveError('')} />
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <MButton variant="ghost" fullWidth onClick={() => handleApprove('reject')} disabled={!!approveLoading} style={{ borderColor: T.danger.base, color: T.danger.base }}>
+                      {approveLoading === 'reject' ? <Spinner /> : '✕'} Reject
+                    </MButton>
+                    <MButton variant="primary" fullWidth onClick={() => handleApprove('approve')} disabled={!!approveLoading} style={{ background: T.ok.base }}>
+                      {approveLoading === 'approve' ? <Spinner /> : '✓'} Approve
+                    </MButton>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── AI tab ── */}
+        {subTab === 'ai' && (
+          <div className="vp-fade">
+            <ErrorBox msg={aiError} onDismiss={() => setAiError('')} />
+            {!aiResult ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: '40px 20px', textAlign: 'center' }}>
+                <div style={{ fontSize: 40 }}>🤖</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: T.fg[1] }}>No AI audit yet</div>
+                <div style={{ fontSize: 12, color: T.fg[3] }}>Run an AI audit to get confidence scoring and detailed analysis.</div>
+                <MButton variant="primary" onClick={runAudit} disabled={aiLoading || enrichLoading}>
+                  {aiLoading ? <Spinner /> : '🤖'} Run AI Audit
+                </MButton>
+              </div>
+            ) : aiResult.overloaded ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '32px 20px', textAlign: 'center' }}>
+                <div style={{ fontSize: 36 }}>⏳</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: T.warn.base }}>AI model temporarily busy</div>
+                <div style={{ fontSize: 12, color: T.fg[2], lineHeight: 1.6, maxWidth: 280 }}>{aiResult.summary}</div>
+                <MButton variant="soft" onClick={runAudit} disabled={aiLoading}>
+                  {aiLoading ? <Spinner /> : '↺'} Try Again
+                </MButton>
+              </div>
+            ) : (
+              <>
+                {aiResult.confidence != null && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: T.bg.surface1, border: `1px solid ${T.border.base}`, borderRadius: 10, padding: '12px 14px', marginBottom: 12 }}>
+                    <div>
+                      <MOverline style={{ marginBottom: 3 }}>Confidence</MOverline>
+                      <div style={{ fontSize: 24, fontWeight: 700, fontFamily: T.font.mono, color: aiResult.confidence < 60 ? T.danger.base : aiResult.confidence < 80 ? T.warn.base : T.ok.base }}>
+                        {aiResult.confidence}%
+                      </div>
+                    </div>
+                    <MBadge kind={aiResult.confidence < 60 ? 'danger' : aiResult.confidence < 80 ? 'warn' : 'ok'}>
+                      {aiResult.confidence < 60 ? 'Low' : aiResult.confidence < 80 ? 'Medium' : 'High'}
+                    </MBadge>
+                  </div>
+                )}
+                {aiResult.html ? (
+                  <div className="mobile-result-html" dangerouslySetInnerHTML={{ __html: aiResult.html }} />
+                ) : aiResult.summary ? (
+                  <MCard padding="14px">
+                    <div style={{ fontSize: 13, color: T.fg[2], lineHeight: 1.6 }}>{aiResult.summary}</div>
+                  </MCard>
+                ) : null}
+                <ErrorBox msg={approveError} onDismiss={() => setApproveError('')} />
+                <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+                  <MButton variant="ghost" fullWidth onClick={() => handleApprove('reject')} disabled={!!approveLoading} style={{ borderColor: T.danger.base, color: T.danger.base }}>
+                    {approveLoading === 'reject' ? <Spinner /> : '✕'} Reject
+                  </MButton>
+                  <MButton variant="primary" fullWidth onClick={() => handleApprove('approve')} disabled={!!approveLoading} style={{ background: T.ok.base }}>
+                    {approveLoading === 'approve' ? <Spinner /> : '✓'} Approve
+                  </MButton>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ORPHANS SCREEN
+   ═════════════════════════════════════════════════════════════════════════ */
+function OrphansScreen({ token }) {
+  const [daysAhead, setDaysAhead] = useState('7');
+  const [daysBack, setDaysBack] = useState('5');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  async function runScan() {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await mapi('GET', `/api/orphan-scan?days_ahead=${daysAhead}&days_back=${daysBack}`, null, token);
+      setResult(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function statusKind(s) {
+    if (!s) return 'neutral';
+    if (s === 'no_jira')   return 'danger';
+    if (s === 'no_gsheet') return 'warn';
+    if (s === 'auto')      return 'info';
+    if (s === 'ok')        return 'ok';
+    return 'neutral';
+  }
+  function statusLabel(s) {
+    if (s === 'no_jira')   return 'No JIRA';
+    if (s === 'no_gsheet') return 'No GSheet';
+    if (s === 'auto')      return 'Auto';
+    if (s === 'ok')        return 'OK';
+    return s || '—';
+  }
+  function statusEmoji(s) {
+    if (s === 'no_jira')   return '🔴';
+    if (s === 'no_gsheet') return '🟡';
+    if (s === 'auto')      return '🔵';
+    return '🟢';
+  }
+
+  const groups = result?.results ? (() => {
+    const g = {};
+    result.results.forEach(item => {
+      const k = item.status || 'unknown';
+      if (!g[k]) g[k] = [];
+      g[k].push(item);
+    });
+    return g;
+  })() : null;
+
+  const groupOrder = ['no_jira', 'no_gsheet', 'auto', 'ok'];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ padding: '14px 16px 12px', background: T.bg.surface1, borderBottom: `1px solid ${T.border.base}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: T.fg[1], flex: 1 }}>Orphan Scanner</div>
+          <MLed kind="info" size={8} />
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+          <div style={{ flex: 1 }}>
+            <MOverline style={{ marginBottom: 5 }}>Days Ahead</MOverline>
+            <input type="number" className="vp-select" value={daysAhead} onChange={e => setDaysAhead(e.target.value)} min="0" max="60" style={{ textAlign: 'center' }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <MOverline style={{ marginBottom: 5 }}>Days Back</MOverline>
+            <input type="number" className="vp-select" value={daysBack} onChange={e => setDaysBack(e.target.value)} min="0" max="60" style={{ textAlign: 'center' }} />
+          </div>
+          <MButton variant="primary" onClick={runScan} disabled={loading} style={{ flexShrink: 0 }}>
+            {loading ? <Spinner /> : 'Scan'}
+          </MButton>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px 24px' }}>
+        <ErrorBox msg={error} onDismiss={() => setError('')} />
+
+        {loading && <SpinnerLg />}
+
+        {!loading && result && (
+          <>
+            {/* Summary grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 16 }}>
+              {[
+                { label: 'Total', value: result.total ?? (result.results?.length ?? 0), kind: 'neutral' },
+                { label: 'Matched', value: result.matched ?? result.results?.filter(r => r.status === 'ok' || r.status === 'auto').length ?? 0, kind: 'ok' },
+                { label: 'Orphans', value: result.orphans ?? result.results?.filter(r => r.status !== 'ok').length ?? 0, kind: 'danger' },
+              ].map(m => (
+                <MCard key={m.label} padding="12px 10px" style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 22, fontWeight: 700, fontFamily: T.font.mono, color: m.kind === 'neutral' ? T.fg[1] : m.kind === 'ok' ? T.ok.base : T.danger.base }}>{m.value}</div>
+                  <MOverline style={{ marginTop: 3 }}>{m.label}</MOverline>
+                </MCard>
+              ))}
+            </div>
+
+            {/* Grouped results */}
+            {groups && groupOrder.filter(k => groups[k]?.length).map(groupKey => (
+              <div key={groupKey} style={{ marginBottom: 16 }}>
+                <MSectionHeader>{statusEmoji(groupKey)} {statusLabel(groupKey)} ({groups[groupKey].length})</MSectionHeader>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {groups[groupKey].map((item, i) => (
+                    <MCard key={i} padding="12px 14px">
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                        <MBadge kind={statusKind(item.status)}>{statusLabel(item.status)}</MBadge>
+                        {item.config_ok != null && <MBadge kind={item.config_ok ? 'ok' : 'warn'}>{item.config_ok ? 'Config OK' : 'Config !'}</MBadge>}
+                        <span style={{ marginLeft: 'auto', fontSize: 10, fontFamily: T.font.mono, color: T.fg[4] }}>{item.sendout_id || '—'}</span>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: T.fg[1], marginBottom: 3 }}>{item.name || item.client || '—'}</div>
+                      <div style={{ fontSize: 11, color: T.fg[3], marginBottom: item.tags?.length ? 8 : 0 }}>
+                        {item.client && item.name && item.client !== item.name && <span style={{ fontWeight: 600 }}>{item.client} · </span>}
+                        {fmtDate(item.date)}
+                      </div>
+                      {item.tags?.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {item.tags.map((tag, ti) => {
+                            const kind = typeof tag === 'object'
+                              ? (tag.type === 'excl' ? 'excl' : tag.type === 'incl' ? 'incl' : 'neutral')
+                              : 'neutral';
+                            const label = typeof tag === 'object' ? tag.value : tag;
+                            return <MTag key={ti} kind={kind}>{label}</MTag>;
+                          })}
+                        </div>
+                      )}
+                    </MCard>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            {result.results?.length === 0 && (
+              <div style={{ textAlign: 'center', color: T.fg[4], padding: 32, fontSize: 13 }}>No orphans found in this window.</div>
+            )}
+          </>
+        )}
+
+        {!loading && !result && !error && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '40px 20px', textAlign: 'center' }}>
+            <div style={{ fontSize: 40 }}>🔍</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: T.fg[1] }}>Ready to scan</div>
+            <div style={{ fontSize: 12, color: T.fg[3] }}>Set the window above and tap Scan to find unmatched sendouts.</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DASHBOARD SCREEN
+   ═════════════════════════════════════════════════════════════════════════ */
+function DashboardScreen({ token }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    mapi('GET', '/api/dashboard', null, token)
+      .then(d => { setData(d); setError(''); })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  function logKind(action) {
+    if (!action) return 'neutral';
+    const a = action.toLowerCase();
+    if (a.includes('pass') || a.includes('approve') || a.includes('ok')) return 'ok';
+    if (a.includes('fail') || a.includes('reject') || a.includes('error')) return 'danger';
+    if (a.includes('warn') || a.includes('audit')) return 'warn';
+    if (a.includes('check') || a.includes('validate')) return 'info';
+    return 'neutral';
+  }
+
+  const alertCount = data?.log?.filter(l => logKind(l.action) === 'danger').length ?? 0;
+  const avgAudit = data?.avg_audit != null ? `${data.avg_audit}s` : '—';
+
+  const metrics = [
+    { label: 'Validations', value: data?.total ?? '—', kind: 'neutral' },
+    { label: 'Pass Rate', value: data?.pass_rate != null ? `${Math.round(data.pass_rate)}%` : '—', kind: data?.pass_rate >= 80 ? 'ok' : data?.pass_rate >= 60 ? 'warn' : 'danger' },
+    { label: 'Avg Audit', value: avgAudit, kind: 'neutral' },
+    { label: 'Alerts', value: alertCount, kind: alertCount > 0 ? 'danger' : 'ok' },
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ padding: '14px 16px 12px', background: T.bg.surface1, borderBottom: `1px solid ${T.border.base}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: T.fg[1], flex: 1 }}>Dashboard</div>
+          <MLed kind="ok" pulse size={8} />
+          <span style={{ fontSize: 10, fontFamily: T.font.mono, color: T.ok.base, letterSpacing: '.08em' }}>LIVE</span>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px 24px' }}>
+        <ErrorBox msg={error} onDismiss={() => setError('')} />
+
+        {loading ? <SpinnerLg /> : (
+          <>
+            {/* Metric cards */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 20 }}>
+              {metrics.map(m => (
+                <MCard key={m.label} padding="14px 12px">
+                  <MOverline style={{ marginBottom: 6 }}>{m.label}</MOverline>
+                  <div style={{ fontSize: 28, fontWeight: 700, fontFamily: T.font.mono, color: m.kind === 'ok' ? T.ok.base : m.kind === 'danger' ? T.danger.base : m.kind === 'warn' ? T.warn.base : T.fg[1] }}>
+                    {m.value}
+                  </div>
+                </MCard>
+              ))}
+            </div>
+
+            {/* Audit log */}
+            {data?.log?.length > 0 && (
+              <>
+                <MSectionHeader>Audit Log</MSectionHeader>
+                <MCard padding="0">
+                  {data.log.slice().reverse().map((entry, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 14px', borderBottom: i < data.log.length - 1 ? `1px solid ${T.border.base}` : 'none' }}>
+                      <MLed kind={logKind(entry.action)} size={7} style={{ marginTop: 3 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: T.fg[2] }}>{entry.action || '—'}</span>
+                          {entry.user && <span style={{ fontSize: 10, color: T.fg[4] }}>by {entry.user}</span>}
+                        </div>
+                        {entry.detail && <div style={{ fontSize: 11, color: T.fg[3], wordBreak: 'break-all' }}>{entry.detail}</div>}
+                        {entry.ts && <div style={{ fontSize: 10, fontFamily: T.font.mono, color: T.fg[4], marginTop: 2 }}>{entry.ts}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </MCard>
+              </>
+            )}
+
+            {!data?.log?.length && !error && (
+              <div style={{ textAlign: 'center', color: T.fg[4], fontSize: 13, padding: '24px 0' }}>No audit log entries yet.</div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PROFILE SCREEN
+   ═════════════════════════════════════════════════════════════════════════ */
+function ProfileScreen({ user, token, onSignOut }) {
+  const [slackStatus, setSlackStatus] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [signOutLoading, setSignOutLoading] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    mapi('GET', '/api/slack/status', null, token)
+      .then(s => setSlackStatus(s))
+      .catch(() => setSlackStatus(null));
+  }, []);
+
+  async function refreshGSheet() {
+    setRefreshing(true);
+    setMsg('');
+    try {
+      await mapi('POST', '/api/gsheet/refresh', null, token);
+      setMsg('G-Sheet refreshed successfully.');
+    } catch (err) {
+      setMsg('Refresh failed: ' + err.message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function handleSignOut() {
+    setSignOutLoading(true);
+    try {
+      await mapi('POST', '/api/auth/logout', null, token).catch(() => {});
+    } finally {
+      onSignOut();
+    }
+  }
+
+  const initials = (user?.name || 'U').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+
+  const connections = [
+    { name: 'JIRA', kind: 'ok', desc: 'Connected' },
+    { name: 'DMA', kind: 'ok', desc: 'Mapped' },
+    { name: 'G-Sheet', kind: 'ok', desc: 'Synced' },
+    { name: 'Slack', kind: slackStatus?.configured ? 'ok' : 'warn', desc: slackStatus?.configured ? 'Webhook active' : 'No webhook set' },
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ padding: '14px 16px 12px', background: T.bg.surface1, borderBottom: `1px solid ${T.border.base}` }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: T.fg[1] }}>Profile</div>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px 24px' }}>
+        {/* Avatar card */}
+        <MCard padding="20px 16px" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{ width: 52, height: 52, borderRadius: '50%', background: T.brand.soft, border: `2px solid ${T.brand.base}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 700, color: T.brand.text, flexShrink: 0 }}>
+            {initials}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: T.fg[1] }}>{user?.name || 'User'}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+              <MLed kind="ok" pulse size={7} />
+              <span style={{ fontSize: 11, fontFamily: T.font.mono, color: T.ok.base, letterSpacing: '.06em' }}>ACTIVE SESSION</span>
+            </div>
+          </div>
+        </MCard>
+
+        {/* Connections */}
+        <MSectionHeader>Connections</MSectionHeader>
+        <MCard padding="0" style={{ marginBottom: 16 }}>
+          {connections.map((conn, i) => (
+            <div key={conn.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderBottom: i < connections.length - 1 ? `1px solid ${T.border.base}` : 'none' }}>
+              <MLed kind={conn.kind} size={8} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.fg[1] }}>{conn.name}</div>
+              </div>
+              <MBadge kind={conn.kind}>{conn.desc}</MBadge>
+            </div>
+          ))}
+        </MCard>
+
+        {/* Tools */}
+        <MSectionHeader>Tools</MSectionHeader>
+        {msg && (
+          <div style={{ background: T.info.soft, border: `1px solid ${T.info.ring}`, borderRadius: 8, padding: '9px 12px', marginBottom: 10, fontSize: 12, color: T.info.base }}>{msg}</div>
+        )}
+        <MCard padding="0" style={{ marginBottom: 16 }}>
+          {[
+            { label: 'Refresh G-Sheet', desc: 'Pull latest data from spreadsheet', action: refreshGSheet, loading: refreshing },
+          ].map((tool, i) => (
+            <div key={tool.label} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.fg[1] }}>{tool.label}</div>
+                <div style={{ fontSize: 11, color: T.fg[3], marginTop: 2 }}>{tool.desc}</div>
+              </div>
+              <MButton variant="soft" size="sm" onClick={tool.action} disabled={tool.loading}>
+                {tool.loading ? <Spinner /> : 'Run'}
+              </MButton>
+            </div>
+          ))}
+        </MCard>
+
+        {/* Session info */}
+        <MSectionHeader>Session</MSectionHeader>
+        <MCard padding="12px 14px" style={{ marginBottom: 12 }}>
+          {[
+            { label: 'App', value: 'Validator Pro Mobile' },
+            { label: 'Build', value: '2026.05 · stable' },
+            { label: 'Platform', value: 'FastAPI + React' },
+          ].map((row, i, arr) => (
+            <div key={row.label} style={{ display: 'flex', alignItems: 'center', padding: '7px 0', borderBottom: i < arr.length - 1 ? `1px solid ${T.border.base}` : 'none' }}>
+              <div className="vp-readout-label" style={{ flex: '0 0 76px', marginBottom: 0 }}>{row.label}</div>
+              <div style={{ fontSize: 11, fontFamily: T.font.mono, color: T.fg[2] }}>{row.value}</div>
+            </div>
+          ))}
+        </MCard>
+
+        {/* Switch to desktop */}
+        <a href="/?force=desktop" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', marginBottom: 12, borderRadius: 10, background: T.bg.surface1, border: `1px solid ${T.border.base}`, textDecoration: 'none', color: T.fg[2] }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>Switch to Desktop version</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.fg[4]} strokeWidth="1.5" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
+        </a>
+
+        {/* Sign out */}
+        <MButton variant="danger" fullWidth onClick={handleSignOut} disabled={signOutLoading}>
+          {signOutLoading ? <Spinner /> : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          )}
+          Sign Out
+        </MButton>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOBILE APP ROOT
+   ═════════════════════════════════════════════════════════════════════════ */
+function MobileApp() {
+  // Share the same localStorage keys as the desktop app (vp_token + vp_name)
+  // so switching between / and /mobile never requires re-login.
+  const [auth, setAuth] = useState(() => {
+    const tok  = localStorage.getItem('vp_token') || '';
+    const name = localStorage.getItem('vp_name')  || '';
+    return tok ? { token: tok, name } : null;
+  });
+  const [activeTab, setActiveTab] = useState('validator');
+  const [openTicket, setOpenTicket] = useState(null);
+
+  function handleLogin(authData) {
+    localStorage.setItem('vp_token', authData.token);
+    localStorage.setItem('vp_name',  authData.name);
+    setAuth(authData);
+  }
+
+  function handleSignOut() {
+    localStorage.removeItem('vp_token');
+    localStorage.removeItem('vp_name');
+    setAuth(null);
+    setOpenTicket(null);
+    setActiveTab('validator');
+  }
+
+  function handleOpenTicket(ticket) {
+    setOpenTicket(ticket);
+  }
+
+  function handleBack() {
+    setOpenTicket(null);
+  }
+
+  function handleTabChange(tab) {
+    setActiveTab(tab);
+    setOpenTicket(null);
+  }
+
+  const tabs = [
+    { id: 'validator', label: 'Validator', Icon: IconValidator },
+    { id: 'orphans',   label: 'Orphans',   Icon: IconOrphans   },
+    { id: 'dashboard', label: 'Dashboard', Icon: IconDashboard  },
+    { id: 'profile',   label: 'Profile',   Icon: IconProfile    },
+  ];
+
+  if (!auth) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', overflow: 'hidden', background: T.bg.app }}>
+      {/* Main content */}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {activeTab === 'validator' && (
+          openTicket
+            ? <ValidatorScreen key={openTicket.key} ticket={openTicket} token={auth.token} userName={auth.name} onBack={handleBack} />
+            : <QueueScreen token={auth.token} onOpenTicket={handleOpenTicket} />
+        )}
+        {activeTab === 'orphans' && (
+          <OrphansScreen token={auth.token} />
+        )}
+        {activeTab === 'dashboard' && (
+          <DashboardScreen token={auth.token} />
+        )}
+        {activeTab === 'profile' && (
+          <ProfileScreen user={auth} token={auth.token} onSignOut={handleSignOut} />
+        )}
+      </div>
+
+      {/* Bottom tab bar */}
+      <div className="vp-tab-bar">
+        {tabs.map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            className={`vp-tab-btn${activeTab === id ? ' active' : ''}`}
+            onClick={() => handleTabChange(id)}
+          >
+            <Icon active={activeTab === id} />
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<MobileApp />);
+</script>
+</body>
+</html>

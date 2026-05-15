@@ -1,0 +1,1894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Validator Pro — 360Dialog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Space Grotesk', system-ui, sans-serif; background: #f6f8fb; }
+    @keyframes vp-led-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    @keyframes vp-spin {
+      to { transform: rotate(360deg); }
+    }
+    .vp-spinner {
+      display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+      border: 2px solid #0fb5b540; border-top-color: #0fb5b5;
+      animation: vp-spin 0.7s linear infinite; vertical-align: middle;
+    }
+    /* Result HTML styles injected from Python — needs room */
+    .result-frame { width: 100%; overflow: auto; }
+    .result-frame * { max-width: 100%; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Tokens + VP panel interactivity (must load before Babel and before any injected HTML) -->
+<script>
+window.tokens = {
+  bg: { app:'#f6f8fb', appSoft:'#f0f3f7', surface1:'#ffffff', surface2:'#f6f8fb', surface3:'#eef2f7' },
+  border: { base:'#e6eaef', input:'#d6dce5', hud:'#b3dfdf' },
+  fg: { 1:'#0f1828', 2:'#475068', 3:'#8893a3', 4:'#aab3c1' },
+  brand: { base:'#0fb5b5', hover:'#0ca0a0', soft:'#0fb5b515', ring:'#0fb5b540', text:'#0a8080', slide:'#0a8080', glow:'0 0 12px rgba(15,181,181,0.22)', glowSm:'0 0 6px rgba(15,181,181,0.30)', dark:'#0e2a2a' },
+  accent: { base:'#00a8c8', soft:'#00a8c815', ring:'#00a8c840', glow:'0 0 6px rgba(0,168,200,0.30)', glowSm:'0 0 4px rgba(0,168,200,0.35)' },
+  ok:     { base:'#0c8f4a', soft:'#0c8f4a15', soft2:'#0c8f4a08', ring:'#0c8f4a40', border:'#0c8f4a55', glow:'0 0 6px rgba(12,143,74,0.30)' },
+  danger: { base:'#dc2626', soft:'#dc262615', soft2:'#dc262608', ring:'#dc262640', border:'#dc262655', glow:'0 0 6px rgba(220,38,38,0.32)' },
+  warn:   { base:'#c47d0a', soft:'#c47d0a15', soft2:'#c47d0a08', ring:'#c47d0a40', glow:'0 0 6px rgba(196,125,10,0.30)' },
+  info:   { base:'#0a8080', soft:'#0fb5b515', ring:'#0fb5b540' },
+  r: { xs:2, sm:3, md:4, lg:6, xl:8, pill:999 },
+  font: { sans:"'Space Grotesk',system-ui,sans-serif", mono:"'JetBrains Mono',ui-monospace,monospace", display:"'Space Grotesk',sans-serif" },
+  ls: { overline:'0.12em', overlineLoose:'0.16em', display:'-0.02em', data:'0.06em' },
+};
+
+/* ── VP result-panel interactivity ──────────────────────────────────────────
+   build_results_html() outputs onclick="showTab(...)" etc. as inline handlers.
+   React's dangerouslySetInnerHTML never executes injected <script> tags, so
+   these functions must live here as globals BEFORE any result HTML is rendered.
+   ─────────────────────────────────────────────────────────────────────────── */
+function showTab(id, btn) {
+  document.querySelectorAll('.vp-panel').forEach(function(p){ p.classList.remove('active'); });
+  document.querySelectorAll('.vp-nav-btn').forEach(function(b){ b.classList.remove('active'); });
+  var panel = document.getElementById('vp-panel-' + id);
+  if (panel) panel.classList.add('active');
+  if (btn) btn.classList.add('active');
+}
+function toggleSlide(uid) {
+  var body = document.getElementById(uid);
+  var arr  = document.getElementById('arr_' + uid);
+  if (!body) return;
+  var isOpen = body.style.display === 'block';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (arr) arr.classList.toggle('open', !isOpen);
+}
+function toggleVis(uid) {
+  var el = document.getElementById(uid);
+  if (!el) return;
+  var hidden = el.style.display === 'none' || el.style.display === '';
+  el.style.display = hidden ? 'block' : 'none';
+}
+</script>
+
+<!-- React + ReactDOM -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<!-- Babel standalone for JSX -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel">
+/* ─────────────────────────────────────────────────────────────────────────────
+   ALL JSX — tokens already on window, React/ReactDOM loaded above
+   ───────────────────────────────────────────────────────────────────────── */
+const { useState, useEffect, useRef, useCallback } = React;
+const t = window.tokens;
+
+/* ── API helper ──────────────────────────────────────────────────────────── */
+async function api(method, path, body, token) {
+  const opts = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  };
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  return res.json();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PRIMITIVES  (from Primitives.jsx)
+   ═════════════════════════════════════════════════════════════════════════ */
+function Overline({ children, style }) {
+  return <div style={{ fontFamily:t.font.mono, fontSize:11, fontWeight:500, textTransform:'uppercase', letterSpacing:t.ls.overline, color:t.fg[3], ...style }}>{children}</div>;
+}
+function SectionHeader({ children, style }) {
+  return (
+    <div style={{ fontFamily:t.font.mono, fontSize:11, fontWeight:500, textTransform:'uppercase', letterSpacing:t.ls.overlineLoose, color:t.fg[3], margin:'28px 0 12px', paddingBottom:8, borderBottom:`1px solid ${t.border.base}`, display:'flex', alignItems:'center', gap:10, ...style }}>
+      <span style={{ color:t.accent.base, letterSpacing:0 }}>—</span><span>{children}</span>
+    </div>
+  );
+}
+function Led({ kind='accent', pulse, style }) {
+  const m = { accent:{c:t.accent.base,g:t.accent.glow}, ok:{c:t.ok.base,g:t.ok.glow}, danger:{c:t.danger.base,g:t.danger.glow}, warn:{c:t.warn.base,g:t.warn.glow}, dim:{c:t.fg[4],g:'none'} };
+  const {c,g} = m[kind]||m.accent;
+  return <span style={{ display:'inline-block', width:8, height:8, borderRadius:'50%', background:c, boxShadow:g, verticalAlign:'middle', animation:pulse?'vp-led-pulse 1.6s ease-in-out infinite':'none', ...style }} />;
+}
+const Corner = ({style}) => <span style={{ position:'absolute', width:14, height:14, border:`1px solid ${t.accent.base}`, pointerEvents:'none', ...style }} />;
+function HudPanel({ children, style }) {
+  return (
+    <div style={{ position:'relative', background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'18px 22px', ...style }}>
+      <Corner style={{ top:-1, left:-1, borderRight:'none', borderBottom:'none' }} />
+      <Corner style={{ top:-1, right:-1, borderLeft:'none', borderBottom:'none' }} />
+      <Corner style={{ bottom:-1, left:-1, borderRight:'none', borderTop:'none' }} />
+      <Corner style={{ bottom:-1, right:-1, borderLeft:'none', borderTop:'none' }} />
+      {children}
+    </div>
+  );
+}
+function Readout({ label, value, valueKind, sub, subKind }) {
+  const vc = ({accent:t.accent.base, ok:t.ok.base, danger:t.danger.base, warn:t.warn.base}[valueKind])||t.fg[1];
+  const sc = ({ok:t.ok.base, danger:t.danger.base, warn:t.warn.base, accent:t.accent.base}[subKind])||t.fg[3];
+  return (
+    <div style={{ display:'inline-flex', flexDirection:'column', gap:4 }}>
+      <Overline>— {label}</Overline>
+      <div style={{ fontFamily:t.font.mono, fontSize:18, fontWeight:600, color:vc, letterSpacing:t.ls.data }}>{value}</div>
+      {sub && <div style={{ fontFamily:t.font.mono, fontSize:10, color:sc, letterSpacing:t.ls.overline }}>{sub}</div>}
+    </div>
+  );
+}
+function Bracket({ children, color }) {
+  return <span style={{ fontFamily:t.font.mono, fontSize:11, letterSpacing:t.ls.overline, color:color||t.accent.base }}><span style={{opacity:.7}}>[ </span>{children}<span style={{opacity:.7}}> ]</span></span>;
+}
+function Card({ title, children, style }) {
+  return <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'16px 18px', ...style }}>{title?<Overline style={{marginBottom:10}}>{title}</Overline>:null}{children}</div>;
+}
+function Badge({ kind='info', children, style }) {
+  const m = { ok:{bg:t.ok.soft,fg:t.ok.base,bd:t.ok.ring}, danger:{bg:t.danger.soft,fg:t.danger.base,bd:t.danger.ring}, warn:{bg:t.warn.soft,fg:t.warn.base,bd:t.warn.ring}, info:{bg:t.info.soft,fg:t.brand.text,bd:t.info.ring} };
+  const c = m[kind]||m.info;
+  return <span style={{ display:'inline-block', padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:600, background:c.bg, color:c.fg, border:`1px solid ${c.bd}`, ...style }}>{children}</span>;
+}
+function CheckRow({ kind='ok', label, value }) {
+  const c = { ok:{bg:t.ok.soft2,bd:t.ok.soft,icon:'✅'}, fail:{bg:t.danger.soft2,bd:t.danger.soft,icon:'❌'}, warn:{bg:t.warn.soft2,bd:t.warn.soft,icon:'⚠️'} }[kind];
+  return (
+    <div style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'10px 14px', borderRadius:4, marginBottom:8, fontSize:13, background:c.bg, border:`1px solid ${c.bd}` }}>
+      <span style={{fontSize:15,marginTop:1}}>{c.icon}</span>
+      <div><div style={{fontSize:11,color:t.fg[3]}}>{label}</div><div style={{color:t.fg[1],marginTop:2,wordBreak:'break-all'}}>{value}</div></div>
+    </div>
+  );
+}
+function Button({ variant='primary', onClick, children, style, disabled }) {
+  const [hover, setHover] = useState(false);
+  const base = {
+    primary: { background:t.brand.base, color:'#fff', border:'none' },
+    ghost:   { background:'transparent', color:t.fg[3], border:`1px solid ${t.border.input}` },
+    danger:  { background:'transparent', color:t.danger.base, border:`1px solid ${t.danger.ring}` },
+    toggle:  { background:'transparent', color:t.fg[3], border:`1px solid ${t.border.input}`, borderRadius:4, padding:'5px 12px', fontSize:12 },
+  }[variant]||{ background:t.brand.base, color:'#fff', border:'none' };
+  const hov = hover&&!disabled ? (variant==='primary'?{background:t.brand.hover}:{borderColor:t.brand.base,color:t.brand.text}) : {};
+  return (
+    <button onClick={onClick} disabled={disabled} onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
+      style={{ fontFamily:t.font.sans, fontWeight:500, fontSize:13, borderRadius:4, padding:'9px 16px', cursor:disabled?'not-allowed':'pointer', transition:'all .18s', opacity:disabled?.5:1, ...base, ...hov, ...style }}>
+      {children}
+    </button>
+  );
+}
+function Input({ value, onChange, placeholder, style, type='text', onKeyDown }) {
+  const [focus, setFocus] = useState(false);
+  return (
+    <input type={type} value={value||''} onChange={e=>onChange&&onChange(e.target.value)} placeholder={placeholder}
+      onFocus={()=>setFocus(true)} onBlur={()=>setFocus(false)} onKeyDown={onKeyDown}
+      style={{ background:t.bg.surface2, border:`1px solid ${focus?t.brand.base:t.border.input}`, color:t.fg[1], borderRadius:4, padding:'9px 12px', fontFamily:t.font.sans, fontSize:13, outline:'none', boxShadow:focus?`0 0 0 3px ${t.brand.ring}`:'none', width:'100%', ...style }} />
+  );
+}
+function Select({ value, onChange, options=[], style }) {
+  return (
+    <select value={value||''} onChange={e=>onChange&&onChange(e.target.value)}
+      style={{ background:t.bg.surface2, border:`1px solid ${t.border.input}`, color:t.fg[1], borderRadius:4, padding:'9px 12px', fontFamily:t.font.sans, fontSize:13, outline:'none', width:'100%', appearance:'none', backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%238890b5' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`, backgroundRepeat:'no-repeat', backgroundPosition:'right 10px center', paddingRight:30, ...style }}>
+      {options.map(o=><option key={o.value??o} value={o.value??o}>{o.label??o}</option>)}
+    </select>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SHELL  (from Shell.jsx)
+   ═════════════════════════════════════════════════════════════════════════ */
+function Topbar({ title, user }) {
+  const [tick, setTick] = useState(new Date().toISOString().slice(11,19));
+  useEffect(()=>{ const id=setInterval(()=>setTick(new Date().toISOString().slice(11,19)),1000); return()=>clearInterval(id); },[]);
+  return (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'14px 28px', background:t.bg.app, borderBottom:`1px solid ${t.border.base}` }}>
+      <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+        <img src="/assets/validator-mark.svg" alt="360dialog" style={{ width:36, height:36, borderRadius:4, display:'block' }} onError={e=>{e.target.style.display='none'}} />
+        <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
+          <div style={{ fontFamily:t.font.display, fontSize:18, fontWeight:600, color:t.fg[1], letterSpacing:'-0.01em' }}>{title}</div>
+          <div style={{ fontFamily:t.font.mono, fontSize:10, letterSpacing:'0.16em', textTransform:'uppercase', color:t.brand.text }}>360DIALOG · OPS · v2.0</div>
+        </div>
+      </div>
+      <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:6, fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>
+          <Led kind="ok" pulse /><span>360dialog.atlassian.net</span>
+        </div>
+        <div style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[4] }}>{tick}</div>
+      </div>
+    </div>
+  );
+}
+
+function ConnRow({ led, label, meta }) {
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:8, fontFamily:t.font.mono, fontSize:11, color:t.fg[3], letterSpacing:'0.04em' }}>
+      <Led kind={led} pulse={led==='ok'||led==='warn'} />
+      <span style={{textTransform:'uppercase'}}>{label}</span>
+      <span style={{marginLeft:'auto', color:t.fg[4]}}>{meta}</span>
+    </div>
+  );
+}
+function NavPill({ active, onClick, children }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div onClick={onClick} onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
+      style={{ flex:1, padding:'9px 12px', background:active?t.brand.base:(hover?t.bg.surface3:'transparent'), color:active?'#fff':(hover?t.fg[1]:t.fg[3]), borderRadius:4, cursor:'pointer', userSelect:'none', fontFamily:t.font.sans, fontSize:13, fontWeight:500, transition:'all .18s', whiteSpace:'nowrap', textAlign:'center' }}>
+      {children}
+    </div>
+  );
+}
+function MainTabs({ active, onChange }) {
+  const tabs = ['Validator', 'Orphan Scanner', 'Dashboard', 'Sendout Form'];
+  return (
+    <div style={{ position:'sticky', top:0, zIndex:99, background:t.bg.app, borderBottom:`1px solid ${t.border.base}`, padding:'8px 28px' }}>
+      <div style={{ display:'flex', gap:4, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:8, padding:5, maxWidth:600 }}>
+        {tabs.map(tb=><NavPill key={tb} active={active===tb} onClick={()=>onChange(tb)}>{tb}</NavPill>)}
+      </div>
+    </div>
+  );
+}
+function Sidebar({ user, onSignOut, onRefreshSheet, onClearCache, gsheetStatus, slackStatus, onTestSlack }) {
+  const slackLed  = slackStatus==='ok' ? 'ok' : slackStatus==='none' ? 'warn' : 'dim';
+  const slackMeta = slackStatus==='ok' ? 'configured' : slackStatus==='none' ? 'no webhook' : 'unknown';
+  return (
+    <aside style={{ width:240, flexShrink:0, background:t.bg.surface1, borderRight:`1px solid ${t.border.base}`, padding:18, display:'flex', flexDirection:'column', gap:14, minHeight:'100vh', fontFamily:t.font.sans, fontSize:13, color:t.fg[2] }}>
+      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <Led kind="ok" pulse />
+          <div style={{ fontWeight:600, color:t.fg[1] }}>{user}</div>
+        </div>
+        <Button variant="ghost" onClick={onSignOut}>Sign out</Button>
+      </div>
+      <hr style={{ border:'none', borderTop:`1px dashed ${t.border.hud}`, margin:'4px 0' }} />
+      <Overline style={{marginBottom:-4}}>— connections</Overline>
+      <ConnRow led="ok"        label="DMA API"   meta="live" />
+      <ConnRow led="ok"        label="JIRA"      meta="live" />
+      <ConnRow led={gsheetStatus==='ok'?'ok':'warn'} label="G-Sheet" meta={gsheetStatus==='ok'?'live':'stale'} />
+      <ConnRow led={slackLed}  label="Slack"     meta={slackMeta} />
+      <hr style={{ border:'none', borderTop:`1px dashed ${t.border.hud}`, margin:'4px 0' }} />
+      <Button variant="ghost" onClick={onRefreshSheet}>🔄 Refresh G-Sheet</Button>
+      <Button variant="ghost" onClick={onClearCache}>Clear Cache</Button>
+      {slackStatus==='ok' && (
+        <Button variant="ghost" onClick={onTestSlack}>🔔 Test Slack Alert</Button>
+      )}
+      <div style={{ marginTop:'auto', fontFamily:t.font.mono, fontSize:10, color:t.fg[4], lineHeight:1.7, letterSpacing:'0.08em' }}>
+        BUILD · <span style={{color:t.fg[3]}}>2026.05-stable</span>
+      </div>
+    </aside>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LOGIN  (from Login.jsx — wired to API)
+   ═════════════════════════════════════════════════════════════════════════ */
+function Login({ onSignIn }) {
+  const [u, setU] = useState('');
+  const [p, setP] = useState('');
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [now] = useState(() => new Date().toISOString());
+
+  const submit = async () => {
+    if (!u || !p) { setErr('Enter username and password'); return; }
+    setLoading(true); setErr('');
+    try {
+      const data = await api('POST', '/api/auth/login', { username: u, password: p });
+      onSignIn(data.token, data.name);
+    } catch (e) {
+      setErr(e.message || 'Invalid credentials');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight:'100vh', background:t.bg.app, display:'flex', justifyContent:'center', alignItems:'center', fontFamily:t.font.sans, padding:24 }}>
+      <HudPanel style={{ width:440, padding:32, background:t.bg.surface1 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', fontFamily:t.font.mono, fontSize:10, letterSpacing:'0.16em', textTransform:'uppercase', color:t.accent.base, marginBottom:18 }}>
+          <span style={{ display:'inline-flex', alignItems:'center', gap:8 }}><Led kind="accent" pulse /> Secure terminal</span>
+          <span style={{color:t.fg[4]}}>{now.slice(0,10)}</span>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:22 }}>
+          <img src="/assets/validator-mark.svg" alt="360dialog" style={{ width:52, height:52, borderRadius:4 }} onError={e=>{e.target.style.display='none'}} />
+          <div>
+            <div style={{ fontFamily:t.font.display, fontWeight:600, fontSize:22, color:t.fg[1], letterSpacing:'-0.01em' }}>Validator Pro</div>
+            <div style={{ fontFamily:t.font.mono, fontSize:10, letterSpacing:'0.16em', textTransform:'uppercase', color:t.fg[3], marginTop:2 }}>360dialog · sendout audit</div>
+          </div>
+        </div>
+        <hr style={{ border:'none', borderTop:`1px dashed ${t.border.hud}`, margin:'0 0 18px' }} />
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          <div>
+            <div style={{ fontFamily:t.font.mono, fontSize:10, letterSpacing:'0.12em', textTransform:'uppercase', color:t.fg[3], marginBottom:6 }}>— Operator</div>
+            <Input value={u} onChange={setU} placeholder="username" onKeyDown={e=>e.key==='Enter'&&submit()} />
+          </div>
+          <div>
+            <div style={{ fontFamily:t.font.mono, fontSize:10, letterSpacing:'0.12em', textTransform:'uppercase', color:t.fg[3], marginBottom:6 }}>— Passphrase</div>
+            <Input value={p} onChange={setP} type="password" onKeyDown={e=>e.key==='Enter'&&submit()} />
+          </div>
+          {err && <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft2, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:12, fontFamily:t.font.mono, display:'flex', alignItems:'center', gap:8 }}><Led kind="danger" pulse /> {err}</div>}
+          <Button onClick={submit} disabled={loading} style={{marginTop:4}}>{loading?<><span className="vp-spinner" /> Authenticating…</>:'Sign in →'}</Button>
+        </div>
+        <hr style={{ border:'none', borderTop:`1px dashed ${t.border.hud}`, margin:'22px 0 14px' }} />
+        <div style={{ fontFamily:t.font.mono, fontSize:10, color:t.fg[4], lineHeight:1.9, letterSpacing:'0.06em' }}>
+          <div>LOCKOUT · <span style={{color:t.fg[3]}}>5 attempts / 300s</span></div>
+          <div>BUILD · <span style={{color:t.accent.base}}>2026.05-stable</span></div>
+        </div>
+      </HudPanel>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   BULK RESULT PANEL
+   ═════════════════════════════════════════════════════════════════════════ */
+function BulkResultPanel({ results, mode, onBack }) {
+  const [openKey, setOpenKey] = useState(null);
+  const sorted = [...results].sort((a,b) => a.ticket_key.localeCompare(b.ticket_key));
+  const passed  = results.filter(r=>r.status==='passed').length;
+  const failed  = results.filter(r=>r.status==='failed').length;
+  const skipped = results.filter(r=>r.status==='skipped').length;
+  const errors  = results.filter(r=>r.status==='error').length;
+
+  const statusStyle = s => ({
+    passed:  { bg:t.ok.soft,     fg:t.ok.base,     bd:t.ok.ring,     icon:'✅' },
+    failed:  { bg:t.danger.soft, fg:t.danger.base,  bd:t.danger.ring, icon:'❌' },
+    skipped: { bg:t.warn.soft,   fg:t.warn.base,    bd:t.warn.ring,   icon:'⏭' },
+    error:   { bg:t.danger.soft, fg:t.danger.base,  bd:t.danger.ring, icon:'⚠️' },
+  }[s] || { bg:t.bg.surface3, fg:t.fg[3], bd:t.border.base, icon:'—' });
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+      <HudPanel>
+        <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+          <Button variant="ghost" onClick={onBack}>← Back to queue</Button>
+          <Bracket>{mode === 'ai' ? '🤖 AI Bulk Audit' : '⚡ Bulk Regular Check'}</Bracket>
+          <div style={{ marginLeft:'auto', display:'flex', gap:20 }}>
+            <Readout label="Passed"  value={<span>{passed}</span>}  valueKind="ok" />
+            <Readout label="Failed"  value={<span>{failed}</span>}  valueKind={failed>0?'danger':undefined} />
+            <Readout label="Skipped" value={<span>{skipped}</span>} valueKind={skipped>0?'warn':undefined} />
+            {errors>0 && <Readout label="Errors" value={<span>{errors}</span>} valueKind="danger" />}
+          </div>
+        </div>
+      </HudPanel>
+
+      <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
+        <div style={{ display:'grid', gridTemplateColumns:'28px 100px 160px 100px 72px', padding:'10px 14px', gap:12, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3] }}>
+          <div/><div>Ticket</div><div>Client</div><div>Sendout ID</div><div>Status</div>
+        </div>
+        {sorted.map(r => {
+          const s = statusStyle(r.status);
+          const isOpen = openKey === r.ticket_key;
+          return (
+            <React.Fragment key={r.ticket_key}>
+              <div onClick={()=>setOpenKey(isOpen ? null : r.ticket_key)}
+                style={{ display:'grid', gridTemplateColumns:'28px 100px 160px 100px 72px', padding:'11px 14px', gap:12, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isOpen?t.bg.surface2:'transparent', cursor:'pointer', alignItems:'center' }}>
+                <span style={{ fontSize:13, color:t.fg[4] }}>{isOpen?'▾':'›'}</span>
+                <span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[1] }}>{r.ticket_key}</span>
+                <span style={{ color:t.fg[2], fontSize:12 }}>{r.client}</span>
+                <span style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>{(r.sendout_id||'').slice(0,14)}{r.sendout_id?.length>14?'…':''}</span>
+                <span style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:11, padding:'3px 8px', borderRadius:999, background:s.bg, color:s.fg, border:`1px solid ${s.bd}`, whiteSpace:'nowrap' }}>{s.icon} {r.status}</span>
+              </div>
+              {isOpen && (
+                <div style={{ padding:'14px 20px', borderBottom:`1px solid ${t.border.base}`, background:t.bg.surface2 }}>
+                  {r.error_msg && <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft2, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:12, marginBottom:10 }}>⚠️ {r.error_msg}</div>}
+                  {r.status==='skipped' && <div style={{ padding:'10px 14px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12, marginBottom:10 }}>No matching sendout ID found in DMA or G-Sheet.</div>}
+                  {r.checks && r.checks.length > 0 && (
+                    <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                      {r.checks.map((c,i) => (
+                        <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'8px 12px', borderRadius:4, background:c.ok?t.ok.soft2:t.danger.soft2, border:`1px solid ${c.ok?t.ok.soft:t.danger.soft}`, fontSize:12 }}>
+                          <span style={{ flexShrink:0 }}>{c.ok?'✅':'❌'}</span>
+                          <div>
+                            <div style={{ fontWeight:600, color:t.fg[1], marginBottom:2 }}>{c.label}</div>
+                            <div style={{ color:t.fg[2] }}>{c.detail}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {r.report && !r.checks && (
+                    <pre style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[2], whiteSpace:'pre-wrap', wordBreak:'break-word', margin:0, lineHeight:1.7 }}>{r.report}</pre>
+                  )}
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   QUEUE  — sorted earliest first, Load ticket in toolbar, bulk actions
+   ═════════════════════════════════════════════════════════════════════════ */
+function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token, onBulkResult, fetchError }) {
+  const rows = rowsProp || [];
+  const [search, setSearch] = useState('');
+  const [clientFilter, setClientFilter] = useState('All clients');
+  const [selected, setSelected] = useState(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkError, setBulkError] = useState('');
+
+  // Sort ascending — earliest sendout date first
+  const sorted = [...rows].sort((a,b) => (a.date||'').localeCompare(b.date||''));
+
+  const clients = ['All clients', ...new Set(sorted.map(r=>r.client))];
+  const filtered = sorted.filter(r=>{
+    if (clientFilter!=='All clients' && r.client!==clientFilter) return false;
+    if (!search) return true;
+    const q=search.toLowerCase();
+    return r.key.toLowerCase().includes(q)||r.summary.toLowerCase().includes(q)||r.client.toLowerCase().includes(q);
+  });
+
+  const toggle = k => { const n=new Set(selected); n.has(k)?n.delete(k):n.add(k); setSelected(n); };
+  const toggleAll = () => {
+    const allKeys = new Set(filtered.map(r=>r.key));
+    const allSelected = [...allKeys].every(k=>selected.has(k));
+    if (allSelected) setSelected(prev => { const n=new Set(prev); allKeys.forEach(k=>n.delete(k)); return n; });
+    else setSelected(prev => new Set([...prev, ...allKeys]));
+  };
+  const selKeys = [...selected];
+  const singleSel = selKeys.length===1 ? selKeys[0] : null;
+  const multiSel  = selKeys.length>1;
+  const singleRow = singleSel ? rows.find(r=>r.key===singleSel) : null;
+  const allFilteredSelected = filtered.length>0 && filtered.every(r=>selected.has(r.key));
+
+  const statusDot = s => {
+    if (s==='In Progress') return { c:t.warn.base, label:'Active' };
+    if (s==='Open')        return { c:t.brand.base, label:'Open' };
+    if (s==='Resolved' || s==='Done') return { c:t.fg[4], label:'Done' };
+    return { c:t.fg[4], label: s?.split(' ')[0] || '—' };
+  };
+
+  const runBulk = async (mode) => {
+    setBulkLoading(true); setBulkError('');
+    try {
+      const endpoint = mode==='ai' ? '/api/bulk-ai-audit' : '/api/bulk-validate';
+      const data = await api('POST', endpoint, { ticket_keys: selKeys }, token);
+      onBulkResult(data, mode);
+    } catch(e) { setBulkError(e.message); }
+    finally { setBulkLoading(false); }
+  };
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+      {/* ── Toolbar ── */}
+      <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+        <Button variant="ghost" onClick={onRefresh} disabled={queueLoading}>
+          {queueLoading ? <><span className="vp-spinner" /> Loading…</> : '🔄 Refresh Queue'}
+        </Button>
+        <Input value={search} onChange={setSearch} placeholder="Search by key or summary…" style={{flex:1, minWidth:180}} />
+        <Select value={clientFilter} onChange={setClientFilter} options={clients} style={{width:200}} />
+
+        {/* Single selection — Load ticket */}
+        {singleSel && singleRow && (
+          <Button onClick={()=>onLoad(singleRow)} style={{flexShrink:0}}>
+            ▶ Load {singleSel}
+          </Button>
+        )}
+
+        {/* Multi selection — Bulk actions */}
+        {multiSel && (
+          <>
+            {bulkLoading
+              ? <span style={{ display:'inline-flex', alignItems:'center', gap:8, fontSize:13, color:t.fg[2] }}><span className="vp-spinner" /> Running…</span>
+              : <>
+                  <Button onClick={()=>runBulk('regular')} style={{flexShrink:0}}>⚡ Bulk Check ({selKeys.length})</Button>
+                  <Button onClick={()=>runBulk('ai')} style={{flexShrink:0}}>🤖 AI Bulk ({selKeys.length})</Button>
+                </>
+            }
+            <Button variant="ghost" onClick={()=>setSelected(new Set())} style={{flexShrink:0}}>✕ Clear</Button>
+          </>
+        )}
+      </div>
+
+      {bulkError && <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:13 }}>⚠️ {bulkError}</div>}
+
+      <div style={{ fontSize:12, color:t.fg[3] }}>
+        {filtered.length} ticket(s) · sorted by earliest date
+        {selected.size>0 && <span style={{color:t.brand.text, marginLeft:12}}>{selected.size} selected</span>}
+      </div>
+
+      {rows.length===0&&!queueLoading&&(
+        fetchError ? (
+          <div style={{ margin:'24px 0', padding:'14px 18px', background:t.danger.soft2, border:`1px solid ${t.danger.border}`, borderRadius:6, display:'flex', alignItems:'flex-start', gap:10 }}>
+            <span style={{ fontSize:16, lineHeight:1 }}>⚠️</span>
+            <div>
+              <div style={{ fontSize:13, fontWeight:600, color:t.danger.base, marginBottom:4 }}>Failed to load queue</div>
+              <div style={{ fontSize:12, color:t.fg[2], fontFamily:t.font.mono }}>{fetchError}</div>
+              <button onClick={onRefresh} style={{ marginTop:10, fontSize:12, fontWeight:600, color:t.brand.text, background:'none', border:'none', cursor:'pointer', padding:0 }}>↺ Try again</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding:32, textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>No tickets — click Refresh Queue</div>
+        )
+      )}
+
+      {filtered.length>0&&(
+        <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
+          {/* Header */}
+          <div style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 70px', padding:'10px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3], alignItems:'center' }}>
+            <div><input type="checkbox" checked={allFilteredSelected} onChange={toggleAll} title="Select all" /></div>
+            <div>ID</div><div>Summary</div><div>Client</div><div>Date</div><div>Status</div>
+          </div>
+          {filtered.map(r=>{
+            const isSel = selected.has(r.key);
+            const ds = statusDot(r.status);
+            return (
+              <div key={r.key} onClick={()=>toggle(r.key)}
+                style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 70px', padding:'11px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isSel?t.brand.soft:'transparent', cursor:'pointer', transition:'background .12s', alignItems:'center' }}>
+                <div onClick={e=>e.stopPropagation()}>
+                  <input type="checkbox" checked={isSel} onChange={()=>toggle(r.key)} />
+                </div>
+                <div style={{ fontFamily:t.font.mono, fontSize:12 }}>{r.key}</div>
+                <div style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontSize:13 }}>{r.summary}</div>
+                <div style={{ color:t.fg[2], fontSize:12, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{r.client}</div>
+                <div style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[2] }}>{r.date}</div>
+                <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                  <span style={{ width:7, height:7, borderRadius:'50%', background:ds.c, display:'inline-block', flexShrink:0 }} />
+                  <span style={{ fontSize:11, color:t.fg[3], whiteSpace:'nowrap' }}>{ds.label}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   TICKET PANEL — wired to real API
+   ═════════════════════════════════════════════════════════════════════════ */
+function TicketPanel({ ticket, clients, token, onBack }) {
+  const [tab, setTab] = useState('Setup');
+  const [client, setClient] = useState(ticket.client);
+  const [ticketKey, setTicketKey] = useState(ticket.key);
+  const [sendoutId, setSendoutId] = useState('');
+  const [sendouts, setSendouts] = useState([]);
+  const [sendoutsLoading, setSendoutsLoading] = useState(false);
+
+  // Enrich data (auto-matched sendout + G-Sheet fields)
+  const [enrichData, setEnrichData]     = useState(null);
+  const [enrichLoading, setEnrichLoading] = useState(false);
+  const [autoMatched, setAutoMatched]   = useState(false);
+
+  const [validateResult, setValidateResult] = useState(null);
+  const [aiResult, setAiResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // Fetch sendouts + run enrich when client changes
+  useEffect(()=>{
+    if (!client) return;
+    setSendoutsLoading(true); setEnrichLoading(true);
+    setSendouts([]); setEnrichData(null); setAutoMatched(false);
+
+    // Run sendout fetch and enrich in parallel
+    const sendoutFetch = api('GET', `/api/sendouts/${encodeURIComponent(client)}`, null, token)
+      .catch(() => []);
+
+    const enrichFetch = api('POST', '/api/ticket/enrich', {
+      client,
+      ticket_key: ticket.key,
+      jira_date:    ticket.date,
+      jira_summary: ticket.summary,
+    }, token)
+      .then(d => { setEnrichData(d); return d; })
+      .catch(() => null)
+      .finally(() => setEnrichLoading(false));
+
+    Promise.all([sendoutFetch, enrichFetch])
+      .then(([sendoutData, enrichResult]) => {
+        setSendouts(sendoutData);
+        if (enrichResult && enrichResult.sendout_id) {
+          setSendoutId(enrichResult.sendout_id);
+          setAutoMatched(true);
+        } else if (sendoutData.length > 0) {
+          setSendoutId(sendoutData[0].id);
+          setAutoMatched(false);
+        }
+      })
+      .finally(() => setSendoutsLoading(false));
+  }, [client, token]);
+
+  // Helper: build G-Sheet extra fields for API calls
+  // NOTE: server ValidateRequest / AiAuditRequest use "exclude_tags" (not "gsheet_exclude_tags")
+  const gsheetBody = enrichData ? {
+    gsheet_tags:  enrichData.gsheet_tags         || '',
+    exclude_tags: enrichData.gsheet_exclude_tags || '',
+    leaflet_url:  enrichData.leaflet_url         || '',
+  } : {};
+
+  const runValidate = async () => {
+    setLoading(true); setError(''); setValidateResult(null);
+    try {
+      const res = await api('POST', '/api/validate',
+        { client, ticket_key: ticketKey, sendout_id: sendoutId, ...gsheetBody }, token);
+      setValidateResult(res);
+      setTab('Results');
+    } catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  const runAiAudit = async () => {
+    setLoading(true); setError(''); setAiResult(null);
+    try {
+      const res = await api('POST', '/api/ai-audit',
+        { client, ticket_key: ticketKey, sendout_id: sendoutId, ...gsheetBody }, token);
+      setAiResult(res);
+      setTab('AI Audit');
+    } catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  const tabs = ['Setup', 'Results', 'AI Audit'];
+  const _today7 = (() => {
+    const d = new Date(); d.setDate(d.getDate() + 7);
+    return [new Date().toISOString().slice(0,10), d.toISOString().slice(0,10)];
+  })();
+  const _visibleSendouts = sendouts.filter(s => {
+    if (!s.date) return false;
+    return s.date >= _today7[0] && s.date <= _today7[1];
+  });
+  const sendoutOptions = _visibleSendouts.map(s=>({ value:s.id, label:`${s.date}  |  ${s.name}  |  ${s.id}` }));
+  if (sendoutOptions.length===0) sendoutOptions.push({ value:'', label:'— no sendouts within 7 days —' });
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:18 }}>
+      {/* HUD bar */}
+      <HudPanel>
+        <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+          <Button variant="ghost" onClick={onBack}>← Back to queue</Button>
+          <div style={{ display:'flex', alignItems:'center', gap:10, fontFamily:t.font.mono, fontSize:13, color:t.fg[2] }}>
+            <Led kind="accent" pulse />
+            <span style={{color:t.fg[1],letterSpacing:'0.04em'}}>{ticketKey}</span>
+            <span style={{color:t.fg[4]}}>·</span>
+            <span>{client}</span>
+            <span style={{color:t.fg[4]}}>·</span>
+            <span style={{color:t.fg[3]}}>{ticket.date}</span>
+          </div>
+          <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:10 }}>
+            {loading&&<span className="vp-spinner" />}
+            <Button variant="ghost" onClick={runValidate} disabled={loading||!sendoutId}>⚡ Regular Check</Button>
+            <Button onClick={runAiAudit} disabled={loading||!sendoutId}>🤖 Run AI Audit</Button>
+          </div>
+        </div>
+      </HudPanel>
+
+      {/* Sub-nav */}
+      <div style={{ position:'sticky', top:0, zIndex:50, background:t.bg.app, padding:'4px 0' }}>
+        <div style={{ display:'flex', gap:4, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:8, padding:5, maxWidth:500 }}>
+          {tabs.map(tb=><NavPill key={tb} active={tab===tb} onClick={()=>setTab(tb)}>{tb}</NavPill>)}
+        </div>
+      </div>
+
+      {error&&<div style={{ padding:'12px 16px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:13 }}>⚠️ {error}</div>}
+
+      {tab==='Setup'&&(
+        <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+          <SectionHeader style={{marginTop:8}}>Control panel</SectionHeader>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            <div>
+              <div style={{ fontSize:13, color:t.fg[1], marginBottom:6 }}>🎯 Client Context</div>
+              <Select value={client} onChange={setClient} options={clients} />
+            </div>
+            <div>
+              <div style={{ fontSize:13, color:t.fg[1], marginBottom:6 }}>🎫 Ticket ID</div>
+              <Input value={ticketKey} onChange={setTicketKey} placeholder="MAS-XXXX" />
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize:13, color:t.fg[1], marginBottom:6, display:'flex', alignItems:'center', gap:8 }}>
+              📋 DMA Sendout
+              {(sendoutsLoading||enrichLoading) && <span style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>(loading…)</span>}
+              {autoMatched && !sendoutsLoading && !enrichLoading && (
+                <span style={{ display:'inline-flex', alignItems:'center', gap:4, fontFamily:t.font.mono, fontSize:10, padding:'2px 8px', borderRadius:999, background:t.ok.soft, color:t.ok.base, border:`1px solid ${t.ok.ring}` }}>
+                  ✅ auto-matched by date
+                </span>
+              )}
+            </div>
+            <Select value={sendoutId} onChange={v=>{ setSendoutId(v); setAutoMatched(false); }} options={sendoutOptions} />
+          </div>
+          {sendoutId&&(
+            <div style={{ display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
+              <div style={{ fontSize:11, color:t.fg[3] }}>Sendout ID: <code style={{ fontFamily:t.font.mono, background:t.bg.surface3, padding:'1px 5px', borderRadius:3, fontSize:11, color:t.fg[2] }}>{sendoutId}</code></div>
+              {enrichData && enrichData.gsheet_tags && (() => {
+                const src = enrichData.tags_source;
+                const icon = src === 'registry' ? '📝' : '📋';
+                const label = src === 'registry' ? 'Registry' : 'G-Sheet';
+                const color = src === 'registry' ? t.brand.text : t.fg[3];
+                const incl = enrichData.gsheet_tags.split(',').filter(s=>s.trim()).length;
+                const excl = (enrichData.gsheet_exclude_tags||'').split(',').filter(s=>s.trim()).length;
+                return (
+                  <div style={{ fontSize:11, color, fontWeight: src==='registry' ? 600 : 400 }}>
+                    {icon} {label} tags: <span style={{ color:t.fg[2] }}>{incl} include / {excl} exclude</span>
+                    {src==='registry' && <span style={{ marginLeft:6, padding:'1px 6px', background:t.brand.soft, border:`1px solid ${t.brand.ring}`, borderRadius:999, fontSize:10, color:t.brand.text }}>registry</span>}
+                  </div>
+                );
+              })()}
+              {enrichData && enrichData.leaflet_url && (
+                <div style={{ fontSize:11, color:t.fg[3] }}>🔗 Leaflet: <a href={enrichData.leaflet_url} target="_blank" rel="noopener" style={{ color:t.brand.text, textDecoration:'none' }}>linked</a></div>
+              )}
+            </div>
+          )}
+          <div style={{ marginTop:8, display:'flex', gap:12 }}>
+            <Button onClick={runValidate} disabled={loading||!sendoutId}>{loading?<><span className="vp-spinner" /> Running…</>:'⚡ Run Regular Check'}</Button>
+            <Button onClick={runAiAudit} disabled={loading||!sendoutId} variant="ghost">{loading?'…':'🤖 Run AI Audit'}</Button>
+          </div>
+        </div>
+      )}
+
+      {tab==='Results'&&(
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {!validateResult&&<div style={{ padding:32, textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>Run Regular Check to see results here.</div>}
+          {validateResult&&(
+            <>
+              {/* ── Feature 1: Schedule check banner ── */}
+              {validateResult.schedule_check && (
+                <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 16px', borderRadius:5, background: validateResult.schedule_check.ok ? t.ok.soft2 : t.danger.soft2, border:`1px solid ${validateResult.schedule_check.ok ? t.ok.border : t.danger.border}`, fontSize:13 }}>
+                  <span style={{ fontSize:15, flexShrink:0 }}>{validateResult.schedule_check.ok ? '✅' : '❌'}</span>
+                  <div>
+                    <span style={{ fontWeight:600, color: validateResult.schedule_check.ok ? t.ok.base : t.danger.base }}>
+                      {validateResult.schedule_check.ok ? 'Schedule OK' : 'Schedule mismatch'}
+                    </span>
+                    {validateResult.schedule_check.detail && (
+                      <span style={{ color:t.fg[2], marginLeft:10, fontSize:12 }}>
+                        {/* strip leading ✅/❌ that features.py already prepends */}
+                        {validateResult.schedule_check.detail.replace(/^[✅❌⚠️]\s*/u, '')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+              <div className="result-frame" dangerouslySetInnerHTML={{ __html: validateResult.html }} />
+            </>
+          )}
+        </div>
+      )}
+
+      {tab==='AI Audit'&&(
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {!aiResult&&<div style={{ padding:32, textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>Run AI Audit to see results here. This may take 20–40 seconds.</div>}
+          {aiResult&&(
+            <>
+              {/* Gemini 503 / overloaded — friendly retry banner */}
+              {aiResult.overloaded ? (
+                <div style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 18px', borderRadius:6, background:t.warn.soft2, border:`1px solid ${t.warn.ring}`, color:t.warn.base }}>
+                  <span style={{ fontSize:22 }}>⏳</span>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontWeight:600, fontSize:13, marginBottom:3 }}>AI model temporarily busy</div>
+                    <div style={{ fontSize:12 }}>{aiResult.summary}</div>
+                  </div>
+                  <Button variant="ghost" onClick={runAiAudit}>↺ Retry</Button>
+                </div>
+              ) : (
+              <>
+              {/* ── Status + Feature 2: Confidence badge ── */}
+              <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                {aiResult.issues > 0
+                  ? <Badge kind="danger">{aiResult.issues} issue(s) found</Badge>
+                  : <Badge kind="ok">All checks passed</Badge>}
+
+                {aiResult.confidence != null && aiResult.confidence >= 0 && (() => {
+                  const pct = Math.round(aiResult.confidence * 100);
+                  const low = pct < 60;
+                  return (
+                    <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:600, background: low ? t.warn.soft : t.ok.soft, color: low ? t.warn.base : t.ok.base, border:`1px solid ${low ? t.warn.ring : t.ok.ring}` }}>
+                      🎯 Confidence: {pct}%{low ? ' — low, review manually' : ''}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Low-confidence warning */}
+              {aiResult.confidence != null && aiResult.confidence >= 0 && aiResult.confidence < 0.6 && (
+                <div style={{ padding:'10px 14px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12 }}>
+                  ⚠️ AI confidence is below 60% — the result may be unreliable. Consider reviewing the sendout manually before approving.
+                </div>
+              )}
+
+              <div className="result-frame" dangerouslySetInnerHTML={{ __html: aiResult.html }} />
+              </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   DASHBOARD  (from Dashboard.jsx — fetches live data from API)
+   ═════════════════════════════════════════════════════════════════════════ */
+function FailureRow({ label, count }) {
+  return (
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:12 }}>
+      <span style={{color:t.fg[2]}}>{label}</span>
+      <span style={{ fontFamily:t.font.mono, color:t.danger.base, fontWeight:600 }}>{count}</span>
+    </div>
+  );
+}
+
+function Dashboard({ token }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(()=>{
+    api('GET', '/api/dashboard', null, token)
+      .then(setData).catch(()=>{}).finally(()=>setLoading(false));
+  }, [token]);
+
+  const log = data?.log || [];
+  const total = data?.total || 0;
+  const passRate = data?.pass_rate != null ? Math.round(data.pass_rate) : null;
+
+  return (
+    <div>
+      <SectionHeader style={{marginTop:0}}>Today</SectionHeader>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'18px 22px' }}>
+        <Readout label="Validations"  value={<span>{loading?'…':total}</span>} />
+        <Readout label="Pass rate"    value={<span>{loading?'…':passRate!=null?`${passRate}%`:'—'}</span>} valueKind="ok" />
+        <Readout label="Avg audit"    value={<span>2.5<span style={{color:t.fg[3],fontSize:11}}>s</span></span>} valueKind="accent" sub="gemini-2.5-pro" subKind="accent" />
+        <Readout label="Alerts fired" value={<span>{log.filter(l=>l.kind==='danger').length||'0'}</span>} valueKind="danger" />
+      </div>
+      <SectionHeader>Audit log</SectionHeader>
+      {log.length===0&&<div style={{ padding:24, textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>No validations recorded yet.</div>}
+      {log.length>0&&(
+        <Card>
+          {log.slice().reverse().slice(0,20).map((l,i)=>(
+            <div key={i} style={{ display:'grid', gridTemplateColumns:'70px 90px 140px 1fr', gap:12, padding:'8px 0', borderBottom:i<log.length-1?`1px solid ${t.border.base}`:'none', fontSize:12 }}>
+              <span style={{ fontFamily:t.font.mono, color:t.fg[3] }}>{l.ts||l.timestamp||''}</span>
+              <span style={{color:t.fg[2]}}>{l.user||'—'}</span>
+              <span style={{ fontFamily:t.font.mono, color:t.fg[1] }}>{l.action||l.mode||''}</span>
+              <span style={{color:t.fg[2]}}>
+                {(l.kind==='ok'||l.status==='pass')&&<span style={{color:t.ok.base,marginRight:6}}>●</span>}
+                {(l.kind==='danger'||l.status==='fail')&&<span style={{color:t.danger.base,marginRight:6}}>●</span>}
+                {l.kind==='warn'&&<span style={{color:t.warn.base,marginRight:6}}>●</span>}
+                {l.detail||`${l.ticket_key||''} · ${l.client||''}`}
+              </span>
+            </div>
+          ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ORPHAN SCANNER — full implementation
+   ═════════════════════════════════════════════════════════════════════════ */
+const STATUS_META = {
+  no_jira:   { icon:'🔴', label:'Missing from JIRA',    bg: t.danger.soft,  bd: t.danger.ring,  fg: t.danger.base  },
+  no_gsheet: { icon:'🟡', label:'Missing from G-Sheet', bg: t.warn.soft,    bd: t.warn.ring,    fg: t.warn.base    },
+  auto:      { icon:'🔵', label:'Automated (no JIRA)',  bg: t.info.soft,    bd: t.info.ring,    fg: t.brand.text   },
+  ok:        { icon:'🟢', label:'Matched',              bg: t.ok.soft,      bd: t.ok.ring,      fg: t.ok.base      },
+};
+
+function OrphanRow({ r }) {
+  const [open, setOpen] = useState(false);
+  const m = STATUS_META[r.status] || STATUS_META.ok;
+  return (
+    <div style={{ border:`1px solid ${t.border.base}`, borderRadius:6, marginBottom:8, overflow:'hidden' }}>
+      <div onClick={()=>setOpen(o=>!o)} style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 16px', cursor:'pointer', background: open ? t.bg.surface2 : t.bg.surface1, userSelect:'none' }}>
+        <span style={{ fontSize:14 }}>{open ? '▾' : '›'}</span>
+        <span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[3], minWidth:90 }}>{r.date}</span>
+        <span style={{ fontWeight:600, color:t.fg[1], fontSize:13 }}>{r.client}</span>
+        {r.config_ok === true  && <Badge kind="ok"     style={{fontSize:10}}>config ✓</Badge>}
+        {r.config_ok === false && <Badge kind="danger" style={{fontSize:10}}>config ✗</Badge>}
+        <span style={{ color:t.fg[2], fontSize:13, flex:1, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{r.name}</span>
+        <span style={{ fontSize:11, padding:'3px 10px', borderRadius:999, background:m.bg, color:m.fg, border:`1px solid ${m.bd}`, whiteSpace:'nowrap' }}>{r.icon || m.icon} {r.in_jira ? '✅ JIRA' : '❌ JIRA'} · {r.in_gsheet ? '✅ G-Sheet' : '❌ G-Sheet'}</span>
+      </div>
+      {open && (
+        <div style={{ padding:'14px 20px', borderTop:`1px solid ${t.border.base}`, background:t.bg.surface2, display:'flex', flexDirection:'column', gap:10 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            <div style={{ fontSize:13, color:t.fg[2] }}><strong>Name:</strong> {r.name}</div>
+            <div style={{ fontSize:13, fontFamily:t.font.mono, color:t.fg[2] }}><strong>ID:</strong> {r.id}</div>
+          </div>
+          {r.filters && r.filters.length > 0 && (
+            <div style={{ fontSize:12, color:t.fg[2] }}>
+              <Overline style={{ marginBottom:6 }}>Filters</Overline>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                {r.filters.map((f,i) => {
+                  const isExcl = /^excl:/i.test(f.trim());
+                  const isIncl = /^incl:/i.test(f.trim());
+                  const bg  = isExcl ? t.danger.soft  : isIncl ? t.ok.soft  : t.bg.surface3;
+                  const fg  = isExcl ? t.danger.base  : isIncl ? t.ok.base  : t.fg[1];
+                  const bd  = isExcl ? t.danger.ring  : isIncl ? t.ok.ring  : t.border.base;
+                  return (
+                    <span key={i} style={{ fontFamily:t.font.mono, fontSize:11, padding:'2px 8px', borderRadius:3, background:bg, color:fg, border:`1px solid ${bd}` }}>
+                      {f}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {r.status === 'no_jira' && (
+            <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft2, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:12 }}>
+              ⚠️ No matching JIRA ticket — this sendout may have been created directly in DMA without going through the approval process.
+            </div>
+          )}
+          {r.status === 'no_gsheet' && (
+            <div style={{ padding:'10px 14px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12 }}>
+              ⚠️ No matching G-Sheet row for this date.
+            </div>
+          )}
+          {r.status === 'auto' && (
+            <div style={{ padding:'10px 14px', borderRadius:4, background:t.info.soft, border:`1px solid ${t.info.ring}`, color:t.brand.text, fontSize:12 }}>
+              ℹ️ Automated sendout — no JIRA ticket required.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OrphanScanner({ token }) {
+  const [daysAhead, setDaysAhead] = useState(7);
+  const [daysBack,  setDaysBack]  = useState(5);
+  const [loading, setLoading]     = useState(false);
+  const [scanData, setScanData]   = useState(null);   // {results, jira_count, gsheet_count}
+  const [showOk, setShowOk]       = useState(false);
+  const [error, setError]         = useState('');
+
+  const runScan = async () => {
+    setLoading(true); setError(''); setScanData(null);
+    try {
+      const data = await api('GET', `/api/orphan-scan?days_ahead=${daysAhead}&days_back=${daysBack}`, null, token);
+      // Handle both old (array) and new (object) response shapes
+      if (Array.isArray(data)) setScanData({ results: data, jira_count: null, gsheet_count: null });
+      else setScanData(data);
+    } catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  const results   = scanData ? scanData.results : null;
+  const orphans   = results ? results.filter(r => r.status === 'no_jira' || r.status === 'no_gsheet') : [];
+  const autoCount = results ? results.filter(r => r.status === 'auto').length : 0;
+  const okCount   = results ? results.filter(r => r.status === 'ok').length : 0;
+  const displayed = results ? (showOk ? results : orphans) : [];
+
+  const exportCsv = () => {
+    if (!results) return;
+    const rows = [['Date','Client','Name','Sendout ID','In JIRA','In G-Sheet','Status']];
+    results.forEach(r => rows.push([r.date, r.client, r.name, r.id, r.in_jira, r.in_gsheet, r.status]));
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    a.download = `orphan_scan_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+  };
+
+  const groupOrder = ['no_jira','no_gsheet','auto','ok'];
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+      <HudPanel>
+        <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+          <div style={{ flex:'0 0 auto' }}>
+            <Overline style={{ marginBottom:4 }}>Days ahead</Overline>
+            <input type="number" min={1} max={30} value={daysAhead}
+              onChange={e=>setDaysAhead(Number(e.target.value))}
+              style={{ width:70, padding:'8px 10px', borderRadius:4, border:`1px solid ${t.border.input}`, fontFamily:t.font.mono, fontSize:13, color:t.fg[1], background:t.bg.surface2, outline:'none' }} />
+          </div>
+          <div style={{ flex:'0 0 auto' }}>
+            <Overline style={{ marginBottom:4 }}>Days back</Overline>
+            <input type="number" min={0} max={30} value={daysBack}
+              onChange={e=>setDaysBack(Number(e.target.value))}
+              style={{ width:70, padding:'8px 10px', borderRadius:4, border:`1px solid ${t.border.input}`, fontFamily:t.font.mono, fontSize:13, color:t.fg[1], background:t.bg.surface2, outline:'none' }} />
+          </div>
+          <div style={{ display:'flex', alignItems:'flex-end', gap:10, paddingBottom:0, marginTop:20 }}>
+            <Button onClick={runScan} disabled={loading}>
+              {loading ? <><span className="vp-spinner" /> Scanning all accounts…</> : '🔍 Scan all accounts'}
+            </Button>
+            {scanData && <Button variant="ghost" onClick={()=>setScanData(null)}>Clear</Button>}
+            {scanData && <Button variant="ghost" onClick={exportCsv}>Export CSV</Button>}
+          </div>
+          <div style={{ marginLeft:'auto', fontFamily:t.font.mono, fontSize:11, color:t.fg[3], textAlign:'right', lineHeight:1.6 }}>
+            Finds DMA sendouts with no matching JIRA ticket or G-Sheet row.<br/>
+            <span style={{ color:t.ok.base }}>config ✓</span> = DMA filters match expected config &nbsp;·&nbsp;
+            <span style={{ color:t.danger.base }}>config ✗</span> = required filter missing
+            <span style={{ color:t.fg[4] }}> (e.g. REWE: excl. declined_new_terms · Nahkauf: offset_days=1)</span>
+          </div>
+        </div>
+      </HudPanel>
+
+      {error && <div style={{ padding:'12px 16px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:13 }}>⚠️ {error}</div>}
+
+      {!scanData && !loading && (
+        <div style={{ padding:48, textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>Click <strong>Scan all accounts</strong> to start.</div>
+      )}
+
+      {scanData && (
+        <>
+          {/* Source counts — shows if JIRA/G-Sheet were actually loaded */}
+          <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+            {scanData.jira_count !== null && (
+              <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:4, background: scanData.jira_count > 0 ? t.ok.soft : t.danger.soft, border:`1px solid ${scanData.jira_count > 0 ? t.ok.ring : t.danger.ring}`, fontSize:12, fontFamily:t.font.mono, color: scanData.jira_count > 0 ? t.ok.base : t.danger.base }}>
+                {scanData.jira_count > 0 ? '✅' : '❌'} JIRA: {scanData.jira_count} ticket(s) loaded
+              </div>
+            )}
+            {scanData.gsheet_count !== null && (
+              <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:4, background: scanData.gsheet_count > 0 ? t.ok.soft : t.warn.soft, border:`1px solid ${scanData.gsheet_count > 0 ? t.ok.ring : t.warn.ring}`, fontSize:12, fontFamily:t.font.mono, color: scanData.gsheet_count > 0 ? t.ok.base : t.warn.base }}>
+                {scanData.gsheet_count > 0 ? '✅' : '⚠️'} G-Sheet: {scanData.gsheet_count} date(s) indexed
+              </div>
+            )}
+          </div>
+
+          {/* Summary metrics */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'18px 22px' }}>
+            <Readout label="Total sendouts" value={<span>{results.length}</span>} />
+            <Readout label="Matched"        value={<span>{okCount + autoCount}</span>} valueKind="ok" />
+            <Readout label="Untracked"      value={<span>{orphans.length}</span>} valueKind={orphans.length > 0 ? 'danger' : 'ok'} />
+            <Readout label="Automated"      value={<span>{autoCount}</span>} valueKind="accent" sub="no JIRA required" />
+          </div>
+
+          {orphans.length === 0 && (
+            <div style={{ padding:'16px 20px', borderRadius:6, background:t.ok.soft, border:`1px solid ${t.ok.ring}`, color:t.ok.base, fontSize:14, fontWeight:500 }}>✅ All sendouts are tracked in JIRA and G-Sheet (−{daysBack}d / +{daysAhead}d window).</div>
+          )}
+
+          {results.length > 0 && (
+            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, color:t.fg[2], cursor:'pointer', userSelect:'none' }}>
+                <input type="checkbox" checked={showOk} onChange={e=>setShowOk(e.target.checked)} />
+                Show matched sendouts
+              </label>
+              <span style={{ fontSize:12, color:t.fg[3] }}>{displayed.length} row(s) shown</span>
+            </div>
+          )}
+
+          {/* Results grouped by status */}
+          {groupOrder.map(status => {
+            const group = displayed.filter(r => r.status === status);
+            if (!group.length) return null;
+            const m = STATUS_META[status];
+            return (
+              <div key={status}>
+                <SectionHeader style={{ marginTop:8 }}>{m.icon} {m.label} ({group.length})</SectionHeader>
+                {group.map((r,i) => <OrphanRow key={`${r.client}-${r.date}-${i}`} r={r} />)}
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SENDOUT FORM — primitives
+   ═════════════════════════════════════════════════════════════════════════ */
+
+const SF_TZ = [
+  'Europe/Berlin','Europe/Lisbon','Europe/Warsaw','Europe/Budapest',
+  'Europe/Bucharest','Europe/Prague','Europe/Sofia','Europe/Athens',
+  'Europe/Helsinki','Europe/Riga','Europe/Vilnius','Europe/Tallinn',
+  'Europe/London','UTC',
+];
+
+function SFBracket({ pos, color }) {
+  const base = { position:'absolute', width:10, height:10, borderStyle:'solid', borderColor: color || t.accent.base };
+  const side = {
+    tl: { top:-1, left:-1,  borderWidth:'1.5px 0 0 1.5px' },
+    tr: { top:-1, right:-1, borderWidth:'1.5px 1.5px 0 0' },
+    bl: { bottom:-1, left:-1,  borderWidth:'0 0 1.5px 1.5px' },
+    br: { bottom:-1, right:-1, borderWidth:'0 1.5px 1.5px 0' },
+  }[pos];
+  return <span style={{ ...base, ...side }}/>;
+}
+
+function SFHudFrame({ children, style }) {
+  return (
+    <div style={{ position:'relative', background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'18px 20px', ...style }}>
+      <SFBracket pos="tl" color={t.brand.base}/>
+      <SFBracket pos="br" color={t.brand.base}/>
+      {children}
+    </div>
+  );
+}
+
+function SFLed({ tone='ok', pulse, size=8 }) {
+  const color = { ok:t.ok.base, danger:t.danger.base, warn:t.warn.base, accent:t.accent.base, dim:t.fg[4] }[tone];
+  return (
+    <span style={{
+      display:'inline-block', width:size, height:size, borderRadius:'50%',
+      background:color,
+      boxShadow: tone!=='dim' ? `0 0 6px ${color}55` : 'none',
+      animation: pulse ? 'vp-led-pulse 1.8s ease-in-out infinite' : undefined,
+      flexShrink:0,
+    }}/>
+  );
+}
+
+function SFFieldLabel({ children, required, hint }) {
+  return (
+    <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:6 }}>
+      <span style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', color:t.fg[3], fontFamily:t.font.sans }}>
+        {children}{required && <span style={{ color:t.brand.base, marginLeft:4 }}>*</span>}
+      </span>
+      {hint && <span style={{ fontSize:11, color:t.fg[4], fontFamily:t.font.mono }}>{hint}</span>}
+    </div>
+  );
+}
+
+function SFInput({ value, onChange, placeholder, type, disabled, mono, style }) {
+  const inp = useRef(null);
+  return (
+    <input ref={inp} type={type||'text'} value={value||''} disabled={disabled}
+      onChange={e => onChange?.(e.target.value)}
+      placeholder={placeholder}
+      style={{
+        width:'100%', height:36, padding:'0 12px',
+        fontFamily: mono ? t.font.mono : t.font.sans, fontSize:13,
+        color:t.fg[1], background: disabled ? t.bg.surface2 : t.bg.surface1,
+        border:`1px solid ${t.border.input}`, borderRadius:4,
+        outline:'none', boxSizing:'border-box',
+        transition:'border-color 120ms, box-shadow 120ms',
+        cursor: disabled ? 'not-allowed' : 'text',
+        ...style,
+      }}
+      onFocus={e => { e.target.style.borderColor=t.brand.base; e.target.style.boxShadow=`0 0 0 3px ${t.brand.ring}`; }}
+      onBlur={e  => { e.target.style.borderColor=t.border.input; e.target.style.boxShadow='none'; }}
+    />
+  );
+}
+
+function SFSelect({ value, onChange, options, placeholder, disabled, mono }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const handler = e => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+  const chosen = options?.find(o => o.value === value);
+  return (
+    <div ref={ref} style={{ position:'relative' }}>
+      <button type="button" disabled={disabled} onClick={() => !disabled && setOpen(o => !o)}
+        style={{
+          width:'100%', height:36, padding:'0 32px 0 12px', textAlign:'left',
+          background: disabled ? t.bg.surface2 : t.bg.surface1,
+          border:`1px solid ${open ? t.brand.base : t.border.input}`,
+          boxShadow: open ? `0 0 0 3px ${t.brand.ring}` : 'none',
+          borderRadius:4, fontFamily: mono ? t.font.mono : t.font.sans, fontSize:13,
+          color: chosen ? t.fg[1] : t.fg[4],
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          transition:'border-color 120ms, box-shadow 120ms',
+        }}>
+        {chosen?.label || placeholder}
+        <svg width="10" height="10" viewBox="0 0 12 12" style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)' }}>
+          <path d="M2 4l4 4 4-4" stroke={t.fg[3]} strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </button>
+      {open && (
+        <div style={{
+          position:'absolute', top:'calc(100% + 4px)', left:0, right:0, zIndex:80,
+          background:t.bg.surface1, border:`1px solid ${t.border.input}`, borderRadius:4,
+          boxShadow:'0 8px 24px rgba(15,23,42,0.10)', maxHeight:240, overflowY:'auto',
+        }}>
+          {options?.map(o => (
+            <div key={o.value} onClick={() => { onChange?.(o.value); setOpen(false); }}
+              style={{ padding:'8px 12px', fontSize:13, cursor:'pointer', color:t.fg[1],
+                fontFamily: mono ? t.font.mono : t.font.sans,
+                background: o.value===value ? t.brand.soft : t.bg.surface1,
+              }}
+              onMouseEnter={e => { if (o.value!==value) e.currentTarget.style.background=t.bg.surface3; }}
+              onMouseLeave={e => { if (o.value!==value) e.currentTarget.style.background=t.bg.surface1; }}>
+              {o.label}
+              {o.sub && <div style={{ fontSize:11, color:t.fg[3], marginTop:2, fontFamily:t.font.mono }}>{o.sub}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SFBtn({ children, primary, ghost, small, onClick, disabled, glyph, style }) {
+  const base = {
+    height: small?28:36, padding: small?'0 10px':'0 16px',
+    fontFamily:t.font.sans, fontSize: small?12:13, fontWeight:500,
+    borderRadius:4, border:'1px solid transparent',
+    cursor: disabled?'not-allowed':'pointer', opacity: disabled?0.5:1,
+    display:'inline-flex', alignItems:'center', gap:6,
+    transition:'background 140ms, border-color 140ms, color 140ms',
+    ...style,
+  };
+  if (primary)    Object.assign(base, { background:t.brand.base, color:'#fff', border:`1px solid ${t.brand.base}` });
+  else if (ghost) Object.assign(base, { background:'transparent', color:t.fg[3], border:`1px solid ${t.border.input}` });
+  else            Object.assign(base, { background:t.bg.surface1, color:t.fg[2], border:`1px solid ${t.border.input}` });
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} style={base}
+      onMouseEnter={e => {
+        if (disabled) return;
+        if (primary) { e.currentTarget.style.background=t.brand.hover; }
+        else { e.currentTarget.style.borderColor=t.brand.base; e.currentTarget.style.color=t.brand.text; }
+      }}
+      onMouseLeave={e => {
+        if (primary) { e.currentTarget.style.background=t.brand.base; }
+        else { e.currentTarget.style.borderColor=t.border.input; e.currentTarget.style.color=ghost?t.fg[3]:t.fg[2]; }
+      }}>
+      {glyph && <span style={{ fontFamily:t.font.mono, fontSize:small?10:12 }}>{glyph}</span>}
+      {children}
+    </button>
+  );
+}
+
+function SFTagChip({ children, tone, onRemove }) {
+  const pal = {
+    include: { bg:'#00d4aa18', fg:'#0a8080', border:'#0fb5b540' },
+    exclude: { bg:'#ff4d6d18', fg:'#9F1239', border:'#dc262640' },
+  }[tone] || { bg:t.bg.surface3, fg:t.fg[2], border:t.border.base };
+  return (
+    <span style={{ display:'inline-flex', alignItems:'center', gap:6,
+      padding: onRemove ? '2px 4px 2px 10px' : '3px 10px',
+      background:pal.bg, color:pal.fg, border:`1px solid ${pal.border}`,
+      borderRadius:999, fontFamily:t.font.mono, fontSize:11, fontWeight:500, lineHeight:1.4 }}>
+      {children}
+      {onRemove && (
+        <button onClick={onRemove} style={{ width:14, height:14, border:'none', background:'transparent',
+          color:pal.fg, opacity:0.55, cursor:'pointer', padding:0,
+          display:'inline-flex', alignItems:'center', justifyContent:'center', borderRadius:'50%' }}>
+          <svg width="8" height="8" viewBox="0 0 9 9"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+        </button>
+      )}
+    </span>
+  );
+}
+
+function SFTagInput({ tags, setTags, placeholder, tone }) {
+  const [draft, setDraft] = useState('');
+  const [focused, setFocused] = useState(false);
+  const commit = () => {
+    const v = draft.trim().replace(/,$/, '');
+    if (v && !tags.includes(v)) setTags([...tags, v]);
+    setDraft('');
+  };
+  return (
+    <div style={{
+      minHeight:80, padding:7,
+      background:t.bg.surface1,
+      border:`1px solid ${focused ? t.brand.base : t.border.input}`,
+      boxShadow: focused ? `0 0 0 3px ${t.brand.ring}` : 'none',
+      borderRadius:4, display:'flex', flexWrap:'wrap', gap:5, alignContent:'flex-start',
+      transition:'border-color 120ms, box-shadow 120ms', cursor:'text',
+    }} onClick={e => e.currentTarget.querySelector('input')?.focus()}>
+      {tags.map(tag => (
+        <SFTagChip key={tag} tone={tone} onRemove={() => setTags(tags.filter(x => x!==tag))}>{tag}</SFTagChip>
+      ))}
+      <input value={draft}
+        onChange={e => {
+          const v = e.target.value;
+          if (v.endsWith(',')) {
+            const x = v.slice(0,-1).trim();
+            if (x && !tags.includes(x)) setTags([...tags, x]);
+            setDraft('');
+          } else setDraft(v);
+        }}
+        onKeyDown={e => {
+          if (e.key==='Enter') { e.preventDefault(); commit(); }
+          if (e.key==='Backspace' && !draft && tags.length) setTags(tags.slice(0,-1));
+        }}
+        onFocus={() => setFocused(true)}
+        onBlur={() => { setFocused(false); commit(); }}
+        placeholder={tags.length ? '' : placeholder}
+        style={{ flex:1, minWidth:120, border:'none', outline:'none',
+          fontFamily:t.font.mono, fontSize:12, color:t.fg[1],
+          background:'transparent', padding:'3px 6px' }}
+      />
+    </div>
+  );
+}
+
+function SFSectionHeader({ glyph, title, subtitle, accent }) {
+  return (
+    <div style={{ display:'flex', alignItems:'baseline', gap:12,
+      padding:'0 0 10px', borderBottom:`1px solid ${t.border.base}`, marginBottom:14 }}>
+      <span style={{ fontFamily:t.font.mono, fontSize:11, fontWeight:600,
+        color: accent ? t.brand.text : t.fg[3], letterSpacing:'.08em' }}>{glyph}</span>
+      <span style={{ fontFamily:t.font.display, fontSize:14, fontWeight:600, color:t.fg[1] }}>{title}</span>
+      {subtitle && <span style={{ fontSize:12, color:t.fg[3] }}>{subtitle}</span>}
+    </div>
+  );
+}
+
+function SFRow({ cols, children }) {
+  return <div style={{ display:'grid', gridTemplateColumns:cols, gap:14 }}>{children}</div>;
+}
+
+function SFField({ children, style }) {
+  return <div style={style}>{children}</div>;
+}
+
+function SFHint({ children }) {
+  return <div style={{ marginTop:5, fontSize:11, color:t.fg[3], fontFamily:t.font.sans, lineHeight:1.5 }}>{children}</div>;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SENDOUT FORM — main component
+   ═════════════════════════════════════════════════════════════════════════ */
+const SF_EMPTY = {
+  client:'', ticket_key:'', sendout_id:'', sendout_name:'', sendout_date:'',
+  sendout_time:'', tz:'Europe/Berlin', platform:'', template_type:'', notes:'',
+};
+
+function SendoutForm({ token, clients }) {
+  const [view, setView]               = useState('list');  // 'list' | 'form'
+  const [editId, setEditId]           = useState(null);
+  const [entries, setEntries]         = useState([]);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError]     = useState('');
+  const [filterClient, setFilterClient] = useState('');
+
+  // form state
+  const [form, setForm]               = useState(SF_EMPTY);
+  const [includeTags, setIncludeTags] = useState([]);
+  const [excludeTags, setExcludeTags] = useState([]);
+  const [tickets, setTickets]         = useState([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
+  const [sendouts, setSendouts]       = useState([]);
+  const [sendoutsLoading, setSendoutsLoading] = useState(false);
+  const [enriching, setEnriching]     = useState(false);
+  const [saving, setSaving]           = useState(false);
+  const [saveError, setSaveError]     = useState('');
+  const [activeSection, setActiveSection] = useState('rules');
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+
+  const pf = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const splitTags = str => (str||'').split(/[,\n]/).map(s=>s.trim()).filter(Boolean);
+
+  // ── Load entries ──
+  const loadEntries = async (cl) => {
+    setListLoading(true); setListError('');
+    try {
+      const qs = cl ? `?client=${encodeURIComponent(cl)}` : '';
+      setEntries(await api('GET', `/api/tag-registry${qs}`, null, token));
+    } catch(e) { setListError(e.message); }
+    finally { setListLoading(false); }
+  };
+  useEffect(() => { loadEntries(filterClient); }, [filterClient]);
+
+  // ── Load queue once for ticket picker ──
+  useEffect(() => {
+    setTicketsLoading(true);
+    api('GET', '/api/queue', null, token)
+      .then(d => setTickets(d)).catch(()=>{}).finally(()=>setTicketsLoading(false));
+  }, []);
+
+  // ── Load DMA sendouts when client changes ──
+  useEffect(() => {
+    if (!form.client) { setSendouts([]); return; }
+    setSendoutsLoading(true);
+    api('GET', `/api/sendouts/${encodeURIComponent(form.client)}`, null, token)
+      .then(d => setSendouts(d)).catch(()=>setSendouts([])).finally(()=>setSendoutsLoading(false));
+  }, [form.client]);
+
+  // ── Auto-enrich when ticket is picked ──
+  const onTicketChange = async (key) => {
+    const tkt = tickets.find(r => r.key === key);
+    setForm(f => ({ ...f, ticket_key:key, sendout_date: tkt?.date || f.sendout_date }));
+    if (!key || !form.client) return;
+    setEnriching(true);
+    try {
+      const en = await api('POST', '/api/ticket/enrich', {
+        client:form.client, ticket_key:key,
+        jira_date: tkt?.date||'', jira_summary: tkt?.summary||'',
+      }, token);
+      setForm(f => ({
+        ...f,
+        sendout_id:   en.sendout_id   || f.sendout_id,
+        sendout_name: en.sendout_name || f.sendout_name,
+        sendout_date: en.sendout_date || tkt?.date || f.sendout_date,
+      }));
+    } catch(_) {}
+    finally { setEnriching(false); }
+  };
+
+  // ── Open create ──
+  const openCreate = () => {
+    setForm(SF_EMPTY); setIncludeTags([]); setExcludeTags([]);
+    setEditId(null); setSaveError(''); setActiveSection('targeting'); setView('form');
+  };
+
+  // ── Open edit ──
+  const openEdit = (e) => {
+    setForm({
+      client:e.client, ticket_key:e.ticket_key||'',
+      sendout_id:e.sendout_id, sendout_name:e.sendout_name,
+      sendout_date:e.sendout_date, sendout_time:e.sendout_time,
+      tz:e.tz, platform:e.platform||'', template_type:e.template_type||'', notes:e.notes,
+    });
+    setIncludeTags(splitTags(e.include_tags));
+    setExcludeTags(splitTags(e.exclude_tags));
+    setEditId(e.id); setSaveError(''); setActiveSection('rules'); setView('form');
+  };
+
+  // ── Save ──
+  const save = async () => {
+    if (!form.client) { setSaveError('Client is required'); return; }
+    setSaving(true); setSaveError('');
+    const body = { ...form, include_tags:includeTags.join(', '), exclude_tags:excludeTags.join(', ') };
+    try {
+      if (editId) await api('PUT', `/api/tag-registry/${editId}`, body, token);
+      else        await api('POST', '/api/tag-registry', body, token);
+      setView('list'); setEditId(null);
+      loadEntries(filterClient);
+    } catch(e) { setSaveError(e.message); }
+    finally { setSaving(false); }
+  };
+
+  // ── Delete ──
+  const del = async (id) => {
+    try {
+      await api('DELETE', `/api/tag-registry/${id}`, null, token);
+      setDeleteConfirm(null); loadEntries(filterClient);
+    } catch(e) { setListError(e.message); }
+  };
+
+  // ── Helpers ──
+  const clientOptions  = (clients||[]).map(c => ({ value:c, label:c }));
+  const ticketOptions  = tickets.filter(r => r.client===form.client)
+    .map(r => ({ value:r.key, label:r.key, sub:`${r.summary}${r.date?` · ${r.date}`:''}` }));
+  const sendoutOptions = sendouts.map(s => ({ value:s.id, label:s.id, sub:`${s.name||''}${s.date?` · ${s.date}`:''}` }));
+  if (form.sendout_id && !sendoutOptions.find(x=>x.value===form.sendout_id))
+    sendoutOptions.unshift({ value:form.sendout_id, label:form.sendout_id, sub:'matched by ticket' });
+
+  const sections = [
+    { id:'targeting', glyph:'01', label:'Targeting',    count: [form.client,form.ticket_key].filter(Boolean).length+'/2' },
+    { id:'source',    glyph:'02', label:'Source',       count: [form.sendout_id].filter(Boolean).length+'/1' },
+    { id:'schedule',  glyph:'03', label:'Schedule',     count: [form.sendout_date,form.sendout_time,form.tz].filter(Boolean).length+'/3' },
+    { id:'config',    glyph:'04', label:'Config',       count: [form.platform,form.template_type].filter(Boolean).length+'/2' },
+    { id:'rules',     glyph:'05', label:'Tag rules',    count: `${includeTags.length}+${excludeTags.length}`, active:true },
+  ];
+
+  const toggleBtn = (val, current, setter) => (
+    <button type="button" onClick={() => setter(current===val ? '' : val)}
+      style={{
+        flex:1, padding:'7px 10px', borderRadius:4, cursor:'pointer',
+        fontSize:12, fontWeight:600, fontFamily:t.font.sans,
+        border:`1px solid ${current===val ? t.brand.base : t.border.input}`,
+        background: current===val ? t.brand.soft : t.bg.surface1,
+        color: current===val ? t.brand.text : t.fg[2],
+        transition:'all .12s',
+      }}>{val}</button>
+  );
+
+  /* ── LIST VIEW ── */
+  if (view==='list') return (
+    <div style={{ maxWidth:1200 }}>
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
+        <div>
+          <div style={{ fontFamily:t.font.display, fontSize:20, fontWeight:700, color:t.fg[1], letterSpacing:'-0.02em' }}>Sendout Form</div>
+          <div style={{ fontSize:12, color:t.fg[3], marginTop:3 }}>Per-sendout tag rules — override Google Sheets when the ticket key matches at validation.</div>
+        </div>
+        <SFBtn primary glyph="+" onClick={openCreate}>New Entry</SFBtn>
+      </div>
+
+      {listError && (
+        <div style={{ marginBottom:14, padding:'10px 14px', background:t.danger.soft, border:`1px solid ${t.danger.ring}`, borderRadius:6, fontSize:13, color:t.danger.base }}>
+          {listError} <button onClick={()=>setListError('')} style={{ marginLeft:8, background:'none', border:'none', cursor:'pointer', color:t.danger.base, fontWeight:700 }}>✕</button>
+        </div>
+      )}
+
+      {/* Filter */}
+      <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:14 }}>
+        <span style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', color:t.fg[3] }}>— Filter</span>
+        <div style={{ width:220 }}>
+          <SFSelect value={filterClient} onChange={v=>setFilterClient(v)} placeholder="All clients"
+            options={[{value:'',label:'All clients'},...clientOptions]}/>
+        </div>
+        <div style={{ marginLeft:'auto', fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>
+          {listLoading ? 'Loading…' : `${entries.length} entr${entries.length===1?'y':'ies'}`}
+        </div>
+      </div>
+
+      {/* Table */}
+      {entries.length===0 && !listLoading ? (
+        <div style={{ padding:'48px 20px', textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6 }}>
+          No entries yet — click "+ New Entry" to create the first one.
+        </div>
+      ) : (
+        <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
+          {/* Table head */}
+          <div style={{ display:'grid', gridTemplateColumns:'130px 80px 80px 1fr 100px 70px 70px 70px 1fr 1fr 94px', gap:10, padding:'10px 16px', borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', color:t.fg[3] }}>
+            <div>Client</div><div>Ticket</div><div>Sendout ID</div><div>Sendout Name</div>
+            <div>Date / Time</div><div>TZ</div><div>Platform</div><div>Type</div>
+            <div>Include Tags</div><div>Exclude Tags</div><div style={{textAlign:'right'}}>Actions</div>
+          </div>
+          {entries.map((e,idx) => {
+            const st = splitTags(e.include_tags);
+            const ex = splitTags(e.exclude_tags);
+            const cell = { minWidth:0, overflow:'hidden' };
+            const mono11 = { fontFamily:t.font.mono, fontSize:11, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' };
+            const TagPill = ({ tags, bg, border, color }) => {
+              if (!tags.length) return <span style={{color:t.fg[4],fontSize:12}}>—</span>;
+              return (
+                <div style={{display:'flex',alignItems:'center',gap:4,overflow:'hidden'}} title={tags.join(', ')}>
+                  <span style={{fontSize:10,fontFamily:t.font.mono,padding:'2px 7px',background:bg,border:`1px solid ${border}`,borderRadius:999,color,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:110}}>{tags[0]}</span>
+                  {tags.length>1 && <span style={{fontSize:10,fontFamily:t.font.mono,padding:'2px 6px',background:t.bg.surface3,border:`1px solid ${t.border.base}`,borderRadius:999,color:t.fg[3],whiteSpace:'nowrap',flexShrink:0}}>+{tags.length-1}</span>}
+                </div>
+              );
+            };
+            return (
+              <div key={e.id} style={{display:'grid',gridTemplateColumns:'130px 80px 80px 1fr 100px 70px 70px 70px 1fr 1fr 94px',gap:10,padding:'11px 16px',borderBottom:idx<entries.length-1?`1px solid ${t.border.base}`:'none',alignItems:'center',fontSize:13}}>
+                <div style={{...cell,fontWeight:600,color:t.fg[1],textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={e.client}>{e.client}</div>
+                <div style={{...mono11,color:e.ticket_key?t.brand.text:t.fg[4]}} title={e.ticket_key}>{e.ticket_key||'—'}</div>
+                <div style={{...mono11,color:t.fg[2]}} title={e.sendout_id}>{e.sendout_id||'—'}</div>
+                <div style={{...cell,fontSize:12,color:t.fg[2],textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={e.sendout_name}>{e.sendout_name||'—'}</div>
+                <div style={cell}>
+                  <div style={{fontSize:12,color:t.fg[1],fontWeight:500}}>{e.sendout_date||'—'}</div>
+                  <div style={{fontSize:11,color:t.fg[3]}}>{e.sendout_time||''}</div>
+                </div>
+                <div style={{...mono11,color:t.fg[3]}} title={e.tz}>{e.tz}</div>
+                <div style={cell}>{e.platform?<span style={{fontSize:10,fontFamily:t.font.mono,padding:'2px 7px',background:t.accent.soft,border:`1px solid ${t.accent.ring}`,borderRadius:999,color:t.accent.base,whiteSpace:'nowrap'}}>{e.platform}</span>:<span style={{color:t.fg[4],fontSize:12}}>—</span>}</div>
+                <div style={cell}>{e.template_type?<span style={{fontSize:10,fontFamily:t.font.mono,padding:'2px 7px',background:t.brand.soft,border:`1px solid ${t.brand.ring}`,borderRadius:999,color:t.brand.text,whiteSpace:'nowrap'}}>{e.template_type}</span>:<span style={{color:t.fg[4],fontSize:12}}>—</span>}</div>
+                <div style={cell}><TagPill tags={st} bg={t.ok.soft} border={t.ok.ring} color={t.ok.base}/></div>
+                <div style={cell}><TagPill tags={ex} bg={t.danger.soft} border={t.danger.ring} color={t.danger.base}/></div>
+                <div style={{display:'flex',gap:5,justifyContent:'flex-end'}}>
+                  <button onClick={()=>openEdit(e)} title="Edit" style={{padding:'4px 8px',border:`1px solid ${t.border.input}`,borderRadius:4,background:'none',cursor:'pointer',fontSize:12,color:t.fg[2]}}>✏️</button>
+                  {deleteConfirm===e.id?(
+                    <>
+                      <button onClick={()=>del(e.id)} style={{padding:'4px 7px',border:`1px solid ${t.danger.base}`,borderRadius:4,background:t.danger.soft,cursor:'pointer',fontSize:11,color:t.danger.base,fontWeight:600}}>Confirm</button>
+                      <button onClick={()=>setDeleteConfirm(null)} style={{padding:'4px 7px',border:`1px solid ${t.border.input}`,borderRadius:4,background:'none',cursor:'pointer',fontSize:11,color:t.fg[3]}}>✕</button>
+                    </>
+                  ):(
+                    <button onClick={()=>setDeleteConfirm(e.id)} title="Delete" style={{padding:'4px 8px',border:`1px solid ${t.border.input}`,borderRadius:4,background:'none',cursor:'pointer',fontSize:12,color:t.fg[3]}}>🗑</button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{marginTop:18,padding:'11px 15px',background:t.bg.surface2,border:`1px solid ${t.border.base}`,borderRadius:6,fontSize:12,color:t.fg[3]}}>
+        <strong style={{color:t.fg[2]}}>Priority:</strong> Registry (ticket key) → Registry (sendout ID) → Registry (date) → Google Sheets.
+      </div>
+    </div>
+  );
+
+  /* ── FORM VIEW (Direction A console layout) ── */
+  return (
+    <div style={{ display:'flex', flexDirection:'column', height:'calc(100vh - 120px)', background:t.bg.app, borderRadius:8, border:`1px solid ${t.border.base}`, overflow:'hidden' }}>
+
+      {/* App bar */}
+      <div style={{ height:52, padding:'0 20px', display:'flex', alignItems:'center', justifyContent:'space-between', background:t.bg.surface1, borderBottom:`1px solid ${t.border.base}`, flexShrink:0 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <div style={{ width:24, height:24, borderRadius:4, background:'#0e2a2a', display:'inline-flex', alignItems:'center', justifyContent:'center', color:'#b3dfdf', fontFamily:t.font.mono, fontSize:11, fontWeight:700 }}>SF</div>
+          <div style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[3], letterSpacing:'.04em' }}>
+            <span style={{color:t.fg[2]}}>sendout-form</span>
+            <span style={{margin:'0 7px',color:t.fg[4]}}>›</span>
+            <span style={{color:t.fg[1]}}>{editId ? `edit · ${form.ticket_key||form.sendout_id||'entry'}` : 'new'}</span>
+          </div>
+          <SFLed tone="ok" pulse/>
+          <span style={{ fontFamily:t.font.mono, fontSize:10, color:t.fg[3], letterSpacing:'.12em', textTransform:'uppercase' }}>DMA · live</span>
+          {enriching && <><span className="vp-spinner"/><span style={{fontSize:11,color:t.fg[3]}}>enriching…</span></>}
+        </div>
+        <div style={{ display:'flex', gap:8 }}>
+          <SFBtn ghost onClick={() => { setView('list'); setEditId(null); }}>Cancel</SFBtn>
+          <SFBtn primary glyph="▶" onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : editId ? 'Save changes' : 'Create entry'}
+          </SFBtn>
+        </div>
+      </div>
+
+      <div style={{ flex:1, display:'grid', gridTemplateColumns:'220px 1fr', overflow:'hidden' }}>
+
+        {/* Sidebar */}
+        <div style={{ padding:'18px 16px', background:t.bg.surface1, borderRight:`1px solid ${t.border.base}`, display:'flex', flexDirection:'column', gap:3, overflowY:'auto' }}>
+          <div style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', color:t.fg[3], marginBottom:10 }}>— Sections</div>
+          {sections.map(s => (
+            <div key={s.id} onClick={() => setActiveSection(s.id)}
+              style={{ padding:'7px 10px', borderRadius:4, display:'flex', alignItems:'center', gap:10, cursor:'pointer',
+                background: activeSection===s.id ? t.brand.soft : 'transparent',
+                border: activeSection===s.id ? `1px solid ${t.brand.ring}` : '1px solid transparent',
+              }}>
+              <span style={{ fontFamily:t.font.mono, fontSize:10, color: activeSection===s.id ? t.brand.text : t.fg[4], letterSpacing:'.04em' }}>{s.glyph}</span>
+              <span style={{ fontSize:13, fontWeight: activeSection===s.id ? 500 : 400, color: activeSection===s.id ? t.fg[1] : t.fg[2], flex:1 }}>{s.label}</span>
+              <span style={{ fontFamily:t.font.mono, fontSize:10, color: activeSection===s.id ? t.brand.text : t.fg[4] }}>{s.count}</span>
+            </div>
+          ))}
+
+          <hr style={{ border:'none', borderTop:`1px dashed ${t.border.input}`, margin:'14px 0 10px' }}/>
+          <div style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', color:t.fg[3], marginBottom:8 }}>— Match key</div>
+          <div style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[2], lineHeight:1.9 }}>
+            <div>ticket    = <span style={{color:t.brand.text}}>{form.ticket_key||'—'}</span></div>
+            <div>sendout   = <span style={{color:t.brand.text}}>{form.sendout_id ? form.sendout_id.slice(0,10)+'…' : '—'}</span></div>
+            <div>overrides = <span style={{color:t.brand.text}}>g-sheet</span></div>
+          </div>
+          <div style={{ marginTop:12, padding:'10px 11px', background:t.brand.soft, border:`1px solid ${t.brand.ring}`, borderRadius:4, fontSize:11, color:t.brand.text, lineHeight:1.55 }}>
+            Entry overrides Google Sheets when the Jira ticket key matches at sendout time.
+          </div>
+        </div>
+
+        {/* Scrollable form */}
+        <div style={{ overflowY:'auto', padding:'24px 28px 60px' }}>
+          <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', marginBottom:5 }}>
+            <div style={{ fontFamily:t.font.display, fontSize:20, fontWeight:700, color:t.fg[1], letterSpacing:'-0.02em' }}>
+              {editId ? 'Edit entry' : 'New entry'}
+            </div>
+            {saveError && <div style={{ fontSize:12, color:t.danger.base, fontWeight:600 }}>⚠ {saveError}</div>}
+          </div>
+          <div style={{ fontSize:13, color:t.fg[2], marginBottom:24 }}>Per-sendout include / exclude tags — used instead of Google Sheets when matched.</div>
+
+          {/* 01 Targeting */}
+          <div style={{ marginBottom:24 }}>
+            <SFSectionHeader glyph="01" title="Targeting" subtitle="Who this entry applies to."/>
+            <SFRow cols="1fr 1.4fr">
+              <SFField>
+                <SFFieldLabel required>Client</SFFieldLabel>
+                <SFSelect value={form.client}
+                  onChange={v => { setForm({...SF_EMPTY, client:v}); setIncludeTags([]); setExcludeTags([]); setSendouts([]); }}
+                  options={clientOptions} placeholder="— select client —" disabled={!!editId}/>
+                {editId && <SFHint>Client cannot be changed on edit.</SFHint>}
+              </SFField>
+              <SFField>
+                <SFFieldLabel hint={enriching ? '⏳ enriching…' : 'auto-fills sendout + date'}>Jira ticket</SFFieldLabel>
+                {ticketsLoading
+                  ? <div style={{fontSize:12,color:t.fg[3],padding:'8px 0'}}><span className="vp-spinner"/> Loading queue…</div>
+                  : <SFSelect value={form.ticket_key} onChange={onTicketChange}
+                      options={ticketOptions} placeholder="— pick a ticket —" mono disabled={!form.client}/>
+                }
+              </SFField>
+            </SFRow>
+          </div>
+
+          {/* 02 Source */}
+          <div style={{ marginBottom:24 }}>
+            <SFSectionHeader glyph="02" title="Source" subtitle="DMA sendout this entry attaches to."/>
+            <SFField>
+              <SFFieldLabel>Sendout · from DMA</SFFieldLabel>
+              {sendoutsLoading
+                ? <div style={{fontSize:12,color:t.fg[3],padding:'8px 0'}}><span className="vp-spinner"/> Loading sendouts…</div>
+                : <SFSelect value={form.sendout_id} onChange={v=>pf('sendout_id',v)}
+                    options={sendoutOptions} placeholder="— select sendout —" mono disabled={!form.client}/>
+              }
+            </SFField>
+            <div style={{height:14}}/>
+            <SFField>
+              <SFFieldLabel>Sendout name (label)</SFFieldLabel>
+              <SFInput value={form.sendout_name} onChange={v=>pf('sendout_name',v)} placeholder="e.g. ALDI Sued Woche 21"/>
+            </SFField>
+          </div>
+
+          {/* 03 Schedule */}
+          <div style={{ marginBottom:24 }}>
+            <SFSectionHeader glyph="03" title="Schedule"/>
+            <SFRow cols="1fr 1fr 1.4fr">
+              <SFField>
+                <SFFieldLabel>Date</SFFieldLabel>
+                <SFInput type="date" value={form.sendout_date} onChange={v=>pf('sendout_date',v)} mono/>
+              </SFField>
+              <SFField>
+                <SFFieldLabel>Time · 24h</SFFieldLabel>
+                <SFInput type="time" value={form.sendout_time} onChange={v=>pf('sendout_time',v)} mono/>
+              </SFField>
+              <SFField>
+                <SFFieldLabel>Timezone</SFFieldLabel>
+                <SFSelect value={form.tz} onChange={v=>pf('tz',v)}
+                  options={SF_TZ.map(z=>({value:z,label:z}))} placeholder="— timezone —"/>
+              </SFField>
+            </SFRow>
+          </div>
+
+          {/* 04 Config */}
+          <div style={{ marginBottom:24 }}>
+            <SFSectionHeader glyph="04" title="Config" subtitle="Platform and message type."/>
+            <SFRow cols="1fr 1fr">
+              <SFField>
+                <SFFieldLabel>Platform</SFFieldLabel>
+                <div style={{display:'flex',gap:8}}>
+                  {toggleBtn('WABA', form.platform, v=>pf('platform',v))}
+                  {toggleBtn('RCS',  form.platform, v=>pf('platform',v))}
+                </div>
+              </SFField>
+              <SFField>
+                <SFFieldLabel>Template type</SFFieldLabel>
+                <div style={{display:'flex',gap:8}}>
+                  {toggleBtn('Regular',  form.template_type, v=>pf('template_type',v))}
+                  {toggleBtn('Carousel', form.template_type, v=>pf('template_type',v))}
+                </div>
+              </SFField>
+            </SFRow>
+          </div>
+
+          {/* 05 Tag rules — HudFrame */}
+          <div style={{ marginBottom:24 }}>
+            <SFSectionHeader glyph="05" title="Tag rules" subtitle="Comma or Enter to add a tag. Backspace to remove last." accent/>
+            <SFHudFrame>
+              <SFRow cols="1fr 1fr">
+                <SFField>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                    <SFLed tone="ok" size={6}/>
+                    <span style={{fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:'.08em',color:t.fg[3]}}>Include · {includeTags.length}</span>
+                  </div>
+                  <SFTagInput tags={includeTags} setTags={setIncludeTags} tone="include" placeholder="leaflet_accepted=true"/>
+                  <SFHint>All include rules must match the recipient.</SFHint>
+                </SFField>
+                <SFField>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                    <SFLed tone="danger" size={6}/>
+                    <span style={{fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:'.08em',color:t.fg[3]}}>Exclude · {excludeTags.length}</span>
+                  </div>
+                  <SFTagInput tags={excludeTags} setTags={setExcludeTags} tone="exclude" placeholder="declined_new_terms=true"/>
+                  <SFHint>Any match drops the recipient from the sendout.</SFHint>
+                </SFField>
+              </SFRow>
+            </SFHudFrame>
+          </div>
+
+          {/* Notes */}
+          <SFField>
+            <SFFieldLabel hint="optional">Notes</SFFieldLabel>
+            <SFInput value={form.notes} onChange={v=>pf('notes',v)} placeholder="e.g. Week 21 — special promo, double opt-in required"/>
+          </SFField>
+
+          {/* Footer actions (also at bottom of form for long scroll) */}
+          <div style={{marginTop:30,display:'flex',gap:8,alignItems:'center'}}>
+            <SFBtn primary glyph="▶" onClick={save} disabled={saving}>
+              {saving ? 'Saving…' : editId ? 'Save changes' : 'Create entry'}
+            </SFBtn>
+            <SFBtn ghost onClick={() => { setView('list'); setEditId(null); }}>Cancel</SFBtn>
+            {saveError && <span style={{fontSize:12,color:t.danger.base,fontWeight:600,marginLeft:4}}>⚠ {saveError}</span>}
+            <div style={{flex:1}}/>
+            <div style={{fontFamily:t.font.mono,fontSize:11,color:t.fg[4]}}>nothing saved until you press the button</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ROOT APP
+   ═════════════════════════════════════════════════════════════════════════ */
+function App() {
+  const [token, setToken] = useState(() => localStorage.getItem('vp_token') || '');
+  const [userName, setUserName] = useState(() => localStorage.getItem('vp_name') || '');
+  const [mainTab, setMainTab] = useState('Validator');
+  const [currentTicket, setCurrentTicket] = useState(null);
+  const [queueRows, setQueueRows] = useState([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueError, setQueueError] = useState('');
+  const [clients, setClients] = useState([]);
+  const [gsheetStatus, setGsheetStatus] = useState('ok');
+  const [cacheKey, setCacheKey] = useState(0);  // bump to clear client cache
+  const [bulkResult, setBulkResult] = useState(null);
+  const [slackStatus, setSlackStatus] = useState('unknown');
+
+  const signIn = (tok, name) => {
+    localStorage.setItem('vp_token', tok);
+    localStorage.setItem('vp_name', name);
+    setToken(tok); setUserName(name);
+    fetchQueue(tok);
+    fetchClients(tok);
+    fetchSlackStatus(tok);
+  };
+
+  const signOut = async () => {
+    try { await api('POST', '/api/auth/logout', null, token); } catch(_){}
+    localStorage.removeItem('vp_token'); localStorage.removeItem('vp_name');
+    setToken(''); setUserName(''); setQueueRows([]); setCurrentTicket(null);
+  };
+
+  const fetchQueue = async (tok) => {
+    setQueueLoading(true);
+    setQueueError('');
+    try {
+      const data = await api('GET', '/api/queue', null, tok||token);
+      setQueueRows(data);
+    } catch(e) {
+      console.error(e);
+      setQueueError(e.message || 'Unknown error');
+    } finally {
+      setQueueLoading(false);
+    }
+  };
+
+  const fetchClients = async (tok) => {
+    try {
+      const data = await api('GET', '/api/clients', null, tok||token);
+      setClients(data);
+    } catch(_){}
+  };
+
+  const refreshGsheet = async () => {
+    setGsheetStatus('loading');
+    try { await api('POST', '/api/gsheet/refresh', null, token); setGsheetStatus('ok'); }
+    catch(_) { setGsheetStatus('error'); }
+  };
+
+  const clearCache = () => { setCacheKey(k=>k+1); setCurrentTicket(null); setQueueRows([]); };
+
+  const fetchSlackStatus = async (tok) => {
+    try {
+      const data = await api('GET', '/api/slack/status', null, tok||token);
+      setSlackStatus(data.configured ? 'ok' : 'none');
+    } catch(_) { setSlackStatus('unknown'); }
+  };
+
+  const testSlack = async () => {
+    try {
+      await api('POST', '/api/slack/test', null, token);
+    } catch(e) { alert('Slack test failed: ' + e.message); }
+  };
+
+  // Load queue on mount if already logged in
+  useEffect(()=>{ if(token){ fetchQueue(); fetchClients(); fetchSlackStatus(); } }, []);
+
+  if (!token) return <Login onSignIn={signIn} />;
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', minHeight:'100vh', background:t.bg.app }}>
+      <Topbar title="Validator Pro" user={userName} />
+      <MainTabs active={mainTab} onChange={tab=>{ setMainTab(tab); setCurrentTicket(null); }} />
+      <div style={{ display:'flex', flex:1 }}>
+        <Sidebar user={userName} onSignOut={signOut} onRefreshSheet={refreshGsheet} onClearCache={clearCache} gsheetStatus={gsheetStatus} slackStatus={slackStatus} onTestSlack={testSlack} />
+        <main style={{ flex:1, padding:'24px 28px', overflow:'auto', minWidth:0 }}>
+
+          {mainTab==='Validator'&&(
+            currentTicket
+              ? <TicketPanel key={`${cacheKey}-${currentTicket.key}`} ticket={currentTicket} clients={clients} token={token} onBack={()=>setCurrentTicket(null)} />
+              : bulkResult
+                ? <BulkResultPanel results={bulkResult.results} mode={bulkResult.mode} onBack={()=>setBulkResult(null)} />
+                : <Queue rows={queueRows} onLoad={row=>{setCurrentTicket(row);}} loading={queueLoading} onRefresh={()=>fetchQueue()} token={token} onBulkResult={(data,mode)=>setBulkResult({results:data,mode})} fetchError={queueError} />
+          )}
+
+          {mainTab==='Orphan Scanner'&&<OrphanScanner token={token} />}
+          {mainTab==='Dashboard'&&<Dashboard token={token} />}
+          {mainTab==='Sendout Form'&&<SendoutForm token={token} clients={clients} />}
+
+        </main>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+<!-- Mobile version switcher -->
+<a href="/mobile?force=mobile" title="Switch to Mobile version"
+   style="position:fixed;bottom:16px;right:16px;z-index:9999;
+          display:inline-flex;align-items:center;gap:6px;
+          padding:7px 12px;border-radius:999px;
+          background:#ffffff;border:1px solid #e6eaef;
+          color:#475068;font-family:'Space Grotesk',sans-serif;
+          font-size:11px;font-weight:600;text-decoration:none;
+          box-shadow:0 2px 8px rgba(15,24,40,0.08);
+          transition:box-shadow .15s;">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="2" width="10" height="20" rx="2"/><circle cx="12" cy="18" r="1" fill="currentColor" stroke="none"/></svg>
+  Mobile
+</a>
+</body>
+</html>

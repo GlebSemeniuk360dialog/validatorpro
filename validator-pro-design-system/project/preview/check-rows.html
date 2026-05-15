@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="card-base.css">
+<style>
+.check { display:flex; align-items:flex-start; gap:10px; padding:10px 14px; border-radius:4px; font-size:13px; }
+.check.ok   { background:#00d4aa0d; border:1px solid #00d4aa22; }
+.check.fail { background:#ff4d6d0d; border:1px solid #ff4d6d22; }
+.check.warn { background:#ffb5470d; border:1px solid #ffb54722; }
+.check .icon { font-size:15px; margin-top:1px; }
+.check .lbl  { font-size:11px; color:var(--fg-3); }
+.check .val  { color:var(--fg-1); margin-top:2px; word-break:break-all; }
+</style></head>
+<body><div class="card">
+  <div class="check ok">
+    <span class="icon">✅</span>
+    <div><div class="lbl">Footer</div><div class="val">JIRA: "Mit freundlichen Grüßen, ALDI Sued" → API: "Mit freundlichen Grüßen, ALDI Sued"</div></div>
+  </div>
+  <div class="check fail">
+    <span class="icon">❌</span>
+    <div><div class="lbl">CTA Button</div><div class="val">"Zum Prospekt" not found in API buttons ["Mehr erfahren", "Abmelden"]</div></div>
+  </div>
+  <div class="check warn">
+    <span class="icon">⚠️</span>
+    <div><div class="lbl">Leaflet URL</div><div class="val">Reachability check returned 302 — manual review recommended</div></div>
+  </div>
+</div></body></html>

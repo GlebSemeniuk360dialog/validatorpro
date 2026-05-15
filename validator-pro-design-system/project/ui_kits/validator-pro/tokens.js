@@ -1,0 +1,55 @@
+/* ui_kits/validator-pro/tokens.js — mirrors colors_and_type.css v3 (light + teal) */
+window.tokens = {
+  bg: {
+    app:        '#f6f8fb',
+    appSoft:    '#f0f3f7',
+    surface1:   '#ffffff',
+    surface2:   '#f6f8fb',
+    surface3:   '#eef2f7',
+  },
+  border: {
+    base:       '#e6eaef',
+    input:      '#d6dce5',
+    hud:        '#b3dfdf',
+  },
+  fg: {
+    1: '#0f1828',
+    2: '#475068',
+    3: '#8893a3',
+    4: '#aab3c1',
+  },
+  brand: {
+    base:       '#0fb5b5',
+    hover:      '#0ca0a0',
+    soft:       '#0fb5b515',
+    ring:       '#0fb5b540',
+    text:       '#0a8080',
+    slide:      '#0a8080',
+    glow:       '0 0 12px rgba(15, 181, 181, 0.22)',
+    glowSm:     '0 0 6px rgba(15, 181, 181, 0.30)',
+    dark:       '#0e2a2a',
+  },
+  accent: {
+    base:       '#00a8c8',
+    soft:       '#00a8c815',
+    ring:       '#00a8c840',
+    glow:       '0 0 6px rgba(0, 168, 200, 0.30)',
+    glowSm:     '0 0 4px rgba(0, 168, 200, 0.35)',
+  },
+  ok:     { base: '#0c8f4a', soft: '#0c8f4a15', soft2: '#0c8f4a08', ring: '#0c8f4a40', border: '#0c8f4a55', glow: '0 0 6px rgba(12, 143, 74, 0.30)' },
+  danger: { base: '#dc2626', soft: '#dc262615', soft2: '#dc262608', ring: '#dc262640', border: '#dc262655', glow: '0 0 6px rgba(220, 38, 38, 0.32)' },
+  warn:   { base: '#c47d0a', soft: '#c47d0a15', soft2: '#c47d0a08', ring: '#c47d0a40', glow: '0 0 6px rgba(196, 125, 10, 0.30)' },
+  info:   { base: '#0a8080', soft: '#0fb5b515', ring: '#0fb5b540' },
+  r: { xs: 2, sm: 3, md: 4, lg: 6, xl: 8, pill: 999 },
+  font: {
+    sans:    "'Space Grotesk', system-ui, sans-serif",
+    mono:    "'JetBrains Mono', ui-monospace, monospace",
+    display: "'Space Grotesk', sans-serif",
+  },
+  ls: {
+    overline:      '0.12em',
+    overlineLoose: '0.16em',
+    display:      '-0.02em',
+    data:          '0.06em',
+  },
+};

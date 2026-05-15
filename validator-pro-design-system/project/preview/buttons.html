@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="card-base.css">
+<style>
+.btn { font-family: var(--font-sans); font-weight: 500; font-size: 13px; border-radius:4px; padding: 9px 16px; cursor: pointer; transition: all .18s; border: 1px solid transparent; }
+.btn-primary { background: #3d4bff; color: #fff; border: none; }
+.btn-primary:hover { background: #5560ff; }
+.btn-ghost { background: transparent; color: var(--fg-3); border: 1px solid var(--border-2); }
+.btn-ghost:hover { border-color: var(--brand); color: var(--brand-text); }
+.btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger-ring); }
+.btn-toggle { background: none; border: 1px solid var(--border-2); color: var(--fg-3); border-radius: 6px; padding: 5px 12px; font-size: 12px; font-family: var(--font-sans); }
+</style>
+</head>
+<body><div class="card">
+  <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+    <button class="btn btn-primary">▶ Validate</button>
+    <button class="btn btn-primary">🚀 Validate Pair</button>
+    <button class="btn btn-ghost">🔄 Refresh Queue</button>
+    <button class="btn btn-ghost">✕ Clear</button>
+    <button class="btn btn-toggle">Show diff</button>
+  </div>
+  <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+    <button class="btn btn-primary" style="background:#5560ff;">▶ Validate · hover</button>
+    <button class="btn btn-ghost" style="border-color:var(--brand); color:var(--brand-text);">✕ Clear · hover</button>
+    <button class="btn btn-primary" style="opacity:.5; cursor:not-allowed;">▶ Validate · disabled</button>
+  </div>
+  <div style="color:var(--fg-3); font-size:11px; line-height:1.6;">Primary fills with brand indigo, lightens on hover. Ghost gets a brand border + text color on hover. No press scale. No drop shadow.</div>
+</div></body></html>
