@@ -459,13 +459,21 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
   const singleRow = singleSel ? rows.find(r=>r.key===singleSel) : null;
   const allFilteredSelected = filtered.length>0 && filtered.every(r=>selected.has(r.key));
 
-  const statusDot = s => {
-    if (!s) return { c:t.fg[4], label:'—' };
-    if (s==='In Progress') return { c:t.warn.base, label:'Active' };
-    if (s==='Open')        return { c:t.brand.base, label:'Open' };
-    if (s==='Resolved' || s==='Done') return { c:t.fg[4], label:'Done' };
-    // Truncate long statuses to first word so they fit the column
-    return { c:t.fg[4], label: s.length > 8 ? s.slice(0,8)+'…' : s };
+  const statusBadge = s => {
+    const sl = (s||'').toLowerCase();
+    // Green
+    if (sl.includes('final check'))    return { c:t.ok.base,     bg:t.ok.soft,     border:t.ok.ring,     label:'Final Checks' };
+    if (sl==='resolved'||sl==='done')  return { c:t.ok.base,     bg:t.ok.soft,     border:t.ok.ring,     label:'Done' };
+    // Red
+    if (sl.includes('pending'))        return { c:t.danger.base, bg:t.danger.soft, border:t.danger.ring, label:'Pending Customer' };
+    // Blue
+    if (sl.includes('customer replied') || sl.includes('replied')) return { c:t.accent.base, bg:t.accent.soft, border:t.accent.ring, label:'Cust. Replied' };
+    // Orange / warn
+    if (sl==='in progress')            return { c:t.warn.base,   bg:t.warn.soft,   border:t.warn.ring,   label:'In Progress' };
+    if (sl.includes('open'))           return { c:t.brand.base,  bg:t.brand.soft,  border:t.brand.ring,  label:'Open' };
+    // Grey — To Do, Waiting, unknown
+    if (sl==='to do'||sl==='todo')     return { c:t.fg[3],       bg:t.bg.surface3, border:t.border.base, label:'To Do' };
+    return { c:t.fg[3], bg:t.bg.surface3, border:t.border.base, label: s||'—' };
   };
 
   const runBulk = async (mode) => {
@@ -535,16 +543,16 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
       {filtered.length>0&&(
         <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
           {/* Header */}
-          <div style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 90px', padding:'10px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3], alignItems:'center' }}>
+          <div style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 148px', padding:'10px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3], alignItems:'center' }}>
             <div><input type="checkbox" checked={allFilteredSelected} onChange={toggleAll} title="Select all" /></div>
             <div>ID</div><div>Summary</div><div>Client</div><div>Date</div><div>Status</div>
           </div>
           {filtered.map(r=>{
             const isSel = selected.has(r.key);
-            const ds = statusDot(r.status);
+            const sb = statusBadge(r.status);
             return (
               <div key={r.key} onClick={()=>toggle(r.key)}
-                style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 90px', padding:'11px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isSel?t.brand.soft:'transparent', cursor:'pointer', transition:'background .12s', alignItems:'center' }}>
+                style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 148px', padding:'11px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isSel?t.brand.soft:'transparent', cursor:'pointer', transition:'background .12s', alignItems:'center' }}>
                 <div onClick={e=>e.stopPropagation()}>
                   <input type="checkbox" checked={isSel} onChange={()=>toggle(r.key)} />
                 </div>
@@ -552,9 +560,10 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
                 <div style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontSize:13 }}>{r.summary}</div>
                 <div style={{ color:t.fg[2], fontSize:12, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{r.client}</div>
                 <div style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[2] }}>{r.date}</div>
-                <div style={{ display:'flex', alignItems:'center', gap:5 }}>
-                  <span style={{ width:7, height:7, borderRadius:'50%', background:ds.c, display:'inline-block', flexShrink:0 }} />
-                  <span style={{ fontSize:11, color:t.fg[3], whiteSpace:'nowrap' }}>{ds.label}</span>
+                <div>
+                  <span style={{ fontSize:11, fontWeight:600, fontFamily:t.font.sans, padding:'3px 9px', borderRadius:999, background:sb.bg, border:`1px solid ${sb.border}`, color:sb.c, whiteSpace:'nowrap', display:'inline-block' }} title={r.status}>
+                    {sb.label}
+                  </span>
                 </div>
               </div>
             );
@@ -1699,6 +1708,15 @@ function SendoutForm({ token, clients }) {
                   : <SFSelect value={form.ticket_key} onChange={onTicketChange}
                       options={ticketOptions} placeholder="— pick a ticket —" mono disabled={!form.client}/>
                 }
+                {form.ticket_key && (() => {
+                  const tkt = tickets.find(r => r.key === form.ticket_key);
+                  if (!tkt?.summary) return null;
+                  return (
+                    <div style={{ marginTop:6, padding:'6px 10px', background:t.brand.soft, border:`1px solid ${t.brand.ring}`, borderRadius:5, fontSize:12, color:t.fg[1], fontWeight:500, lineHeight:1.4 }}>
+                      {tkt.summary}
+                    </div>
+                  );
+                })()}
               </SFField>
             </SFRow>
           </div>
