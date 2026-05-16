@@ -532,9 +532,9 @@ function QueueScreen({ token, onOpenTicket }) {
   function statusKind(s) {
     if (!s) return 'neutral';
     const l = s.toLowerCase();
-    if (l.includes('pass') || l.includes('ok') || l.includes('done')) return 'ok';
-    if (l.includes('fail') || l.includes('error')) return 'danger';
-    if (l.includes('warn') || l.includes('pending')) return 'warn';
+    if (l.includes('final check') || l.includes('pass') || l.includes('done') || l.includes('resolved')) return 'ok';
+    if (l.includes('pending') || l.includes('fail') || l.includes('error')) return 'danger';
+    if (l.includes('replied') || l.includes('in progress')) return 'warn';
     return 'neutral';
   }
 
