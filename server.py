@@ -867,12 +867,14 @@ async def validate(req: ValidateRequest, authorization: Optional[str] = Header(N
         dark=False,
     )
 
+    session = _sessions.get((authorization or "").split(" ", 1)[-1], {})
     global _validation_log
     _validation_log = record_validation(
         ticket_key=req.ticket_key, client=req.client,
         status="pending", mode="regular", issues=0,
         approved=bool(j_data.get("approval_status")),
         log=_validation_log,
+        user=session.get("name", ""),
     )
 
     return {
@@ -1007,12 +1009,18 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         dark=False,
     )
 
+    session = _sessions.get((authorization or "").split(" ", 1)[-1], {})
+    user_name = session.get("name", "Validator Pro")
+    _ai_failed_checks = _extract_failed_checks(ai_result_text) if issues > 0 else []
     global _validation_log
     _validation_log = record_validation(
         ticket_key=req.ticket_key, client=req.client,
         status="failed" if issues else "passed",
         mode="ai", issues=issues,
         approved=False, log=_validation_log,
+        user=user_name,
+        failed_checks=_ai_failed_checks,
+        confidence=ai_result.get("confidence") if isinstance(ai_result, dict) else None,
     )
 
     # Write AI status back to JIRA
@@ -1024,8 +1032,6 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
 
     # Fire Slack alert when AI audit finds issues
     if issues > 0:
-        session = _sessions.get((authorization or "").split(" ", 1)[-1], {})
-        user_name = session.get("name", "Validator Pro")
         failed = _extract_failed_checks(ai_result_text)
         _send_slack_alert(
             ticket_key=req.ticket_key,
@@ -1054,9 +1060,32 @@ async def dashboard(authorization: Optional[str] = Header(None)):
     _get_session(authorization)
     try:
         data = build_dashboard_data(_validation_log)
-        data["log"] = _validation_log[-50:]
+        data["log"] = list(reversed(_validation_log[-50:]))
+
+        # ── Queue health (live from cache) ────────────────────────────────────
+        from datetime import datetime as _dti, timedelta as _tdi
+        queue = _cached_queue()
+        today = _dti.utcnow().date()
+        due_24h = due_48h = 0
+        for t in queue:
+            raw = (t.get("date") or "")[:10]
+            if not raw:
+                continue
+            try:
+                delta = (_dti.fromisoformat(raw).date() - today).days
+                if 0 <= delta <= 1:
+                    due_24h += 1
+                if 0 <= delta <= 2:
+                    due_48h += 1
+            except Exception:
+                pass
+        data["queue_health"] = {
+            "queue_size": len(queue),
+            "due_24h":    due_24h,
+            "due_48h":    due_48h,
+        }
     except Exception:
-        data = {"total": 0, "pass_rate": 0, "log": []}
+        data = {"total": 0, "pass_rate": 0, "log": [], "queue_health": {"queue_size": 0, "due_24h": 0, "due_48h": 0}}
     return data
 
 
@@ -1229,13 +1258,18 @@ async def bulk_validate(req: BulkRequest, authorization: Optional[str] = Header(
         on_progress=lambda r, i, t: None,
     )
 
+    session = _sessions.get((authorization or "").split(" ", 1)[-1], {})
+    bulk_user = session.get("name", "")
     global _validation_log
     for r in results:
+        _fc = [c["label"] for c in (r.checks or []) if not c.get("ok")]
         _validation_log = record_validation(
             ticket_key=r.ticket_key, client=r.client,
             status=r.status, mode="regular",
             issues=r.issues_found, approved=False,
             log=_validation_log,
+            user=bulk_user,
+            failed_checks=_fc,
         )
 
     return [_serialize_result(r) for r in results]
@@ -1266,11 +1300,15 @@ async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(
 
     global _validation_log
     for r in results:
+        _ai_fc = [c["label"] for c in (r.checks or []) if not c.get("ok")]
         _validation_log = record_validation(
             ticket_key=r.ticket_key, client=r.client,
             status=r.status, mode="ai",
             issues=r.issues_found, approved=False,
             log=_validation_log,
+            user=user_name,
+            failed_checks=_ai_fc,
+            confidence=getattr(r, "confidence", None),
         )
         # Send Slack alert for each failed ticket
         if r.status == "failed" and r.issues_found > 0:

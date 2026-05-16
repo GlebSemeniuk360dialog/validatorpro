@@ -348,70 +348,101 @@ def export_bulk_results_csv(results: list) -> bytes:
 
 def build_dashboard_data(validation_log: list[dict]) -> dict:
     """
-    Compute summary stats from the validation log stored in session state.
-
-    Each log entry is a dict written by record_validation():
-        {
-            "ticket_key": str,
-            "client": str,
-            "status": "passed" | "failed" | "error",
-            "mode": "regular" | "ai",
-            "issues": int,
-            "timestamp": str (ISO),
-            "approved": bool,
-        }
-
-    Returns a dict consumed directly by render_dashboard().
+    Compute all dashboard stats from the in-memory validation log.
+    Returns a rich dict consumed by the Dashboard UI.
     """
+    from collections import Counter
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    week_start = (datetime.now(timezone.utc).date() - __import__("datetime").timedelta(days=6)).isoformat()
+
+    empty = {
+        "total": 0, "passed": 0, "failed": 0, "errors": 0, "pass_rate": 0.0,
+        "today_total": 0, "today_passed": 0, "today_failed": 0, "today_pass_rate": 0.0, "today_ai": 0,
+        "week_total": 0, "week_passed": 0, "week_failed": 0, "week_pass_rate": 0.0,
+        "ai_total": 0, "ai_avg_confidence": None, "ai_low_confidence": 0,
+        "top_failed_checks": [],
+        "by_client": {}, "by_user": {},
+        "recent": [], "daily_counts": {},
+    }
     if not validation_log:
-        return {
-            "total": 0, "passed": 0, "failed": 0, "errors": 0,
-            "pass_rate": 0.0,
-            "by_client": {},
-            "recent": [],
-            "daily_counts": {},
-        }
+        return empty
 
     total   = len(validation_log)
-    passed  = sum(1 for e in validation_log if e["status"] == "passed")
-    failed  = sum(1 for e in validation_log if e["status"] == "failed")
-    errors  = sum(1 for e in validation_log if e["status"] == "error")
+    passed  = sum(1 for e in validation_log if e.get("status") == "passed")
+    failed  = sum(1 for e in validation_log if e.get("status") == "failed")
+    errors  = sum(1 for e in validation_log if e.get("status") == "error")
     pass_rate = round(passed / total * 100, 1) if total else 0.0
 
-    by_client: dict[str, dict] = {}
-    for e in validation_log:
-        c = e.get("client", "Unknown")
-        if c not in by_client:
-            by_client[c] = {"total": 0, "passed": 0, "failed": 0, "issues": 0}
-        by_client[c]["total"] += 1
-        if e["status"] == "passed":
-            by_client[c]["passed"] += 1
-        elif e["status"] == "failed":
-            by_client[c]["failed"] += 1
-        by_client[c]["issues"] += e.get("issues", 0)
+    # ── Today ────────────────────────────────────────────────────────────────
+    today_log = [e for e in validation_log if e.get("timestamp", "")[:10] == today_str]
+    t_total  = len(today_log)
+    t_passed = sum(1 for e in today_log if e.get("status") == "passed")
+    t_failed = sum(1 for e in today_log if e.get("status") == "failed")
+    t_ai     = sum(1 for e in today_log if e.get("mode") == "ai")
+    t_rate   = round(t_passed / t_total * 100, 1) if t_total else 0.0
 
-    # Daily counts (last 14 days)
-    daily: dict[str, dict] = {}
+    # ── This week (last 7 days) ───────────────────────────────────────────────
+    week_log  = [e for e in validation_log if e.get("timestamp", "")[:10] >= week_start]
+    w_total   = len(week_log)
+    w_passed  = sum(1 for e in week_log if e.get("status") == "passed")
+    w_failed  = sum(1 for e in week_log if e.get("status") == "failed")
+    w_rate    = round(w_passed / w_total * 100, 1) if w_total else 0.0
+
+    # ── AI audit stats ────────────────────────────────────────────────────────
+    ai_log  = [e for e in validation_log if e.get("mode") == "ai"]
+    ai_total = len(ai_log)
+    confidences = [e["confidence"] for e in ai_log if e.get("confidence") is not None]
+    ai_avg_conf = round(sum(confidences) / len(confidences), 1) if confidences else None
+    ai_low_conf = sum(1 for c in confidences if c < 60)
+
+    # ── Most common failed checks ─────────────────────────────────────────────
+    check_counter: Counter = Counter()
+    for e in validation_log:
+        for chk in e.get("failed_checks", []):
+            if chk:
+                check_counter[chk] += 1
+    top_failed = [{"label": k, "count": v} for k, v in check_counter.most_common(8)]
+
+    # ── Per-client breakdown ──────────────────────────────────────────────────
+    by_client: dict = {}
+    for e in validation_log:
+        c = e.get("client") or "Unknown"
+        r = by_client.setdefault(c, {"total": 0, "passed": 0, "failed": 0, "issues": 0})
+        r["total"] += 1
+        if e.get("status") == "passed": r["passed"] += 1
+        elif e.get("status") == "failed": r["failed"] += 1
+        r["issues"] += e.get("issues", 0)
+
+    # ── Per-user breakdown ────────────────────────────────────────────────────
+    by_user: dict = {}
+    for e in validation_log:
+        u = e.get("user") or "—"
+        r = by_user.setdefault(u, {"total": 0, "passed": 0, "failed": 0})
+        r["total"] += 1
+        if e.get("status") == "passed": r["passed"] += 1
+        elif e.get("status") == "failed": r["failed"] += 1
+
+    # ── Daily counts (last 14 days) ───────────────────────────────────────────
+    daily: dict = {}
     for e in validation_log:
         day = e.get("timestamp", "")[:10]
         if day:
-            daily.setdefault(day, {"passed": 0, "failed": 0})
-            if e["status"] == "passed":
-                daily[day]["passed"] += 1
-            elif e["status"] == "failed":
-                daily[day]["failed"] += 1
+            r = daily.setdefault(day, {"passed": 0, "failed": 0})
+            if e.get("status") == "passed": r["passed"] += 1
+            elif e.get("status") == "failed": r["failed"] += 1
 
-    recent = sorted(validation_log, key=lambda x: x.get("timestamp", ""), reverse=True)[:20]
+    recent = sorted(validation_log, key=lambda x: x.get("timestamp", ""), reverse=True)[:30]
 
     return {
-        "total":       total,
-        "passed":      passed,
-        "failed":      failed,
-        "errors":      errors,
-        "pass_rate":   pass_rate,
-        "by_client":   by_client,
-        "recent":      recent,
-        "daily_counts": daily,
+        "total": total, "passed": passed, "failed": failed, "errors": errors, "pass_rate": pass_rate,
+        "today_total": t_total, "today_passed": t_passed, "today_failed": t_failed,
+        "today_pass_rate": t_rate, "today_ai": t_ai,
+        "week_total": w_total, "week_passed": w_passed, "week_failed": w_failed, "week_pass_rate": w_rate,
+        "ai_total": ai_total, "ai_avg_confidence": ai_avg_conf, "ai_low_confidence": ai_low_conf,
+        "top_failed_checks": top_failed,
+        "by_client": by_client, "by_user": by_user,
+        "recent": recent, "daily_counts": daily,
     }
 
 
@@ -423,21 +454,27 @@ def record_validation(
     issues: int,
     approved: bool,
     log: list[dict],
+    user: str = "",
+    failed_checks: list | None = None,
+    confidence: int | None = None,
 ) -> list[dict]:
     """
     Append a validation event to *log* and return it.
     Call this after every successful validation run.
     """
     log.append({
-        "ticket_key": ticket_key,
-        "client":     client,
-        "status":     status,
-        "mode":       mode,
-        "issues":     issues,
-        "timestamp":  datetime.now(timezone.utc).isoformat(),
-        "approved":   approved,
+        "ticket_key":   ticket_key,
+        "client":       client,
+        "status":       status,
+        "mode":         mode,
+        "issues":       issues,
+        "timestamp":    datetime.now(timezone.utc).isoformat(),
+        "approved":     approved,
+        "user":         user or "",
+        "failed_checks": failed_checks or [],
+        "confidence":   confidence,
     })
-    # Cap at 500 entries so the in-memory log doesn't grow unboundedly.
-    if len(log) > 500:
-        del log[:-500]
+    # Cap at 1000 entries so the in-memory log doesn't grow unboundedly.
+    if len(log) > 1000:
+        del log[:-1000]
     return log

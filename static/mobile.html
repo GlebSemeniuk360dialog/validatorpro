@@ -1182,89 +1182,168 @@ function OrphansScreen({ token }) {
 /* ═══════════════════════════════════════════════════════════════════════════
    DASHBOARD SCREEN
    ═════════════════════════════════════════════════════════════════════════ */
+function MiniStatCard({ label, value, kind='neutral', icon }) {
+  const clr = { ok: T.ok.base, danger: T.danger.base, warn: T.warn.base, accent: T.accent.base, brand: T.brand.base, neutral: T.fg[1] }[kind] || T.fg[1];
+  return (
+    <MCard padding="12px 14px">
+      <MOverline style={{ marginBottom: 4 }}>{icon ? `${icon} ` : ''}{label}</MOverline>
+      <div style={{ fontSize: 26, fontWeight: 800, fontFamily: T.font.mono, color: clr, letterSpacing: '-0.02em' }}>{value}</div>
+    </MCard>
+  );
+}
+
+function MBarRow({ label, value, max, kind='danger' }) {
+  const pct = max > 0 ? Math.min(100, Math.round(value / max * 100)) : 0;
+  const clr = { ok: T.ok.base, danger: T.danger.base, warn: T.warn.base, accent: T.accent.base }[kind] || T.danger.base;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
+      <span style={{ fontSize: 11, color: T.fg[2], flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+      <div style={{ width: 80, height: 6, borderRadius: 3, background: T.bg.surface3, overflow: 'hidden', flexShrink: 0 }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: clr, borderRadius: 3 }} />
+      </div>
+      <span style={{ fontSize: 11, fontFamily: T.font.mono, color: clr, minWidth: 20, textAlign: 'right' }}>{value}</span>
+    </div>
+  );
+}
+
 function DashboardScreen({ token }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
+    setLoading(true);
     mapi('GET', '/api/dashboard', null, token)
       .then(d => { setData(d); setError(''); })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [refresh]);
 
-  function logKind(action) {
-    if (!action) return 'neutral';
-    const a = action.toLowerCase();
-    if (a.includes('pass') || a.includes('approve') || a.includes('ok')) return 'ok';
-    if (a.includes('fail') || a.includes('reject') || a.includes('error')) return 'danger';
-    if (a.includes('warn') || a.includes('audit')) return 'warn';
-    if (a.includes('check') || a.includes('validate')) return 'info';
-    return 'neutral';
-  }
-
-  const alertCount = data?.log?.filter(l => logKind(l.action) === 'danger').length ?? 0;
-  const avgAudit = data?.avg_audit != null ? `${data.avg_audit}s` : '—';
-
-  const metrics = [
-    { label: 'Validations', value: data?.total ?? '—', kind: 'neutral' },
-    { label: 'Pass Rate', value: data?.pass_rate != null ? `${Math.round(data.pass_rate)}%` : '—', kind: data?.pass_rate >= 80 ? 'ok' : data?.pass_rate >= 60 ? 'warn' : 'danger' },
-    { label: 'Avg Audit', value: avgAudit, kind: 'neutral' },
-    { label: 'Alerts', value: alertCount, kind: alertCount > 0 ? 'danger' : 'ok' },
-  ];
+  const d = data || {};
+  const recent = d.recent || [];
+  const qh = d.queue_health || {};
+  const topFailed = d.top_failed_checks || [];
+  const byUser = d.by_user || {};
+  const maxFailed = topFailed.length > 0 ? topFailed[0].count : 1;
+  const userRows = Object.entries(byUser).sort((a, b) => b[1].total - a[1].total).slice(0, 5);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ padding: '14px 16px 12px', background: T.bg.surface1, borderBottom: `1px solid ${T.border.base}` }}>
+      {/* Header */}
+      <div style={{ padding: '14px 16px 10px', background: T.bg.surface1, borderBottom: `1px solid ${T.border.base}`, flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: T.fg[1], flex: 1 }}>Dashboard</div>
+          <button onClick={() => setRefresh(r => r + 1)} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, border: `1px solid ${T.border.base}`, background: T.bg.surface2, color: T.fg[2], cursor: 'pointer' }}>↻</button>
           <MLed kind="ok" pulse size={8} />
           <span style={{ fontSize: 10, fontFamily: T.font.mono, color: T.ok.base, letterSpacing: '.08em' }}>LIVE</span>
         </div>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px 24px' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 14px 28px' }}>
         <ErrorBox msg={error} onDismiss={() => setError('')} />
-
         {loading ? <SpinnerLg /> : (
           <>
-            {/* Metric cards */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 20 }}>
-              {metrics.map(m => (
-                <MCard key={m.label} padding="14px 12px">
-                  <MOverline style={{ marginBottom: 6 }}>{m.label}</MOverline>
-                  <div style={{ fontSize: 28, fontWeight: 700, fontFamily: T.font.mono, color: m.kind === 'ok' ? T.ok.base : m.kind === 'danger' ? T.danger.base : m.kind === 'warn' ? T.warn.base : T.fg[1] }}>
-                    {m.value}
-                  </div>
-                </MCard>
-              ))}
+            {/* Today at a Glance */}
+            <MSectionHeader>⚡ Today at a Glance</MSectionHeader>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginBottom: 16 }}>
+              <MiniStatCard label="Validations" value={d.today_total ?? '—'} icon="📋" />
+              <MiniStatCard label="Pass Rate"   value={d.today_total > 0 ? `${d.today_pass_rate}%` : '—'} kind={d.today_pass_rate >= 80 ? 'ok' : d.today_pass_rate > 0 ? 'warn' : 'neutral'} icon="📊" />
+              <MiniStatCard label="Passed"      value={d.today_passed ?? '—'} kind="ok" icon="✅" />
+              <MiniStatCard label="Failed"      value={d.today_failed ?? '—'} kind={d.today_failed > 0 ? 'danger' : 'neutral'} icon="❌" />
             </div>
 
-            {/* Audit log */}
-            {data?.log?.length > 0 && (
+            {/* This Week */}
+            <MSectionHeader>📅 This Week</MSectionHeader>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginBottom: 16 }}>
+              <MiniStatCard label="Total"     value={d.week_total ?? '—'} />
+              <MiniStatCard label="Pass Rate" value={d.week_total > 0 ? `${d.week_pass_rate}%` : '—'} kind={d.week_pass_rate >= 80 ? 'ok' : d.week_pass_rate > 0 ? 'warn' : 'neutral'} />
+              <MiniStatCard label="Passed"    value={d.week_passed ?? '—'} kind="ok" />
+              <MiniStatCard label="Failed"    value={d.week_failed ?? '—'} kind={d.week_failed > 0 ? 'danger' : 'neutral'} />
+            </div>
+
+            {/* Queue Health */}
+            <MSectionHeader>🏥 Queue Health</MSectionHeader>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 16 }}>
+              <MiniStatCard label="In Queue" value={qh.queue_size ?? '—'} icon="📬" />
+              <MiniStatCard label="Due 24h"  value={qh.due_24h ?? '—'} kind={qh.due_24h > 0 ? 'warn' : 'ok'} icon="⏰" />
+              <MiniStatCard label="Due 48h"  value={qh.due_48h ?? '—'} kind={qh.due_48h > 5 ? 'danger' : 'neutral'} icon="📆" />
+            </div>
+
+            {/* AI Stats */}
+            <MSectionHeader>🤖 AI Audit Stats</MSectionHeader>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 16 }}>
+              <MiniStatCard label="AI Runs"     value={d.ai_total ?? '—'} kind="accent" icon="🤖" />
+              <MiniStatCard label="Avg Conf."   value={d.ai_avg_confidence != null ? `${d.ai_avg_confidence}%` : '—'} kind={d.ai_avg_confidence >= 80 ? 'ok' : d.ai_avg_confidence >= 60 ? 'warn' : 'neutral'} icon="🎯" />
+              <MiniStatCard label="Low Conf."   value={d.ai_low_confidence ?? '—'} kind={d.ai_low_confidence > 0 ? 'danger' : 'neutral'} icon="⚠️" />
+            </div>
+
+            {/* Most common failed checks */}
+            {topFailed.length > 0 && (
               <>
-                <MSectionHeader>Audit Log</MSectionHeader>
-                <MCard padding="0">
-                  {data.log.slice().reverse().map((entry, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 14px', borderBottom: i < data.log.length - 1 ? `1px solid ${T.border.base}` : 'none' }}>
-                      <MLed kind={logKind(entry.action)} size={7} style={{ marginTop: 3 }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                          <span style={{ fontSize: 11, fontWeight: 600, color: T.fg[2] }}>{entry.action || '—'}</span>
-                          {entry.user && <span style={{ fontSize: 10, color: T.fg[4] }}>by {entry.user}</span>}
-                        </div>
-                        {entry.detail && <div style={{ fontSize: 11, color: T.fg[3], wordBreak: 'break-all' }}>{entry.detail}</div>}
-                        {entry.ts && <div style={{ fontSize: 10, fontFamily: T.font.mono, color: T.fg[4], marginTop: 2 }}>{entry.ts}</div>}
-                      </div>
-                    </div>
+                <MSectionHeader>🔍 Most Failed Checks</MSectionHeader>
+                <MCard padding="12px 14px" style={{ marginBottom: 16 }}>
+                  {topFailed.slice(0, 6).map((c, i) => (
+                    <MBarRow key={i} label={c.label} value={c.count} max={maxFailed} kind="danger" />
                   ))}
                 </MCard>
               </>
             )}
 
-            {!data?.log?.length && !error && (
-              <div style={{ textAlign: 'center', color: T.fg[4], fontSize: 13, padding: '24px 0' }}>No audit log entries yet.</div>
+            {/* Team Activity */}
+            {userRows.length > 0 && (
+              <>
+                <MSectionHeader>👥 Team Activity</MSectionHeader>
+                <MCard padding="0" style={{ marginBottom: 16 }}>
+                  {userRows.map(([name, s], i) => {
+                    const rate = s.total > 0 ? Math.round(s.passed / s.total * 100) : 0;
+                    return (
+                      <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: i < userRows.length - 1 ? `1px solid ${T.border.base}` : 'none' }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: T.fg[1] }}>{name}</div>
+                          <div style={{ fontSize: 11, color: T.fg[3], fontFamily: T.font.mono }}>{s.total} total · {s.passed} passed · {s.failed} failed</div>
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 700, fontFamily: T.font.mono, color: rate >= 80 ? T.ok.base : rate >= 60 ? T.warn.base : T.danger.base }}>{rate}%</div>
+                      </div>
+                    );
+                  })}
+                </MCard>
+              </>
+            )}
+
+            {/* Audit Log */}
+            <MSectionHeader>📋 Audit Log</MSectionHeader>
+            {recent.length === 0 && (
+              <div style={{ textAlign: 'center', color: T.fg[4], fontSize: 13, padding: '20px 0' }}>No validations recorded yet.</div>
+            )}
+            {recent.length > 0 && (
+              <MCard padding="0">
+                {recent.slice(0, 20).map((entry, i) => {
+                  const isPass = entry.status === 'passed' || entry.status === 'pass';
+                  const isFail = entry.status === 'failed' || entry.status === 'fail';
+                  const dot = isPass ? 'ok' : isFail ? 'danger' : 'neutral';
+                  const ts = (entry.timestamp || '').slice(11, 16);
+                  const fc = (entry.failed_checks || []).slice(0, 2).join(', ');
+                  return (
+                    <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 14px', borderBottom: i < Math.min(recent.length, 20) - 1 ? `1px solid ${T.border.base}` : 'none' }}>
+                      <MLed kind={dot} size={7} style={{ marginTop: 4, flexShrink: 0 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 2 }}>
+                          <span style={{ fontSize: 11, fontFamily: T.font.mono, color: T.brand.base, fontWeight: 600 }}>{entry.ticket_key || '—'}</span>
+                          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: entry.mode === 'ai' ? T.accent.soft : T.bg.surface3, color: entry.mode === 'ai' ? T.accent.base : T.fg[3], border: `1px solid ${entry.mode === 'ai' ? T.accent.ring : T.border.base}` }}>{entry.mode === 'ai' ? '🤖 AI' : 'Rule'}</span>
+                          {entry.confidence != null && <span style={{ fontSize: 10, fontFamily: T.font.mono, color: entry.confidence >= 80 ? T.ok.base : entry.confidence >= 60 ? T.warn.base : T.danger.base }}>{entry.confidence}%</span>}
+                        </div>
+                        <div style={{ fontSize: 11, color: isPass ? T.ok.base : isFail ? T.danger.base : T.fg[2], fontWeight: 600 }}>{isPass ? 'Passed' : isFail ? 'Failed' : entry.status || '—'}</div>
+                        {fc && <div style={{ fontSize: 10, color: T.fg[3], fontFamily: T.font.mono }}>{fc}</div>}
+                        <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+                          {entry.user && <span style={{ fontSize: 10, color: T.fg[4] }}>{entry.user}</span>}
+                          <span style={{ fontSize: 10, fontFamily: T.font.mono, color: T.fg[4] }}>{ts}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </MCard>
             )}
           </>
         )}

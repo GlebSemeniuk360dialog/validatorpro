@@ -857,47 +857,266 @@ function FailureRow({ label, count }) {
   );
 }
 
+/* ── Dashboard sub-components ──────────────────────────────────────────── */
+function DashMini({ label, value, sub, kind='neutral', icon }) {
+  const clr = { ok:t.ok.base, danger:t.danger.base, warn:t.warn.base, accent:t.accent.base, brand:t.brand.base, neutral:t.fg[1] }[kind] || t.fg[1];
+  const bg  = { ok:t.ok.soft, danger:t.danger.soft, warn:t.warn.soft, accent:t.accent.soft, brand:t.brand.soft, neutral:t.bg.surface2 }[kind] || t.bg.surface2;
+  const bd  = { ok:t.ok.ring, danger:t.danger.ring, warn:t.warn.ring, accent:t.accent.ring, brand:t.brand.ring, neutral:t.border.base }[kind] || t.border.base;
+  return (
+    <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'14px 18px', display:'flex', flexDirection:'column', gap:4 }}>
+      <div style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', color:t.fg[3], fontFamily:t.font.sans, display:'flex', alignItems:'center', gap:6 }}>
+        {icon && <span>{icon}</span>}{label}
+      </div>
+      <div style={{ fontSize:26, fontWeight:800, color:clr, letterSpacing:'-0.02em', lineHeight:1 }}>{value}</div>
+      {sub && <div style={{ fontSize:11, color:t.fg[3], fontFamily:t.font.mono, marginTop:2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function DashBar({ label, value, max, kind='ok', count }) {
+  const pct = max > 0 ? Math.min(100, Math.round(value / max * 100)) : 0;
+  const clr = { ok:t.ok.base, danger:t.danger.base, warn:t.warn.base, accent:t.accent.base, brand:t.brand.base }[kind] || t.ok.base;
+  const bg  = { ok:t.ok.soft, danger:t.danger.soft, warn:t.warn.soft, accent:t.accent.soft, brand:t.brand.soft }[kind] || t.ok.soft;
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:'160px 1fr 40px', alignItems:'center', gap:10, padding:'5px 0' }}>
+      <span style={{ fontSize:12, color:t.fg[2], whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{label}</span>
+      <div style={{ height:8, borderRadius:4, background:t.bg.surface3, overflow:'hidden' }}>
+        <div style={{ height:'100%', width:`${pct}%`, background:clr, borderRadius:4, transition:'width .3s' }} />
+      </div>
+      <span style={{ fontSize:12, fontFamily:t.font.mono, color:clr, textAlign:'right' }}>{count != null ? count : value}</span>
+    </div>
+  );
+}
+
+function DashTimeline({ daily }) {
+  const days = [];
+  const now = new Date();
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(now); d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const lbl = d.toLocaleDateString('en', { month:'short', day:'numeric' });
+    const entry = daily[key] || { passed:0, failed:0 };
+    days.push({ key, lbl, ...entry, total:(entry.passed||0)+(entry.failed||0) });
+  }
+  const maxVal = Math.max(1, ...days.map(d => d.total));
+  return (
+    <div style={{ display:'flex', alignItems:'flex-end', gap:4, height:80, padding:'0 4px' }}>
+      {days.map(d => {
+        const h = Math.max(4, Math.round(d.total / maxVal * 72));
+        const isToday = d.key === new Date().toISOString().slice(0,10);
+        const hasData = d.total > 0;
+        return (
+          <div key={d.key} title={`${d.lbl}: ${d.passed} passed, ${d.failed} failed`}
+            style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:3, cursor:'default' }}>
+            <div style={{ width:'100%', display:'flex', flexDirection:'column', justifyContent:'flex-end', height:72 }}>
+              {hasData ? (
+                <div style={{ width:'100%', height:h, borderRadius:'3px 3px 0 0', overflow:'hidden', display:'flex', flexDirection:'column', justifyContent:'flex-end' }}>
+                  {d.failed > 0 && <div style={{ height:`${Math.round(d.failed/d.total*100)}%`, background:t.danger.base, opacity:.85 }} />}
+                  {d.passed > 0 && <div style={{ height:`${Math.round(d.passed/d.total*100)}%`, background:t.ok.base }} />}
+                </div>
+              ) : (
+                <div style={{ width:'100%', height:3, borderRadius:2, background:t.bg.surface3 }} />
+              )}
+            </div>
+            <span style={{ fontSize:9, color: isToday ? t.brand.base : t.fg[4], fontFamily:t.font.mono, whiteSpace:'nowrap',
+              fontWeight: isToday ? 700 : 400 }}>
+              {d.lbl.split(' ')[1]}{isToday ? '★' : ''}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function Dashboard({ token }) {
-  const [data, setData] = useState(null);
+  const [data, setData]     = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refresh, setRefresh] = useState(0);
 
-  useEffect(()=>{
+  useEffect(() => {
+    setLoading(true);
     api('GET', '/api/dashboard', null, token)
-      .then(setData).catch(()=>{}).finally(()=>setLoading(false));
-  }, [token]);
+      .then(setData).catch(() => {}).finally(() => setLoading(false));
+  }, [token, refresh]);
 
-  const log = data?.log || [];
-  const total = data?.total || 0;
-  const passRate = data?.pass_rate != null ? Math.round(data.pass_rate) : null;
+  const d = data || {};
+  const recent = d.recent || [];
+  const qh = d.queue_health || {};
+  const topFailed = d.top_failed_checks || [];
+  const byClient = d.by_client || {};
+  const byUser = d.by_user || {};
+  const daily = d.daily_counts || {};
+  const maxFailed = topFailed.length > 0 ? topFailed[0].count : 1;
+  const clientsByFail = Object.entries(byClient).sort((a,b)=>b[1].failed-a[1].failed).slice(0,6);
+  const maxClientFail = clientsByFail.length > 0 ? (clientsByFail[0][1].failed||1) : 1;
+  const userRows = Object.entries(byUser).sort((a,b)=>b[1].total-a[1].total);
+
+  const pct = (n, d2) => d2 > 0 ? Math.round(n / d2 * 100) : 0;
+  const fmt = v => v != null ? v : '—';
+  const spin = loading && !data;
 
   return (
-    <div>
-      <SectionHeader style={{marginTop:0}}>Today</SectionHeader>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'18px 22px' }}>
-        <Readout label="Validations"  value={<span>{loading?'…':total}</span>} />
-        <Readout label="Pass rate"    value={<span>{loading?'…':passRate!=null?`${passRate}%`:'—'}</span>} valueKind="ok" />
-        <Readout label="Avg audit"    value={<span>2.5<span style={{color:t.fg[3],fontSize:11}}>s</span></span>} valueKind="accent" sub="gemini-2.5-pro" subKind="accent" />
-        <Readout label="Alerts fired" value={<span>{log.filter(l=>l.kind==='danger').length||'0'}</span>} valueKind="danger" />
+    <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+      {/* Refresh button */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:-8 }}>
+        <div style={{ fontSize:12, color:t.fg[3], fontFamily:t.font.mono }}>
+          {spin ? 'Loading…' : `${d.total||0} total validations recorded`}
+        </div>
+        <Button variant="ghost" onClick={()=>setRefresh(r=>r+1)} style={{ fontSize:11 }}>↻ Refresh</Button>
       </div>
-      <SectionHeader>Audit log</SectionHeader>
-      {log.length===0&&<div style={{ padding:24, textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>No validations recorded yet.</div>}
-      {log.length>0&&(
-        <Card>
-          {log.slice().reverse().slice(0,20).map((l,i)=>(
-            <div key={i} style={{ display:'grid', gridTemplateColumns:'70px 90px 140px 1fr', gap:12, padding:'8px 0', borderBottom:i<log.length-1?`1px solid ${t.border.base}`:'none', fontSize:12 }}>
-              <span style={{ fontFamily:t.font.mono, color:t.fg[3] }}>{l.ts||l.timestamp||''}</span>
-              <span style={{color:t.fg[2]}}>{l.user||'—'}</span>
-              <span style={{ fontFamily:t.font.mono, color:t.fg[1] }}>{l.action||l.mode||''}</span>
-              <span style={{color:t.fg[2]}}>
-                {(l.kind==='ok'||l.status==='pass')&&<span style={{color:t.ok.base,marginRight:6}}>●</span>}
-                {(l.kind==='danger'||l.status==='fail')&&<span style={{color:t.danger.base,marginRight:6}}>●</span>}
-                {l.kind==='warn'&&<span style={{color:t.warn.base,marginRight:6}}>●</span>}
-                {l.detail||`${l.ticket_key||''} · ${l.client||''}`}
-              </span>
+
+      {/* ── Today at a Glance ─────────────────────────────────────────────── */}
+      <div>
+        <SectionHeader style={{ marginTop:0 }}>⚡ Today at a Glance</SectionHeader>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10 }}>
+          <DashMini label="Validations" value={spin?'…':fmt(d.today_total)} icon="📋" />
+          <DashMini label="Passed"      value={spin?'…':fmt(d.today_passed)}  kind="ok"     icon="✅" />
+          <DashMini label="Failed"      value={spin?'…':fmt(d.today_failed)}  kind={d.today_failed>0?'danger':'neutral'} icon="❌" />
+          <DashMini label="Pass Rate"   value={spin?'…':d.today_total>0?`${d.today_pass_rate}%`:'—'} kind={d.today_pass_rate>=80?'ok':d.today_pass_rate>0?'warn':'neutral'} icon="📊" />
+          <DashMini label="AI Audits"   value={spin?'…':fmt(d.today_ai)}      kind="accent"  icon="🤖" />
+        </div>
+      </div>
+
+      {/* ── This Week + Queue Health ───────────────────────────────────────── */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+        <div>
+          <SectionHeader style={{ marginTop:0 }}>📅 This Week</SectionHeader>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:10 }}>
+            <DashMini label="Total"     value={spin?'…':fmt(d.week_total)}  />
+            <DashMini label="Pass Rate" value={spin?'…':d.week_total>0?`${d.week_pass_rate}%`:'—'} kind={d.week_pass_rate>=80?'ok':d.week_pass_rate>0?'warn':'neutral'} />
+            <DashMini label="Passed"    value={spin?'…':fmt(d.week_passed)} kind="ok" />
+            <DashMini label="Failed"    value={spin?'…':fmt(d.week_failed)} kind={d.week_failed>0?'danger':'neutral'} />
+          </div>
+        </div>
+        <div>
+          <SectionHeader style={{ marginTop:0 }}>🏥 Queue Health</SectionHeader>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
+            <DashMini label="In Queue"  value={spin?'…':fmt(qh.queue_size)} icon="📬" />
+            <DashMini label="Due 24h"   value={spin?'…':fmt(qh.due_24h)}   kind={qh.due_24h>0?'warn':'ok'}    icon="⏰" />
+            <DashMini label="Due 48h"   value={spin?'…':fmt(qh.due_48h)}   kind={qh.due_48h>5?'danger':'neutral'} icon="📆" />
+          </div>
+        </div>
+      </div>
+
+      {/* ── 14-Day Timeline ───────────────────────────────────────────────── */}
+      <div>
+        <SectionHeader style={{ marginTop:0 }}>📈 14-Day Timeline</SectionHeader>
+        <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'16px 18px' }}>
+          {spin ? <div style={{ color:t.fg[3], fontSize:12, textAlign:'center', padding:24 }}>Loading…</div>
+                : <DashTimeline daily={daily} />}
+          <div style={{ display:'flex', gap:16, marginTop:8, justifyContent:'center' }}>
+            <span style={{ fontSize:11, color:t.ok.base, fontFamily:t.font.mono }}>■ Passed</span>
+            <span style={{ fontSize:11, color:t.danger.base, fontFamily:t.font.mono }}>■ Failed</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Issues & Failures ─────────────────────────────────────────────── */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+        <div>
+          <SectionHeader style={{ marginTop:0 }}>🔍 Most Common Failed Checks</SectionHeader>
+          <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'14px 18px' }}>
+            {spin && <div style={{ color:t.fg[3], fontSize:12 }}>Loading…</div>}
+            {!spin && topFailed.length === 0 && <div style={{ color:t.fg[3], fontSize:12, fontFamily:t.font.mono }}>No failures recorded yet.</div>}
+            {topFailed.map((c,i) => (
+              <DashBar key={i} label={c.label} value={c.count} max={maxFailed} kind="danger" count={c.count} />
+            ))}
+          </div>
+        </div>
+        <div>
+          <SectionHeader style={{ marginTop:0 }}>🏢 Failures by Client</SectionHeader>
+          <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'14px 18px' }}>
+            {spin && <div style={{ color:t.fg[3], fontSize:12 }}>Loading…</div>}
+            {!spin && clientsByFail.length === 0 && <div style={{ color:t.fg[3], fontSize:12, fontFamily:t.font.mono }}>No data yet.</div>}
+            {clientsByFail.map(([name, s], i) => (
+              <DashBar key={i} label={name} value={s.failed} max={maxClientFail} kind="warn" count={s.failed} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── AI Audit Stats ────────────────────────────────────────────────── */}
+      <div>
+        <SectionHeader style={{ marginTop:0 }}>🤖 AI Audit Stats</SectionHeader>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
+          <DashMini label="AI Audits Run"      value={spin?'…':fmt(d.ai_total)}           icon="🤖" />
+          <DashMini label="Avg Confidence"     value={spin?'…':d.ai_avg_confidence!=null?`${d.ai_avg_confidence}%`:'—'}
+            kind={d.ai_avg_confidence>=80?'ok':d.ai_avg_confidence>=60?'warn':'neutral'} icon="🎯" sub="gemini-2.5-pro" />
+          <DashMini label="Low Confidence (<60%)" value={spin?'…':fmt(d.ai_low_confidence)}
+            kind={d.ai_low_confidence>0?'danger':'neutral'} icon="⚠️" />
+        </div>
+      </div>
+
+      {/* ── Team Activity ─────────────────────────────────────────────────── */}
+      {userRows.length > 0 && (
+        <div>
+          <SectionHeader style={{ marginTop:0 }}>👥 Team Activity</SectionHeader>
+          <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 60px 60px 60px 80px', gap:0, padding:'8px 16px', borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.07em', color:t.fg[3] }}>
+              <span>User</span><span style={{textAlign:'right'}}>Total</span><span style={{textAlign:'right'}}>Passed</span><span style={{textAlign:'right'}}>Failed</span><span style={{textAlign:'right'}}>Pass %</span>
             </div>
-          ))}
-        </Card>
+            {userRows.map(([name, s], i) => {
+              const rate = pct(s.passed, s.total);
+              return (
+                <div key={name} style={{ display:'grid', gridTemplateColumns:'1fr 60px 60px 60px 80px', gap:0, padding:'9px 16px', borderBottom: i<userRows.length-1?`1px solid ${t.border.base}`:'none', fontSize:13, alignItems:'center', background: i%2===0?'transparent':t.bg.surface2 }}>
+                  <span style={{ fontWeight:600, color:t.fg[1] }}>{name}</span>
+                  <span style={{ textAlign:'right', fontFamily:t.font.mono, color:t.fg[2] }}>{s.total}</span>
+                  <span style={{ textAlign:'right', fontFamily:t.font.mono, color:t.ok.base }}>{s.passed}</span>
+                  <span style={{ textAlign:'right', fontFamily:t.font.mono, color:s.failed>0?t.danger.base:t.fg[3] }}>{s.failed}</span>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, justifyContent:'flex-end' }}>
+                    <div style={{ width:36, height:5, borderRadius:3, background:t.bg.surface3, overflow:'hidden' }}>
+                      <div style={{ height:'100%', width:`${rate}%`, background: rate>=80?t.ok.base:rate>=60?t.warn.base:t.danger.base, borderRadius:3 }} />
+                    </div>
+                    <span style={{ fontSize:11, fontFamily:t.font.mono, color:rate>=80?t.ok.base:rate>=60?t.warn.base:t.danger.base, minWidth:32, textAlign:'right' }}>{rate}%</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
+
+      {/* ── Audit Log ─────────────────────────────────────────────────────── */}
+      <div>
+        <SectionHeader style={{ marginTop:0 }}>📋 Audit Log</SectionHeader>
+        {spin && <div style={{ padding:24, textAlign:'center', color:t.fg[3], fontSize:12 }}>Loading…</div>}
+        {!spin && recent.length === 0 && (
+          <div style={{ padding:24, textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>No validations recorded yet.</div>
+        )}
+        {recent.length > 0 && (
+          <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
+            <div style={{ display:'grid', gridTemplateColumns:'100px 100px 90px 100px 1fr', gap:0, padding:'7px 14px', borderBottom:`1px solid ${t.border.base}`, fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'.08em', color:t.fg[3] }}>
+              <span>Time</span><span>Ticket</span><span>Mode</span><span>User</span><span>Result</span>
+            </div>
+            {recent.map((l, i) => {
+              const isPass = l.status === 'passed' || l.status === 'pass';
+              const isFail = l.status === 'failed' || l.status === 'fail';
+              const dot = isPass ? t.ok.base : isFail ? t.danger.base : t.fg[3];
+              const ts = (l.timestamp || '').slice(11, 16);
+              const fc = (l.failed_checks || []).slice(0, 3).join(', ');
+              return (
+                <div key={i} style={{ display:'grid', gridTemplateColumns:'100px 100px 90px 100px 1fr', gap:0, padding:'7px 14px', borderBottom:i<recent.length-1?`1px solid ${t.border.base}`:'none', fontSize:12, alignItems:'center', background: i%2===0?'transparent':t.bg.surface2 }}>
+                  <span style={{ fontFamily:t.font.mono, color:t.fg[3], fontSize:11 }}>{ts}</span>
+                  <span style={{ fontFamily:t.font.mono, color:t.brand.base, fontSize:11 }}>{l.ticket_key||'—'}</span>
+                  <span style={{ fontSize:11, padding:'2px 7px', borderRadius:3, background: l.mode==='ai'?t.accent.soft:t.bg.surface3, color: l.mode==='ai'?t.accent.base:t.fg[2], border:`1px solid ${l.mode==='ai'?t.accent.ring:t.border.base}`, display:'inline-block', width:'fit-content' }}>
+                    {l.mode==='ai'?'🤖 AI':'📋 Rule'}
+                  </span>
+                  <span style={{ color:t.fg[2], fontSize:12 }}>{l.user||'—'}</span>
+                  <span style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <span style={{ width:7, height:7, borderRadius:'50%', background:dot, flexShrink:0, boxShadow:`0 0 4px ${dot}66` }} />
+                    <span style={{ color: isPass?t.ok.base:isFail?t.danger.base:t.fg[2], fontWeight: isPass||isFail?600:400 }}>
+                      {isPass?'Passed':isFail?'Failed':l.status||'—'}
+                    </span>
+                    {fc && <span style={{ color:t.fg[3], fontSize:11, fontFamily:t.font.mono }}>· {fc}</span>}
+                    {l.confidence != null && <span style={{ marginLeft:'auto', fontSize:10, fontFamily:t.font.mono, color:l.confidence>=80?t.ok.base:l.confidence>=60?t.warn.base:t.danger.base }}>{l.confidence}%</span>}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
