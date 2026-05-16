@@ -626,10 +626,22 @@ async def get_queue(authorization: Optional[str] = Header(None)):
     rows = []
     for issue in issues:
         fields = issue["fields"]
+        client = _ticket_client(issue)
+        summary = fields.get("summary", "")
+        if client == "ALDI Portugal":
+            seg_raw = fields.get("customfield_14287")
+            if isinstance(seg_raw, dict):
+                seg = seg_raw.get("value") or seg_raw.get("name") or ""
+            elif seg_raw is not None:
+                seg = str(seg_raw)
+            else:
+                seg = ""
+            if seg and seg.lower() not in summary.lower():
+                summary = f"{summary} {seg}".strip()
         rows.append({
             "key":     issue["key"],
-            "summary": fields.get("summary", ""),
-            "client":  _ticket_client(issue),
+            "summary": summary,
+            "client":  client,
             "date":    str(fields.get("customfield_12665", ""))[:10],
             "status":  fields.get("status", {}).get("name", ""),
         })
