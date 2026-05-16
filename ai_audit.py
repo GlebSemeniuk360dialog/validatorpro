@@ -459,6 +459,10 @@ def run_ai_audit(
     raw_text = ""
     try:
         from google.genai import types as _genai_types
+        # For Flash models: disable extended thinking (thinking_budget=0) for max speed.
+        # For Pro models: let the model use its default reasoning.
+        _is_flash = "flash" in model_name.lower()
+        _thinking_cfg = _genai_types.ThinkingConfig(thinking_budget=0) if _is_flash else None
         _config = _genai_types.GenerateContentConfig(
             system_instruction=(
                 "You are a QA auditor for WhatsApp marketing campaigns. "
@@ -471,7 +475,8 @@ def run_ai_audit(
                 "Each check must produce its own ### CHECK N header with Expected/Actual/Verdict. "
                 "Never merge checks. Never skip a check. Never reorder checks. "
                 "A missing check block = invalid audit that will be rejected."
-            )
+            ),
+            **({} if _thinking_cfg is None else {"thinking_config": _thinking_cfg}),
         )
 
         def _has_non_english(text: str) -> bool:

@@ -347,13 +347,39 @@ function Login({ onSignIn }) {
 /* ══════════════════════════════════════════════════════════════════════════
    BULK RESULT PANEL
    ═════════════════════════════════════════════════════════════════════════ */
+/* Extract the "Overall: ..." line from an AI report */
+function _extractOverall(report) {
+  if (!report) return null;
+  const m = report.match(/\*\*Overall[:\s]+(.+?)\*\*/i);
+  return m ? m[1].trim() : null;
+}
+
+/* Extract failed check names from report verdicts */
+function _extractFailedNames(report) {
+  if (!report) return [];
+  const hits = [];
+  const re = /###.*?CHECK\s+\d+\s*[—–-]\s*([^\n]+)\n[\s\S]*?\*\*Verdict:\*\*\s*❌/gi;
+  let m;
+  while ((m = re.exec(report)) !== null) hits.push(m[1].trim());
+  return hits;
+}
+
 function BulkResultPanel({ results, mode, onBack }) {
   const [openKey, setOpenKey] = useState(null);
-  const sorted = [...results].sort((a,b) => a.ticket_key.localeCompare(b.ticket_key));
+  const [showReport, setShowReport] = useState({});
+  const sorted = [...results].sort((a,b) => {
+    // failed first, then skipped, then passed
+    const order = { failed:0, error:1, skipped:2, passed:3 };
+    return (order[a.status]??9) - (order[b.status]??9) || a.ticket_key.localeCompare(b.ticket_key);
+  });
   const passed  = results.filter(r=>r.status==='passed').length;
   const failed  = results.filter(r=>r.status==='failed').length;
   const skipped = results.filter(r=>r.status==='skipped').length;
   const errors  = results.filter(r=>r.status==='error').length;
+  const avgConf = mode==='ai' ? (() => {
+    const cs = results.filter(r=>r.confidence>=0).map(r=>r.confidence);
+    return cs.length ? Math.round(cs.reduce((a,b)=>a+b,0)/cs.length) : null;
+  })() : null;
 
   const statusStyle = s => ({
     passed:  { bg:t.ok.soft,     fg:t.ok.base,     bd:t.ok.ring,     icon:'✅' },
@@ -362,42 +388,111 @@ function BulkResultPanel({ results, mode, onBack }) {
     error:   { bg:t.danger.soft, fg:t.danger.base,  bd:t.danger.ring, icon:'⚠️' },
   }[s] || { bg:t.bg.surface3, fg:t.fg[3], bd:t.border.base, icon:'—' });
 
+  const confColor = c => c >= 80 ? t.ok.base : c >= 60 ? t.warn.base : t.danger.base;
+  const confBg    = c => c >= 80 ? t.ok.soft  : c >= 60 ? t.warn.soft  : t.danger.soft;
+  const confBd    = c => c >= 80 ? t.ok.ring  : c >= 60 ? t.warn.ring  : t.danger.ring;
+
+  const isAI = mode === 'ai';
+  const cols = isAI
+    ? '28px 100px 160px 100px 1fr 90px 80px'
+    : '28px 100px 160px 100px 1fr 80px';
+
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
       <HudPanel>
         <div style={{ display:'flex', alignItems:'center', gap:14 }}>
           <Button variant="ghost" onClick={onBack}>← Back to queue</Button>
-          <Bracket>{mode === 'ai' ? '🤖 AI Bulk Audit' : '⚡ Bulk Regular Check'}</Bracket>
+          <Bracket>{isAI ? '🤖 AI Bulk Audit' : '⚡ Bulk Regular Check'}</Bracket>
+          {isAI && <span style={{ fontSize:11, fontFamily:t.font.mono, color:t.fg[3] }}>gemini-2.5-flash</span>}
           <div style={{ marginLeft:'auto', display:'flex', gap:20 }}>
             <Readout label="Passed"  value={<span>{passed}</span>}  valueKind="ok" />
             <Readout label="Failed"  value={<span>{failed}</span>}  valueKind={failed>0?'danger':undefined} />
             <Readout label="Skipped" value={<span>{skipped}</span>} valueKind={skipped>0?'warn':undefined} />
             {errors>0 && <Readout label="Errors" value={<span>{errors}</span>} valueKind="danger" />}
+            {avgConf!=null && <Readout label="Avg Confidence" value={<span style={{color:confColor(avgConf)}}>{avgConf}%</span>} />}
           </div>
         </div>
       </HudPanel>
 
       <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
-        <div style={{ display:'grid', gridTemplateColumns:'28px 100px 160px 100px 72px', padding:'10px 14px', gap:12, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3] }}>
-          <div/><div>Ticket</div><div>Client</div><div>Sendout ID</div><div>Status</div>
+        {/* Header */}
+        <div style={{ display:'grid', gridTemplateColumns:cols, padding:'10px 14px', gap:12, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3] }}>
+          <div/><div>Ticket</div><div>Client</div><div>Sendout ID</div><div>Summary</div>
+          {isAI && <div>Confidence</div>}
+          <div>Status</div>
         </div>
+
         {sorted.map(r => {
           const s = statusStyle(r.status);
           const isOpen = openKey === r.ticket_key;
+          const overall = _extractOverall(r.report);
+          const failedNames = _extractFailedNames(r.report);
+          const hasConf = isAI && r.confidence >= 0;
+          // Build inline summary text
+          const inlineSummary = (() => {
+            if (r.status === 'skipped') return 'No sendout ID found';
+            if (r.error_msg) return r.error_msg.slice(0, 60) + (r.error_msg.length > 60 ? '…' : '');
+            if (overall) return overall;
+            if (failedNames.length > 0) return `Failed: ${failedNames.slice(0,3).join(', ')}`;
+            if (r.issues_found > 0) return `${r.issues_found} issue(s) found`;
+            if (r.status === 'passed') return 'All checks passed';
+            return '';
+          })();
+
           return (
             <React.Fragment key={r.ticket_key}>
               <div onClick={()=>setOpenKey(isOpen ? null : r.ticket_key)}
-                style={{ display:'grid', gridTemplateColumns:'28px 100px 160px 100px 72px', padding:'11px 14px', gap:12, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isOpen?t.bg.surface2:'transparent', cursor:'pointer', alignItems:'center' }}>
+                style={{ display:'grid', gridTemplateColumns:cols, padding:'10px 14px', gap:12, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isOpen?t.bg.surface2:'transparent', cursor:'pointer', alignItems:'center' }}>
                 <span style={{ fontSize:13, color:t.fg[4] }}>{isOpen?'▾':'›'}</span>
-                <span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[1] }}>{r.ticket_key}</span>
+                <span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[1], fontWeight:600 }}>{r.ticket_key}</span>
                 <span style={{ color:t.fg[2], fontSize:12 }}>{r.client}</span>
-                <span style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>{(r.sendout_id||'').slice(0,14)}{r.sendout_id?.length>14?'…':''}</span>
-                <span style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:11, padding:'3px 8px', borderRadius:999, background:s.bg, color:s.fg, border:`1px solid ${s.bd}`, whiteSpace:'nowrap' }}>{s.icon} {r.status}</span>
+                <span style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>{(r.sendout_id||'—').slice(0,14)}{(r.sendout_id||'').length>14?'…':''}</span>
+                {/* Inline summary */}
+                <span style={{ fontSize:11, color: r.status==='passed'?t.ok.base:r.status==='failed'?t.danger.base:t.fg[3], overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  {inlineSummary}
+                </span>
+                {/* Confidence badge — AI only */}
+                {isAI && (
+                  hasConf
+                    ? <span style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:11, padding:'2px 8px', borderRadius:999, background:confBg(r.confidence), color:confColor(r.confidence), border:`1px solid ${confBd(r.confidence)}`, whiteSpace:'nowrap', width:'fit-content' }}>
+                        🎯 {r.confidence}%
+                      </span>
+                    : <span style={{ color:t.fg[4], fontSize:11 }}>—</span>
+                )}
+                <span style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:11, padding:'3px 8px', borderRadius:999, background:s.bg, color:s.fg, border:`1px solid ${s.bd}`, whiteSpace:'nowrap', width:'fit-content' }}>{s.icon} {r.status}</span>
               </div>
+
               {isOpen && (
-                <div style={{ padding:'14px 20px', borderBottom:`1px solid ${t.border.base}`, background:t.bg.surface2 }}>
-                  {r.error_msg && <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft2, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:12, marginBottom:10 }}>⚠️ {r.error_msg}</div>}
-                  {r.status==='skipped' && <div style={{ padding:'10px 14px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12, marginBottom:10 }}>No matching sendout ID found in DMA or G-Sheet.</div>}
+                <div style={{ padding:'16px 20px', borderBottom:`1px solid ${t.border.base}`, background:t.bg.surface2, display:'flex', flexDirection:'column', gap:12 }}>
+
+                  {/* AI Quick Summary Card */}
+                  {isAI && (r.confidence >= 0 || r.confidence_reason || overall) && (
+                    <div style={{ display:'flex', gap:16, padding:'12px 16px', borderRadius:6, background:t.bg.surface1, border:`1px solid ${t.border.base}` }}>
+                      {hasConf && (
+                        <div style={{ flexShrink:0, textAlign:'center' }}>
+                          <div style={{ fontSize:28, fontWeight:800, fontFamily:t.font.mono, color:confColor(r.confidence), lineHeight:1 }}>{r.confidence}%</div>
+                          <div style={{ fontSize:10, color:t.fg[3], marginTop:2 }}>Confidence</div>
+                        </div>
+                      )}
+                      <div style={{ flex:1, minWidth:0 }}>
+                        {overall && <div style={{ fontSize:13, fontWeight:600, color:t.fg[1], marginBottom:4 }}>{overall}</div>}
+                        {r.confidence_reason && <div style={{ fontSize:12, color:t.fg[2], lineHeight:1.5 }}>{r.confidence_reason}</div>}
+                        {failedNames.length > 0 && (
+                          <div style={{ display:'flex', flexWrap:'wrap', gap:5, marginTop:6 }}>
+                            {failedNames.map((n,i) => (
+                              <span key={i} style={{ fontSize:11, padding:'2px 7px', borderRadius:3, background:t.danger.soft, color:t.danger.base, border:`1px solid ${t.danger.ring}` }}>❌ {n}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Error / skip messages */}
+                  {r.error_msg && <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:12 }}>⚠️ {r.error_msg}</div>}
+                  {r.status==='skipped' && <div style={{ padding:'10px 14px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12 }}>No matching sendout ID found in DMA or G-Sheet.</div>}
+
+                  {/* Regular check rows */}
                   {r.checks && r.checks.length > 0 && (
                     <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                       {r.checks.map((c,i) => (
@@ -411,7 +506,20 @@ function BulkResultPanel({ results, mode, onBack }) {
                       ))}
                     </div>
                   )}
-                  {r.report && !r.checks && (
+
+                  {/* Full AI report — collapsible */}
+                  {r.report && isAI && (
+                    <div>
+                      <button onClick={e=>{e.stopPropagation();setShowReport(p=>({...p,[r.ticket_key]:!p[r.ticket_key]}));}}
+                        style={{ fontSize:11, color:t.fg[3], background:'none', border:`1px solid ${t.border.base}`, borderRadius:4, padding:'4px 10px', cursor:'pointer', fontFamily:t.font.mono }}>
+                        {showReport[r.ticket_key] ? '▾ Hide full report' : '› Show full report'}
+                      </button>
+                      {showReport[r.ticket_key] && (
+                        <pre style={{ marginTop:10, fontFamily:t.font.mono, fontSize:11, color:t.fg[2], whiteSpace:'pre-wrap', wordBreak:'break-word', lineHeight:1.7, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:4, padding:'12px 14px' }}>{r.report}</pre>
+                      )}
+                    </div>
+                  )}
+                  {r.report && !isAI && (
                     <pre style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[2], whiteSpace:'pre-wrap', wordBreak:'break-word', margin:0, lineHeight:1.7 }}>{r.report}</pre>
                   )}
                 </div>

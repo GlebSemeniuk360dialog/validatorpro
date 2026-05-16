@@ -67,8 +67,9 @@ JIRA_SERVER   = "https://360dialog.atlassian.net"
 JIRA_EMAIL    = "gleb.semeniuk@360dialog.com"
 JIRA_TOKEN    = os.environ.get("JIRA_TOKEN", "")
 API_TOKEN     = os.environ.get("DMA_API_TOKEN", "")
-GEMINI_KEY    = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL  = "gemini-2.5-pro"
+GEMINI_KEY         = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")        # single-ticket audit
+GEMINI_BULK_MODEL  = os.environ.get("GEMINI_BULK_MODEL", "gemini-2.5-flash") # bulk AI — faster & cheaper
 SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "")
 APP_BASE_URL  = os.environ.get("APP_BASE_URL", "http://localhost:8502")
 
@@ -1291,7 +1292,7 @@ async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(
         jira_token=JIRA_TOKEN,
         api_token=API_TOKEN,
         gemini_key=GEMINI_KEY,
-        gemini_model=GEMINI_MODEL,
+        gemini_model=GEMINI_BULK_MODEL,
         on_progress=lambda r, i, t: None,
     )
 
