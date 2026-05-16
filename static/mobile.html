@@ -867,12 +867,13 @@ function ValidatorScreen({ ticket, token, userName, onBack }) {
                   {[
                     { label: 'Client',      value: enrichData.client      || ticket.client },
                     { label: 'Ticket ID',   value: enrichData.ticket_key  || ticket.key   },
+                    { label: 'Ticket Name', value: ticket.summary || '—'                  },
                     { label: 'Sendout ID',  value: enrichData.sendout_id  || '—'          },
                     { label: 'Sendout Date',value: fmtDate(enrichData.sendout_date || ticket.date) },
                   ].map(row => (
-                    <div key={row.label} style={{ display: 'flex', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${T.border.base}` }}>
-                      <div className="vp-readout-label" style={{ flex: '0 0 100px', marginBottom: 0 }}>{row.label}</div>
-                      <div style={{ fontSize: 12, fontFamily: T.font.mono, color: T.fg[1], flex: 1 }}>{row.value}</div>
+                    <div key={row.label} style={{ display: 'flex', alignItems: row.label === 'Ticket Name' ? 'flex-start' : 'center', padding: '8px 0', borderBottom: `1px solid ${T.border.base}` }}>
+                      <div className="vp-readout-label" style={{ flex: '0 0 100px', marginBottom: 0, paddingTop: row.label === 'Ticket Name' ? 2 : 0 }}>{row.label}</div>
+                      <div style={{ fontSize: row.label === 'Ticket Name' ? 13 : 12, fontFamily: row.label === 'Ticket Name' ? T.font.sans : T.font.mono, fontWeight: row.label === 'Ticket Name' ? 600 : 400, color: T.fg[1], flex: 1, lineHeight: 1.4 }}>{row.value}</div>
                     </div>
                   ))}
                   {enrichData.leaflet_url && (
