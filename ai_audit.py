@@ -145,6 +145,18 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
 4. **CTA Buttons & Links:**
    - Do the JIRA and DMA button names match?
    - Verify that URLs found in `JIRA_All_URLs` exist in `API_URLs_Configured`.
+   - *IMAGE URL IGNORE RULE (ABSOLUTE):* The DMA API response contains image hosting URLs
+     from CDN / storage services. These are NEVER CTA button URLs. You MUST completely
+     ignore any URL that:
+     • contains `storage.googleapis.com`
+     • contains `scontent.whatsapp.net`
+     • contains `whatsapp.net`
+     • contains `.jpg`, `.jpeg`, `.png`, `.webp`, `.gif` as a path component
+     • contains `uploads/file_documents/`
+     • is clearly an image CDN link (long token-based URL with `ccb=`, `_nc_sid=`, `oh=`, `oe=` parameters)
+     Do NOT list such URLs as "additional" or "unexpected" URLs. Do NOT flag them as ❌ FAIL.
+     Only compare actual button/CTA URLs (short links, leaflet URLs, promo landing pages).
+     If the only "extra" URLs are image hosting links, CHECK 4 verdict is ✅ PASS (or N/A if no button).
 5. **Tags / Audience & Exclusions:**
    - Compare JIRA/Sheet tags to DMA tags (respecting comment overrides).
    - *G-SHEET EXCLUDE TAGS RULE (ABSOLUTE — NO EXCEPTIONS):*
