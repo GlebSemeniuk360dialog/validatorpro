@@ -1020,7 +1020,7 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         approved=False, log=_validation_log,
         user=user_name,
         failed_checks=_ai_failed_checks,
-        confidence=ai_result.get("confidence") if isinstance(ai_result, dict) else None,
+        confidence=result.get("confidence"),
     )
 
     # Write AI status back to JIRA
