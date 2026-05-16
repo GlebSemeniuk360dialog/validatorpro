@@ -853,6 +853,14 @@ def _validate_single_ticket_regular(
     client       = _detect_client(issue)
     jira_date    = str(issue["fields"].get("customfield_12665", ""))
     jira_summary = str(issue["fields"].get("summary", ""))
+
+    # Append ALDI Sued segment field (customfield_14287) for segment-aware task matching
+    _raw_seg = issue["fields"].get("customfield_14287")
+    if _raw_seg:
+        jira_segment = _raw_seg.get("value", "") if isinstance(_raw_seg, dict) else str(_raw_seg)
+        if jira_segment and jira_segment.lower() not in jira_summary.lower():
+            jira_summary = f"{jira_summary} {jira_segment}".strip()
+
     sendout_id   = _find_sendout_id(ticket_key, client, gsheet_data,
                                      api_token=api_token, jira_date=jira_date,
                                      jira_summary=jira_summary)
@@ -958,6 +966,14 @@ def _validate_single_ticket_ai(
     client       = _detect_client(issue)
     jira_date    = str(issue["fields"].get("customfield_12665", ""))
     jira_summary = str(issue["fields"].get("summary", ""))
+
+    # Append ALDI Sued segment field (customfield_14287) for segment-aware task matching
+    _raw_seg = issue["fields"].get("customfield_14287")
+    if _raw_seg:
+        jira_segment = _raw_seg.get("value", "") if isinstance(_raw_seg, dict) else str(_raw_seg)
+        if jira_segment and jira_segment.lower() not in jira_summary.lower():
+            jira_summary = f"{jira_summary} {jira_segment}".strip()
+
     sendout_id   = _find_sendout_id(ticket_key, client, gsheet_data,
                                      api_token=api_token, jira_date=jira_date,
                                      jira_summary=jira_summary)

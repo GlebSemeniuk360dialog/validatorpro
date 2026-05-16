@@ -29,7 +29,54 @@ CLIENT CONTEXT: {client_name}
 DATA TO AUDIT (JSON):
 {comparison_json}
 
-REQUIRED CHECKS & RULES:
+══════════════════════════════════════════════════════════
+MANDATORY AUDIT PROTOCOL — EXECUTE EVERY STEP IN ORDER
+══════════════════════════════════════════════════════════
+You MUST complete ALL SIX checks below. Do NOT skip any check.
+Do NOT merge checks. Do NOT reorder checks.
+For every check output EXACTLY this block:
+
+### [EMOJI] CHECK N — [NAME]
+**Expected:** [exact value from JIRA / G-Sheet]
+**Actual:** [exact value from DMA API]
+**Verdict:** ✅ PASS / ❌ FAIL / 🔕 N/A — [one-line reason]
+
+EMOJI rule: ✅ for PASS, ❌ for FAIL, 🔕 for N/A (check genuinely not applicable).
+N/A is only allowed when the check cannot be evaluated (e.g. no images provided).
+A check is NEVER N/A just because data looks fine — that is a PASS.
+
+CHECK 1 — SCHEDULING
+  Compare JIRA date/time to DMA API `Date_Time`. Apply the SCHEDULING RULE below.
+CHECK 2 — COPY (body text)
+  Compare DMA template body to JIRA description. Apply the TEXT/COPY RULES below.
+CHECK 3 — FOOTER
+  Compare DMA footer to JIRA footer specification. Apply the FOOTER RULE below.
+CHECK 4 — CTA BUTTONS & LINKS
+  Check DMA button names and URLs against JIRA. Apply the CTA RULES below.
+CHECK 5 — TAGS / AUDIENCE FILTERS
+  Compare DMA include/exclude tags to G-Sheet intent. Apply the TAG RULES below.
+  This check ALWAYS has a verdict — never skip it, even if G-Sheet tags are empty
+  (empty G-Sheet tags = no include filter required = PASS if DMA has no extra unexpected filters).
+CHECK 6 — IMAGES / CAROUSEL
+  If images were provided, compare them. If no images provided, mark 🔕 N/A.
+
+After all six checks write:
+### SUMMARY TABLE
+| Check | Verdict |
+|-------|---------|
+| 1 Scheduling | ✅ / ❌ / 🔕 |
+| 2 Copy | ... |
+| 3 Footer | ... |
+| 4 CTA | ... |
+| 5 Tags | ... |
+| 6 Images | ... |
+
+**Overall: ✅ ALL PASS** or **❌ N issues found** (list failed checks).
+
+Then write any additional notes or context AFTER the summary table.
+══════════════════════════════════════════════════════════
+
+REQUIRED CHECKS & RULES (apply inside the protocol steps above):
 1. **Text, Dates, and Change Requests (CRITICAL):**
    - Read the `Comment_Thread`. If the client requested changes in the comments (e.g., "Change the date to X",
      "Update the text to Y", "Exclude tag Z"), this OVERRIDES the original description.
@@ -415,11 +462,15 @@ def run_ai_audit(
         _config = _genai_types.GenerateContentConfig(
             system_instruction=(
                 "You are a QA auditor for WhatsApp marketing campaigns. "
-                "ABSOLUTE RULE: You MUST respond ONLY in English. "
+                "ABSOLUTE RULE 1: You MUST respond ONLY in English. "
                 "Do NOT use Chinese, Japanese, Korean, Arabic, Cyrillic, or any non-Latin script. "
                 "Do NOT use German, French, Italian, Dutch, or any other language — ENGLISH ONLY. "
                 "The campaign content may be in any language, but YOUR RESPONSE must always be English. "
-                "If you write in any other language, your response is wrong and will be discarded."
+                "If you write in any other language, your response is wrong and will be discarded. "
+                "ABSOLUTE RULE 2: You MUST execute ALL SIX protocol checks in the exact order given. "
+                "Each check must produce its own ### CHECK N header with Expected/Actual/Verdict. "
+                "Never merge checks. Never skip a check. Never reorder checks. "
+                "A missing check block = invalid audit that will be rejected."
             )
         )
 

@@ -697,51 +697,76 @@ async def ticket_enrich(req: EnrichRequest, authorization: Optional[str] = Heade
     }
 
     # ── 1. Auto-match DMA sendout by JIRA date ────────────────────────────────
-    cfg        = CLIENT_CONFIGS.get(req.client, {})
-    account_id = cfg.get("account_id")
+    # For ALDI Sued we use the full segment-aware matcher from bulk_validator;
+    # for all other clients we do a fast date+similarity match here.
     jira_date_str = (req.jira_date or "")[:10]
+    _client_lower = req.client.lower()
+    _is_aldi_sued = "aldi sued" in _client_lower or "aldi süd" in _client_lower or "aldi sud" in _client_lower
 
-    if account_id and jira_date_str:
+    if _is_aldi_sued and jira_date_str:
+        # Delegate to the full segment-aware matcher used by bulk validation
+        from bulk_validator import _find_sendout_id as _bv_find_sendout_id
+        from api_client import fetch_pending_sendouts as _fps
         try:
-            from datetime import datetime as _dti
-            jira_date = _dti.fromisoformat(jira_date_str).date()
+            _tasks_all = _fps(API_TOKEN, CLIENT_CONFIGS.get(req.client, {}).get("account_id", 0))
         except Exception:
-            jira_date = None
+            _tasks_all = []
+        # Use jira_summary as-is; bulk_validator._find_sendout_id handles segment lookup
+        _sid = _bv_find_sendout_id(
+            req.ticket_key, req.client, _gsheet(),
+            api_token=API_TOKEN, jira_date=jira_date_str, jira_summary=req.jira_summary or ""
+        )
+        if _sid:
+            # Look up task name + date from the task list
+            _task = next((t for t in _tasks_all if str(t.get("id") or t.get("task_id", "")) == _sid), None)
+            result["sendout_id"]   = _sid
+            result["sendout_name"] = str(_task.get("name") or _task.get("campaign_name") or "") if _task else ""
+            result["sendout_date"] = str(_task.get("scheduled_date") or "")[:10] if _task else ""
+    else:
+        cfg        = CLIENT_CONFIGS.get(req.client, {})
+        account_id = cfg.get("account_id")
 
-        if jira_date:
+        if account_id and jira_date_str:
             try:
-                tasks = fetch_pending_sendouts(API_TOKEN, account_id)
+                from datetime import datetime as _dti
+                jira_date = _dti.fromisoformat(jira_date_str).date()
             except Exception:
-                tasks = []
+                jira_date = None
 
-            date_matches = []
-            for task in tasks:
-                if task.get("is_active") is False:
-                    continue
-                raw_d = str(task.get("scheduled_date") or task.get("date") or "")
+            if jira_date:
                 try:
-                    if _dti.fromisoformat(raw_d[:10]).date() == jira_date:
-                        date_matches.append(task)
+                    tasks = fetch_pending_sendouts(API_TOKEN, account_id)
                 except Exception:
-                    continue
+                    tasks = []
 
-            if date_matches:
-                if len(date_matches) == 1 or not req.jira_summary:
-                    best = date_matches[0]
-                else:
-                    # Tie-break by name similarity to JIRA summary
-                    summary_lower = req.jira_summary.lower()
-                    summary_words = set(summary_lower.split())
-                    def _score(t):
-                        tn = (t.get("name") or t.get("campaign_name") or "").lower()
-                        hits = sum(1 for w in summary_words if len(w) > 3 and w in tn)
-                        sim  = _dl.SequenceMatcher(None, summary_lower, tn).ratio()
-                        return hits * 10 + sim
-                    best = max(date_matches, key=_score)
+                date_matches = []
+                for task in tasks:
+                    if task.get("is_active") is False:
+                        continue
+                    raw_d = str(task.get("scheduled_date") or task.get("date") or "")
+                    try:
+                        if _dti.fromisoformat(raw_d[:10]).date() == jira_date:
+                            date_matches.append(task)
+                    except Exception:
+                        continue
 
-                result["sendout_id"]   = str(best.get("id") or best.get("task_id") or "")
-                result["sendout_name"] = str(best.get("name") or best.get("campaign_name") or "")
-                result["sendout_date"] = str(best.get("scheduled_date") or "")[:10]
+                if date_matches:
+                    if len(date_matches) == 1 or not req.jira_summary:
+                        best = date_matches[0]
+                    else:
+                        # Tie-break by name similarity to JIRA summary
+                        summary_lower = req.jira_summary.lower()
+                        summary_words = set(summary_lower.split())
+                        def _score(t):
+                            tn = (t.get("name") or t.get("campaign_name") or "").lower()
+                            hits = sum(1 for w in summary_words if len(w) > 3 and w in tn)
+                            sim  = _dl.SequenceMatcher(None, summary_lower, tn).ratio()
+                            return hits * 10 + sim
+                        best = max(date_matches, key=_score)
+
+                    result["sendout_id"]   = str(best.get("id") or best.get("task_id") or "")
+                    result["sendout_name"] = str(best.get("name") or best.get("campaign_name") or "")
+                    result["sendout_date"] = str(best.get("scheduled_date") or "")[:10]
 
     # ── 2. Tag Registry (takes priority over G-Sheet) ────────────────────────
     # Priority: ticket_key > sendout_id > sendout_date

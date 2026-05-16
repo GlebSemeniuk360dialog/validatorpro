@@ -125,7 +125,7 @@ def get_entry(entry_id: int) -> Optional[dict]:
 def match_by_ticket(client: str, ticket_key: str) -> Optional[dict]:
     """
     Strongest match: client + Jira ticket key.
-    Used first in the enrich priority chain.
+    Skips entries whose sendout_date is strictly in the past (expired).
     """
     if not ticket_key:
         return None
@@ -133,6 +133,7 @@ def match_by_ticket(client: str, ticket_key: str) -> Optional[dict]:
         row = con.execute(
             """SELECT * FROM tag_registry
                WHERE client = ? AND ticket_key = ?
+                 AND (sendout_date = '' OR sendout_date >= date('now'))
                ORDER BY updated_at DESC LIMIT 1""",
             (client, ticket_key),
         ).fetchone()
@@ -142,12 +143,13 @@ def match_by_ticket(client: str, ticket_key: str) -> Optional[dict]:
 def match_entry(client: str, sendout_id: str) -> Optional[dict]:
     """
     Match by client + sendout_id (second priority after ticket_key match).
-    Returns None when no entry exists — callers should then fall back to GSheet.
+    Skips entries whose sendout_date is strictly in the past (expired).
     """
     with _conn() as con:
         row = con.execute(
             """SELECT * FROM tag_registry
                WHERE client = ? AND sendout_id = ?
+                 AND (sendout_date = '' OR sendout_date >= date('now'))
                ORDER BY updated_at DESC LIMIT 1""",
             (client, str(sendout_id)),
         ).fetchone()
@@ -157,7 +159,9 @@ def match_entry(client: str, sendout_id: str) -> Optional[dict]:
 
 
 def match_by_date(client: str, sendout_date: str) -> Optional[dict]:
-    """Secondary fallback: match by client + sendout date (YYYY-MM-DD)."""
+    """Secondary fallback: match by client + sendout date (YYYY-MM-DD).
+    Since we're matching on the sendout date itself, expiry does not apply here —
+    the entry is valid on its own sendout day."""
     with _conn() as con:
         row = con.execute(
             """SELECT * FROM tag_registry

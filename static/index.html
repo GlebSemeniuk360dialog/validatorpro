@@ -667,22 +667,25 @@ function TicketPanel({ ticket, clients, token, onBack }) {
     <div style={{ display:'flex', flexDirection:'column', gap:18 }}>
       {/* HUD bar */}
       <HudPanel>
-        <div style={{ display:'flex', alignItems:'center', gap:14 }}>
-          <Button variant="ghost" onClick={onBack}>← Back to queue</Button>
-          <div style={{ display:'flex', alignItems:'center', gap:10, fontFamily:t.font.mono, fontSize:13, color:t.fg[2], minWidth:0 }}>
-            <Led kind="accent" pulse />
-            <span style={{color:t.fg[1],letterSpacing:'0.04em',flexShrink:0}}>{ticketKey}</span>
-            <span style={{color:t.fg[4],flexShrink:0}}>·</span>
-            <span style={{color:t.fg[1],fontFamily:t.font.sans,fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ticket.summary}</span>
-            <span style={{color:t.fg[4],flexShrink:0}}>·</span>
-            <span style={{flexShrink:0}}>{client}</span>
-            <span style={{color:t.fg[4],flexShrink:0}}>·</span>
-            <span style={{color:t.fg[3],flexShrink:0}}>{ticket.date}</span>
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+            <Button variant="ghost" onClick={onBack}>← Back to queue</Button>
+            <div style={{ display:'flex', alignItems:'center', gap:8, fontFamily:t.font.mono, fontSize:12, color:t.fg[3] }}>
+              <Led kind="accent" pulse />
+              <span style={{color:t.brand.text, fontWeight:600, letterSpacing:'0.04em'}}>{ticketKey}</span>
+              <span>·</span>
+              <span>{client}</span>
+              <span>·</span>
+              <span>{ticket.date}</span>
+            </div>
+            <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:10 }}>
+              {loading&&<span className="vp-spinner" />}
+              <Button variant="ghost" onClick={runValidate} disabled={loading||!sendoutId}>⚡ Regular Check</Button>
+              <Button onClick={runAiAudit} disabled={loading||!sendoutId}>🤖 Run AI Audit</Button>
+            </div>
           </div>
-          <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:10 }}>
-            {loading&&<span className="vp-spinner" />}
-            <Button variant="ghost" onClick={runValidate} disabled={loading||!sendoutId}>⚡ Regular Check</Button>
-            <Button onClick={runAiAudit} disabled={loading||!sendoutId}>🤖 Run AI Audit</Button>
+          <div style={{ fontSize:16, fontWeight:700, color:t.fg[1], letterSpacing:'-0.01em', lineHeight:1.3, paddingLeft:2 }}>
+            {ticket.summary || <span style={{ color:t.fg[3], fontWeight:400, fontStyle:'italic' }}>No summary</span>}
           </div>
         </div>
       </HudPanel>
@@ -1513,66 +1516,103 @@ function SendoutForm({ token, clients }) {
         </div>
       </div>
 
-      {/* Table */}
-      {entries.length===0 && !listLoading ? (
-        <div style={{ padding:'48px 20px', textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6 }}>
+      {/* Card list */}
+      {listLoading ? (
+        <div style={{ padding:'48px 20px', textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>
+          Loading…
+        </div>
+      ) : entries.length===0 ? (
+        <div style={{ padding:'48px 20px', textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:8 }}>
           No entries yet — click "+ New Entry" to create the first one.
         </div>
       ) : (
-        <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
-          {/* Table head */}
-          <div style={{ display:'grid', gridTemplateColumns:'130px 80px 80px 1fr 100px 70px 70px 70px 1fr 1fr 94px', gap:10, padding:'10px 16px', borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', color:t.fg[3] }}>
-            <div>Client</div><div>Ticket</div><div>Sendout ID</div><div>Sendout Name</div>
-            <div>Date / Time</div><div>TZ</div><div>Platform</div><div>Type</div>
-            <div>Include Tags</div><div>Exclude Tags</div><div style={{textAlign:'right'}}>Actions</div>
-          </div>
-          {entries.map((e,idx) => {
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {entries.map(e => {
             const st = splitTags(e.include_tags);
             const ex = splitTags(e.exclude_tags);
-            const cell = { minWidth:0, overflow:'hidden' };
-            const mono11 = { fontFamily:t.font.mono, fontSize:11, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' };
-            const TagPill = ({ tags, bg, border, color }) => {
-              if (!tags.length) return <span style={{color:t.fg[4],fontSize:12}}>—</span>;
+            const isExpired = e.sendout_date && e.sendout_date < new Date().toISOString().slice(0,10);
+            const Chip = ({ label, bg, border, color, title }) => (
+              <span title={title||label} style={{ fontSize:11, fontFamily:t.font.mono, padding:'2px 8px', background:bg, border:`1px solid ${border}`, borderRadius:999, color, whiteSpace:'nowrap', flexShrink:0 }}>{label}</span>
+            );
+            const TagRow = ({ tags, bg, border, color, icon }) => {
+              if (!tags.length) return null;
               return (
-                <div style={{display:'flex',alignItems:'center',gap:4,overflow:'hidden'}} title={tags.join(', ')}>
-                  <span style={{fontSize:10,fontFamily:t.font.mono,padding:'2px 7px',background:bg,border:`1px solid ${border}`,borderRadius:999,color,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:110}}>{tags[0]}</span>
-                  {tags.length>1 && <span style={{fontSize:10,fontFamily:t.font.mono,padding:'2px 6px',background:t.bg.surface3,border:`1px solid ${t.border.base}`,borderRadius:999,color:t.fg[3],whiteSpace:'nowrap',flexShrink:0}}>+{tags.length-1}</span>}
+                <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:4 }}>
+                  <span style={{ fontSize:10, color:t.fg[4], fontFamily:t.font.mono, marginRight:2 }}>{icon}</span>
+                  {tags.slice(0,6).map((tg,i) => (
+                    <span key={i} style={{ fontSize:10, fontFamily:t.font.mono, padding:'1px 7px', background:bg, border:`1px solid ${border}`, borderRadius:999, color }}>{tg}</span>
+                  ))}
+                  {tags.length>6 && <span style={{ fontSize:10, color:t.fg[4] }}>+{tags.length-6} more</span>}
                 </div>
               );
             };
             return (
-              <div key={e.id} style={{display:'grid',gridTemplateColumns:'130px 80px 80px 1fr 100px 70px 70px 70px 1fr 1fr 94px',gap:10,padding:'11px 16px',borderBottom:idx<entries.length-1?`1px solid ${t.border.base}`:'none',alignItems:'center',fontSize:13}}>
-                <div style={{...cell,fontWeight:600,color:t.fg[1],textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={e.client}>{e.client}</div>
-                <div style={{...mono11,color:e.ticket_key?t.brand.text:t.fg[4]}} title={e.ticket_key}>{e.ticket_key||'—'}</div>
-                <div style={{...mono11,color:t.fg[2]}} title={e.sendout_id}>{e.sendout_id||'—'}</div>
-                <div style={{...cell,fontSize:12,color:t.fg[2],textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={e.sendout_name}>{e.sendout_name||'—'}</div>
-                <div style={cell}>
-                  <div style={{fontSize:12,color:t.fg[1],fontWeight:500}}>{e.sendout_date||'—'}</div>
-                  <div style={{fontSize:11,color:t.fg[3]}}>{e.sendout_time||''}</div>
-                </div>
-                <div style={{...mono11,color:t.fg[3]}} title={e.tz}>{e.tz}</div>
-                <div style={cell}>{e.platform?<span style={{fontSize:10,fontFamily:t.font.mono,padding:'2px 7px',background:t.accent.soft,border:`1px solid ${t.accent.ring}`,borderRadius:999,color:t.accent.base,whiteSpace:'nowrap'}}>{e.platform}</span>:<span style={{color:t.fg[4],fontSize:12}}>—</span>}</div>
-                <div style={cell}>{e.template_type?<span style={{fontSize:10,fontFamily:t.font.mono,padding:'2px 7px',background:t.brand.soft,border:`1px solid ${t.brand.ring}`,borderRadius:999,color:t.brand.text,whiteSpace:'nowrap'}}>{e.template_type}</span>:<span style={{color:t.fg[4],fontSize:12}}>—</span>}</div>
-                <div style={cell}><TagPill tags={st} bg={t.ok.soft} border={t.ok.ring} color={t.ok.base}/></div>
-                <div style={cell}><TagPill tags={ex} bg={t.danger.soft} border={t.danger.ring} color={t.danger.base}/></div>
-                <div style={{display:'flex',gap:5,justifyContent:'flex-end'}}>
-                  <button onClick={()=>openEdit(e)} title="Edit" style={{padding:'4px 8px',border:`1px solid ${t.border.input}`,borderRadius:4,background:'none',cursor:'pointer',fontSize:12,color:t.fg[2]}}>✏️</button>
-                  {deleteConfirm===e.id?(
-                    <>
-                      <button onClick={()=>del(e.id)} style={{padding:'4px 7px',border:`1px solid ${t.danger.base}`,borderRadius:4,background:t.danger.soft,cursor:'pointer',fontSize:11,color:t.danger.base,fontWeight:600}}>Confirm</button>
-                      <button onClick={()=>setDeleteConfirm(null)} style={{padding:'4px 7px',border:`1px solid ${t.border.input}`,borderRadius:4,background:'none',cursor:'pointer',fontSize:11,color:t.fg[3]}}>✕</button>
-                    </>
-                  ):(
-                    <button onClick={()=>setDeleteConfirm(e.id)} title="Delete" style={{padding:'4px 8px',border:`1px solid ${t.border.input}`,borderRadius:4,background:'none',cursor:'pointer',fontSize:12,color:t.fg[3]}}>🗑</button>
+              <div key={e.id} style={{
+                background: t.bg.surface1,
+                border: `1px solid ${isExpired ? t.danger.ring : t.border.base}`,
+                borderRadius: 8,
+                padding: '14px 18px',
+                opacity: isExpired ? 0.6 : 1,
+                transition: 'box-shadow .12s',
+              }}>
+                {/* Row 1 — identity */}
+                <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8, flexWrap:'wrap' }}>
+                  {/* Client badge */}
+                  <span style={{ fontSize:12, fontWeight:700, color:t.fg[1], padding:'2px 10px', background:t.bg.surface2, border:`1px solid ${t.border.base}`, borderRadius:4 }}>{e.client}</span>
+                  {/* Ticket key */}
+                  {e.ticket_key && (
+                    <span style={{ fontSize:12, fontFamily:t.font.mono, fontWeight:700, color:t.brand.text, padding:'2px 8px', background:t.brand.soft, border:`1px solid ${t.brand.ring}`, borderRadius:4 }}>{e.ticket_key}</span>
                   )}
+                  {/* Sendout name */}
+                  {e.sendout_name && (
+                    <span style={{ fontSize:13, fontWeight:600, color:t.fg[1], flex:1, minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={e.sendout_name}>{e.sendout_name}</span>
+                  )}
+                  {isExpired && <span style={{ fontSize:10, fontFamily:t.font.mono, color:t.danger.base, marginLeft:'auto' }}>EXPIRED</span>}
+                  {/* Actions — pushed right */}
+                  <div style={{ marginLeft:'auto', display:'flex', gap:5, flexShrink:0 }}>
+                    <button onClick={()=>openEdit(e)} title="Edit"
+                      style={{ padding:'4px 10px', border:`1px solid ${t.border.input}`, borderRadius:5, background:'none', cursor:'pointer', fontSize:12, color:t.fg[2] }}>✏️ Edit</button>
+                    {deleteConfirm===e.id ? (
+                      <>
+                        <button onClick={()=>del(e.id)} style={{ padding:'4px 10px', border:`1px solid ${t.danger.base}`, borderRadius:5, background:t.danger.soft, cursor:'pointer', fontSize:11, color:t.danger.base, fontWeight:700 }}>Confirm</button>
+                        <button onClick={()=>setDeleteConfirm(null)} style={{ padding:'4px 8px', border:`1px solid ${t.border.input}`, borderRadius:5, background:'none', cursor:'pointer', fontSize:11, color:t.fg[3] }}>✕</button>
+                      </>
+                    ) : (
+                      <button onClick={()=>setDeleteConfirm(e.id)} title="Delete"
+                        style={{ padding:'4px 8px', border:`1px solid ${t.border.input}`, borderRadius:5, background:'none', cursor:'pointer', fontSize:12, color:t.fg[3] }}>🗑</button>
+                    )}
+                  </div>
                 </div>
+                {/* Row 2 — metadata chips */}
+                <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', marginBottom: (st.length||ex.length) ? 8 : 0 }}>
+                  {e.sendout_id && <Chip label={`ID: ${e.sendout_id}`} bg={t.bg.surface2} border={t.border.base} color={t.fg[3]} title="Sendout ID"/>}
+                  {e.sendout_date && (
+                    <Chip
+                      label={`📅 ${e.sendout_date}${e.sendout_time ? ' · ' + e.sendout_time : ''}`}
+                      bg={isExpired ? t.danger.soft : t.bg.surface2}
+                      border={isExpired ? t.danger.ring : t.border.base}
+                      color={isExpired ? t.danger.base : t.fg[2]}
+                    />
+                  )}
+                  {e.tz && e.tz !== 'Europe/Berlin' && <Chip label={e.tz} bg={t.bg.surface2} border={t.border.base} color={t.fg[3]}/>}
+                  {e.platform && <Chip label={e.platform} bg={t.accent.soft} border={t.accent.ring} color={t.accent.base}/>}
+                  {e.template_type && <Chip label={e.template_type} bg={t.brand.soft} border={t.brand.ring} color={t.brand.text}/>}
+                  {e.notes && <span style={{ fontSize:11, color:t.fg[3], fontStyle:'italic', marginLeft:4 }} title={e.notes}>📝 {e.notes.slice(0,60)}{e.notes.length>60?'…':''}</span>}
+                </div>
+                {/* Row 3 — tags */}
+                {(st.length>0||ex.length>0) && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:5, paddingTop:6, borderTop:`1px dashed ${t.border.base}` }}>
+                    <TagRow tags={st} bg={t.ok.soft} border={t.ok.ring} color={t.ok.base} icon="✓ include"/>
+                    <TagRow tags={ex} bg={t.danger.soft} border={t.danger.ring} color={t.danger.base} icon="✕ exclude"/>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
       <div style={{marginTop:18,padding:'11px 15px',background:t.bg.surface2,border:`1px solid ${t.border.base}`,borderRadius:6,fontSize:12,color:t.fg[3]}}>
-        <strong style={{color:t.fg[2]}}>Priority:</strong> Registry (ticket key) → Registry (sendout ID) → Registry (date) → Google Sheets.
+        <strong style={{color:t.fg[2]}}>Priority:</strong> Registry (ticket key) → Registry (sendout ID) → Registry (date) → Google Sheets. Expired entries (past sendout date) are skipped automatically.
       </div>
     </div>
   );

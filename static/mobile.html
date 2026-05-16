@@ -816,8 +816,12 @@ function ValidatorScreen({ ticket, token, userName, onBack }) {
           </button>
           <MBracket>LIVE</MBracket>
         </div>
-        <div style={{ fontSize: 11, fontFamily: T.font.mono, color: T.brand.text, fontWeight: 600, marginBottom: 3 }}>{ticket.key}</div>
-        <div style={{ fontSize: 14, fontWeight: 700, color: T.fg[1], marginBottom: 6, lineHeight: 1.3 }}>{ticket.summary}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <span style={{ fontSize: 11, fontFamily: T.font.mono, color: T.brand.text, fontWeight: 700, letterSpacing: '0.04em', background: T.brand.soft, border: `1px solid ${T.brand.ring}`, borderRadius: 4, padding: '1px 6px' }}>{ticket.key}</span>
+        </div>
+        <div style={{ fontSize: 15, fontWeight: 700, color: T.fg[1], marginBottom: 6, lineHeight: 1.3 }}>
+          {ticket.summary || <span style={{ color: T.fg[3], fontWeight: 400, fontStyle: 'italic' }}>No summary</span>}
+        </div>
         <div style={{ fontSize: 11, color: T.fg[3], marginBottom: 10 }}>
           <span style={{ fontWeight: 600, color: T.fg[2] }}>{ticket.client}</span>
           {ticket.date && <span> · {fmtDate(ticket.date)}</span>}
