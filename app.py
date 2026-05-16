@@ -637,10 +637,22 @@ def render_queue(jira_server, jira_email, jira_token, api_token=""):
     table_rows = []
     for issue in st.session_state["queue_data"]:
         fields = issue["fields"]
+        client = _ticket_client(issue)
+        summary = fields.get("summary", "")
+        if client == "ALDI Portugal":
+            seg_raw = fields.get("customfield_14287")
+            if isinstance(seg_raw, dict):
+                seg = seg_raw.get("value") or seg_raw.get("name") or ""
+            elif seg_raw is not None:
+                seg = str(seg_raw)
+            else:
+                seg = ""
+            if seg and seg.lower() not in summary.lower():
+                summary = f"{summary} {seg}".strip()
         table_rows.append({
             "Key":    issue["key"],
-            "Summary": fields.get("summary", ""),
-            "Client":  _ticket_client(issue),
+            "Summary": summary,
+            "Client":  client,
             "Date":    fields.get("customfield_12665", "No Date"),
             "Status":  fields.get("status", {}).get("name", ""),
         })
