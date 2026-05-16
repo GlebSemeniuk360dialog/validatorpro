@@ -1416,7 +1416,13 @@ def _orphan_scan_sync(days_ahead: int, days_back: int) -> dict:
         task_id   = str(task.get("id") or task.get("task_id") or "")
 
         # Skip internal system tasks that are never JIRA-tracked
-        if task_name.strip().lower() in {"load shops and leaflets", "load shops & leaflets"}:
+        _task_name_lower = task_name.strip().lower()
+        if any(_task_name_lower == s for s in {
+            "load shops and leaflets",
+            "load shops & leaflets",
+            "hofer load shops and leaflets",
+            "hofer load shops & leaflets",
+        }):
             continue
 
         in_jira = date_raw in jira_by_client_date.get(client, set())
