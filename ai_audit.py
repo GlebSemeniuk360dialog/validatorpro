@@ -3,14 +3,39 @@ ai_audit.py — Gemini-powered deep audit logic.
 Isolated from Streamlit so it can be called from tests or CLI.
 """
 
+import difflib
 import io
 import json
 import logging
+import re as _re
+from datetime import datetime as _dt
+from typing import Literal
 
 from google import genai
 from PIL import Image
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+# ── Structured output schema ───────────────────────────────────────────────────
+
+class CheckVerdict(BaseModel):
+    verdict:  Literal["PASS", "FAIL", "NA"]
+    reason:   str   # one sentence, English only
+    expected: str   # exact value from JIRA / G-Sheet
+    actual:   str   # exact value from DMA API
+
+class AuditOutput(BaseModel):
+    scheduling: CheckVerdict
+    copy:       CheckVerdict
+    footer:     CheckVerdict
+    cta:        CheckVerdict
+    tags:       CheckVerdict
+    images:     CheckVerdict
+    overall:    Literal["PASS", "FAIL"]
+    confidence: int           # 0-100
+    confidence_reason: str
 
 _AUDIT_PROMPT_TEMPLATE = """\
 ⚠️ LANGUAGE RULE — HIGHEST PRIORITY ⚠️
@@ -30,50 +55,55 @@ DATA TO AUDIT (JSON):
 {comparison_json}
 
 ══════════════════════════════════════════════════════════
-MANDATORY AUDIT PROTOCOL — EXECUTE EVERY STEP IN ORDER
+MANDATORY AUDIT PROTOCOL — EXECUTE EVERY CHECK IN ORDER
 ══════════════════════════════════════════════════════════
-You MUST complete ALL SIX checks below. Do NOT skip any check.
-Do NOT merge checks. Do NOT reorder checks.
-For every check output EXACTLY this block:
+You MUST complete ALL SIX checks below. Do NOT skip any check. Do NOT merge checks.
 
-### [EMOJI] CHECK N — [NAME]
-**Expected:** [exact value from JIRA / G-Sheet]
-**Actual:** [exact value from DMA API]
-**Verdict:** ✅ PASS / ❌ FAIL / 🔕 N/A — [one-line reason]
+For each check, populate these four fields:
+  verdict:  "PASS", "FAIL", or "NA" (exact string — no emoji, no extra text)
+  reason:   ONE sentence in English explaining the verdict
+  expected: brief exact value from JIRA / G-Sheet
+  actual:   brief exact value from DMA API / Template
 
-EMOJI rule: ✅ for PASS, ❌ for FAIL, 🔕 for N/A (check genuinely not applicable).
-N/A is only allowed when the check cannot be evaluated (e.g. no images provided).
-A check is NEVER N/A just because data looks fine — that is a PASS.
+N/A rules: use "NA" ONLY when the check genuinely cannot be evaluated
+(e.g. CHECK 6 when no images were provided). "NA" is NEVER correct just because
+data looks fine — that is "PASS".
 
-CHECK 1 — SCHEDULING
-  Compare JIRA date/time to DMA API `Date_Time`. Apply the SCHEDULING RULE below.
-CHECK 2 — COPY (body text)
-  Compare DMA template body to JIRA description. Apply the TEXT/COPY RULES below.
-CHECK 3 — FOOTER
-  Compare DMA footer to JIRA footer specification. Apply the FOOTER RULE below.
-CHECK 4 — CTA BUTTONS & LINKS
-  Check DMA button names and URLs against JIRA. Apply the CTA RULES below.
-CHECK 5 — TAGS / AUDIENCE FILTERS
-  Compare DMA include/exclude tags to G-Sheet intent. Apply the TAG RULES below.
-  This check ALWAYS has a verdict — never skip it, even if G-Sheet tags are empty
-  (empty G-Sheet tags = no include filter required = PASS if DMA has no extra unexpected filters).
-CHECK 6 — IMAGES / CAROUSEL
-  If images were provided, compare them. If no images provided, mark 🔕 N/A.
+——— IMPORTANT — USE PRE-COMPUTED DIFFS ———
+The comparison data includes a "Precomputed_Diffs" section with Python-calculated results.
+These diffs are reliable starting points — you MUST confirm or override them using the
+rules listed further below. They reduce your workload: you are confirming, not re-discovering.
 
-After all six checks write:
-### SUMMARY TABLE
-| Check | Verdict |
-|-------|---------|
-| 1 Scheduling | ✅ / ❌ / 🔕 |
-| 2 Copy | ... |
-| 3 Footer | ... |
-| 4 CTA | ... |
-| 5 Tags | ... |
-| 6 Images | ... |
+  Precomputed_Diffs.scheduling:
+    • diff_minutes = absolute difference between JIRA local clock and API local clock
+    • within_40min_tolerance = True → pre_verdict PASS, False → pre_verdict FAIL
+    • Apply SCHEDULING RULE below; override only if a special exception applies (e.g. ALDI Portugal).
 
-**Overall: ✅ ALL PASS** or **❌ N issues found** (list failed checks).
+  Precomputed_Diffs.copy_text:
+    • similarity_ratio = 0.0–1.0 (≥0.92 = nearly identical, ≥0.75 = similar, <0.75 = divergent)
+    • pre_verdict: PASS if ≥0.75, FAIL if <0.75 — confirm using intent and the COPY RULES below.
+    • A low ratio can be PASS if explained by template variables, placeholder substitution, etc.
 
-Then write any additional notes or context AFTER the summary table.
+  Precomputed_Diffs.tags:
+    • missing_include / extra_include / missing_exclude / extra_exclude are Python set diffs.
+    • pre_verdict PASS means zero deviations detected. Confirm using TAG RULES below.
+    • Note: the tag parser is basic — use the rules to adjudicate ambiguous cases.
+
+  Precomputed_Diffs.cta_urls:
+    • image_urls_ignored = count of CDN/storage image URLs already stripped out.
+    • missing_from_api / extra_in_api are CTA-only URL diffs.
+    • pre_verdict PASS means CTA URLs match after filtering. Apply CTA RULES below.
+
+CHECK 1 — SCHEDULING: Compare JIRA date/time to DMA Date_Time. Apply SCHEDULING RULE.
+CHECK 2 — COPY: Compare DMA template body to JIRA description. Apply TEXT/COPY RULES.
+CHECK 3 — FOOTER: Compare DMA footer to JIRA footer spec. Apply FOOTER RULE.
+CHECK 4 — CTA BUTTONS & LINKS: Check DMA button names and URLs against JIRA. Apply CTA RULES.
+CHECK 5 — TAGS / AUDIENCE FILTERS: Compare DMA include/exclude tags to G-Sheet intent. Apply TAG RULES.
+  Tags check ALWAYS has a verdict — never "NA" even if G-Sheet tags are empty.
+  (empty G-Sheet tags = no include filter required → PASS if DMA has no unexpected extra filters)
+CHECK 6 — IMAGES / CAROUSEL: If images were provided, compare visually. If no images → "NA".
+
+overall = "PASS" only if every check is "PASS" or "NA". If ANY check is "FAIL" → overall = "FAIL".
 ══════════════════════════════════════════════════════════
 
 REQUIRED CHECKS & RULES (apply inside the protocol steps above):
@@ -237,16 +267,7 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
 
 LANGUAGE RULE: Always respond in English only, regardless of the language of the content being audited.
 
-OUTPUT FORMAT (STRICT JSON — no markdown fences, no preamble):
-{{
-    "audit_report": "Full Markdown report. Use ✅, ❌, ⚠️. Use \\n\\n for newlines.",
-    "confidence": <integer 0-100 representing your confidence in this audit result>,
-    "confidence_reason": "One sentence explaining the confidence score. Low if data was missing/ambiguous, high if everything was clear.",
-    "jira_extracted_urls": ["list", "of", "urls", "from", "JIRA"],
-    "api_extracted_urls": ["list", "of", "urls", "from", "DMA"]
-}}
-
-Confidence scoring guide:
+Confidence scoring guide (for the confidence field, 0-100):
 - 90-100: All data present, clear pass or fail, no ambiguity
 - 70-89: Minor missing data (e.g. no footer specified) but conclusion is clear
 - 50-69: Some data missing or ambiguous, conclusion is uncertain
@@ -278,6 +299,221 @@ def _norm_tags_list(s: str) -> list:
         if p:
             cleaned.append(p)
     return cleaned
+
+
+# ── Pre-computation helpers ────────────────────────────────────────────────────
+
+def _is_image_url(url: str) -> bool:
+    """Return True if a URL is an image CDN link — never a CTA button."""
+    _IMG_DOMAINS = ("storage.googleapis.com", "scontent.whatsapp.net", "whatsapp.net")
+    _IMG_PARAMS  = ("ccb=", "_nc_sid=", "oh=", "oe=", "_nc_ohc=")
+    _IMG_EXTS    = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")
+    u = url.lower()
+    if any(d in u for d in _IMG_DOMAINS): return True
+    if any(u.endswith(e) or (e + "?") in u or (e + "&") in u for e in _IMG_EXTS): return True
+    if "uploads/file_documents/" in u: return True
+    if sum(1 for p in _IMG_PARAMS if p in u) >= 3: return True
+    return False
+
+
+def _compute_scheduling_diff(jira_date_str: str, api_date_str: str) -> dict:
+    """
+    Compare JIRA and DMA dates as LOCAL clock readings (ignore timezone labels).
+    The DMA API stores local time labeled as Z — so we strip tz and compare directly.
+    """
+    def _parse_local(s: str):
+        s = str(s or "").strip()
+        s = _re.sub(r'\s*(CET|CEST|UTC|GMT|MEZ|MESZ)$', '', s, flags=_re.I).strip()
+        s = _re.sub(r'[TZ]', ' ', s).strip().rstrip('+').rstrip('-')
+        s = _re.sub(r'\s+\+\d{2}:\d{2}$', '', s).strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H", "%Y-%m-%d"):
+            try: return _dt.strptime(s.strip(), fmt)
+            except ValueError: continue
+        return None
+
+    jira_dt = _parse_local(jira_date_str)
+    api_dt  = _parse_local(api_date_str)
+
+    if jira_dt is None or api_dt is None:
+        return {
+            "jira_local_clock": str(jira_date_str),
+            "api_local_clock":  str(api_date_str),
+            "diff_minutes": None,
+            "within_40min_tolerance": None,
+            "pre_verdict": "NA",
+            "note": "Could not parse one or both dates — AI must evaluate manually",
+        }
+
+    diff_min = round(abs((api_dt - jira_dt).total_seconds()) / 60, 1)
+    within   = diff_min <= 40
+    return {
+        "jira_local_clock":      jira_dt.strftime("%Y-%m-%d %H:%M"),
+        "api_local_clock":       api_dt.strftime("%Y-%m-%d %H:%M"),
+        "diff_minutes":          diff_min,
+        "within_40min_tolerance": within,
+        "pre_verdict":           "PASS" if within else "FAIL",
+        "note": (f"Diff = {diff_min} min — "
+                 f"{'✅ PASS (≤40 min tolerance)' if within else '❌ FAIL (>40 min tolerance)'}"),
+    }
+
+
+def _compute_text_similarity(jira_text: str, dma_text: str) -> dict:
+    """Compute body-text similarity so AI focuses on intent rather than string matching."""
+    def _normalize(t: str) -> str:
+        t = str(t or "")
+        t = _re.sub(r'\*+', '', t)                           # strip bold markers
+        t = _re.sub(r'Slide\s*\d+\s*:', '', t, flags=_re.I)  # strip slide labels
+        t = _re.sub(r'Slider\s*\d+\s*:', '', t, flags=_re.I)
+        t = _re.sub(r'\s+', ' ', t).strip().lower()
+        return t
+
+    jn = _normalize(jira_text)
+    dn = _normalize(dma_text)
+
+    if not jn and not dn:
+        return {"similarity_ratio": 1.0, "pre_verdict": "PASS",
+                "note": "Both texts empty — no copy to compare"}
+    if not jn:
+        return {"similarity_ratio": 1.0, "pre_verdict": "PASS",
+                "note": "JIRA has no description — nothing to check"}
+    if not dn:
+        return {"similarity_ratio": 0.0, "pre_verdict": "FAIL",
+                "note": "DMA template body is empty but JIRA has content"}
+
+    ratio = round(difflib.SequenceMatcher(None, jn, dn).ratio(), 3)
+    if ratio >= 0.92:
+        assessment = "✅ Texts are nearly identical"
+    elif ratio >= 0.75:
+        assessment = "⚠️ Texts are similar but differ — AI should verify intent matches"
+    else:
+        assessment = "❌ Texts differ significantly — likely FAIL unless template variables explain it"
+
+    # Short diff snippet for context (max 6 lines)
+    jlines = _re.findall(r'.{1,100}', jn)[:5]
+    dlines = _re.findall(r'.{1,100}', dn)[:5]
+    diff   = list(difflib.unified_diff(jlines, dlines, lineterm="", n=1))[:8]
+
+    return {
+        "similarity_ratio": ratio,
+        "pre_verdict":      "PASS" if ratio >= 0.75 else "FAIL",
+        "assessment":       assessment,
+        "diff_preview":     "\n".join(diff) if diff else "(no diff)",
+    }
+
+
+def _compute_tag_diff(expected_incl: str, expected_excl: str, api_tag_str: str) -> dict:
+    """Pre-compute tag set differences so AI just reads the result."""
+    exp_inc = set(_norm_tags_list(expected_incl))
+    exp_exc = set(_norm_tags_list(expected_excl))
+
+    actual_lines = _re.split(r'[,\n;]+', str(api_tag_str or ""))
+    actual_inc, actual_exc = set(), set()
+    for line in actual_lines:
+        line = line.strip()
+        if not line: continue
+        lo = line.lower()
+        if _re.match(r'^excl[:.\s]', lo) or "exclude" in lo[:10]:
+            tag = _re.sub(r'^excl[:\s.]+|^exclude[:\s]+', '', line, flags=_re.I).strip()
+            if tag: actual_exc.add(tag)
+        else:
+            actual_inc.add(line)
+
+    missing_inc = sorted(exp_inc - actual_inc)
+    extra_inc   = sorted(actual_inc - exp_inc) if exp_inc else []
+    missing_exc = sorted(exp_exc - actual_exc)
+    extra_exc   = sorted(actual_exc - exp_exc)
+    all_match   = not (missing_inc or missing_exc or extra_exc)
+
+    issues = []
+    if missing_inc: issues.append(f"missing include tags: {missing_inc}")
+    if extra_inc:   issues.append(f"unexpected include tags: {extra_inc}")
+    if missing_exc: issues.append(f"missing exclude tags: {missing_exc}")
+    if extra_exc:   issues.append(f"unexpected exclude tags: {extra_exc}")
+
+    return {
+        "expected_include": sorted(exp_inc),
+        "expected_exclude": sorted(exp_exc),
+        "actual_include":   sorted(actual_inc),
+        "actual_exclude":   sorted(actual_exc),
+        "missing_include":  missing_inc,
+        "extra_include":    extra_inc,
+        "missing_exclude":  missing_exc,
+        "extra_exclude":    extra_exc,
+        "pre_verdict":      "PASS" if all_match else "FAIL",
+        "note":             "✅ All tags match" if all_match else "❌ " + "; ".join(issues),
+    }
+
+
+def _compute_url_diff(jira_urls: list, api_urls: list) -> dict:
+    """Filter image CDN URLs and compute CTA-only URL diff."""
+    jira_cta = [u for u in jira_urls if not _is_image_url(u)]
+    api_cta  = [u for u in api_urls  if not _is_image_url(u)]
+    img_cnt  = len([u for u in api_urls if _is_image_url(u)])
+
+    missing = [u for u in jira_cta if u not in api_cta]
+    extra   = [u for u in api_cta  if u not in jira_cta]
+    ok      = not (missing or extra)
+
+    return {
+        "jira_cta_urls":      jira_cta,
+        "api_cta_urls":       api_cta,
+        "image_urls_ignored": img_cnt,
+        "missing_from_api":   missing,
+        "extra_in_api":       extra,
+        "pre_verdict":        "PASS" if ok else "FAIL",
+        "note":               "✅ CTA URLs match" if ok else
+                              f"❌ URL mismatch — missing={missing}, extra={extra}",
+    }
+
+
+def _build_report_from_structured(audit: AuditOutput) -> str:
+    """Generate a human-readable markdown report from structured AuditOutput."""
+    EMOJI = {"PASS": "✅", "FAIL": "❌", "NA": "🔕"}
+    NAMES = {
+        "scheduling": "CHECK 1 — SCHEDULING",
+        "copy":       "CHECK 2 — COPY",
+        "footer":     "CHECK 3 — FOOTER",
+        "cta":        "CHECK 4 — CTA BUTTONS & LINKS",
+        "tags":       "CHECK 5 — TAGS / AUDIENCE FILTERS",
+        "images":     "CHECK 6 — IMAGES / CAROUSEL",
+    }
+    checks = [
+        ("scheduling", audit.scheduling),
+        ("copy",       audit.copy),
+        ("footer",     audit.footer),
+        ("cta",        audit.cta),
+        ("tags",       audit.tags),
+        ("images",     audit.images),
+    ]
+    lines = []
+    for key, chk in checks:
+        e = EMOJI.get(chk.verdict, "?")
+        lines.append(f"### {e} {NAMES[key]}")
+        lines.append(f"**Expected:** {chk.expected}")
+        lines.append(f"**Actual:** {chk.actual}")
+        lines.append(f"**Verdict:** {e} {chk.verdict} — {chk.reason}")
+        lines.append("")
+
+    # Summary table
+    lines.append("### SUMMARY TABLE")
+    lines.append("| Check | Verdict |")
+    lines.append("|-------|---------|")
+    label_map = {
+        "scheduling": "1 Scheduling",
+        "copy":       "2 Copy",
+        "footer":     "3 Footer",
+        "cta":        "4 CTA",
+        "tags":       "5 Tags",
+        "images":     "6 Images",
+    }
+    for key, chk in checks:
+        lines.append(f"| {label_map[key]} | {EMOJI.get(chk.verdict, '?')} {chk.verdict} |")
+
+    ov_e = "✅" if audit.overall == "PASS" else "❌"
+    lines.append("")
+    lines.append(f"**Overall: {ov_e} {audit.overall}**")
+    lines.append(f"**Confidence: {audit.confidence}%** — {audit.confidence_reason}")
+    return "\n".join(lines)
 
 
 def build_comparison_data(
@@ -350,6 +586,19 @@ def build_comparison_data(
         expected_incl = _norm_tags(str(jira.get("gsheet_tags", "")))
         expected_excl = _norm_tags(str(jira.get("gsheet_exclude_tags", "")))
 
+    # ── Pre-compute diffs so AI confirms results rather than discovering them ──
+    _jira_url_list = extract_urls(jira_all_text)
+    _sched_diff = _compute_scheduling_diff(
+        str(jira.get("date", "")),
+        api_date or str(jira.get("date", "")),
+    )
+    _text_diff = _compute_text_similarity(
+        str(jira.get("description", "")),
+        tmpl_body,
+    )
+    _tag_diff = _compute_tag_diff(expected_incl, expected_excl, api_tag_str)
+    _url_diff = _compute_url_diff(_jira_url_list, list(filter(None, api_urls)))
+
     return {
         "JIRA_Intent": {
             "Date": str(jira.get("date", "")),
@@ -358,7 +607,7 @@ def build_comparison_data(
             "JIRA_Parsed_Carousel": jira.get("parsed_carousel"),
             "Footer": str(jira.get("footer_text", "")),
             "CTA_Button_Text": str(jira.get("cta_button", "")),
-            "JIRA_All_URLs": ", ".join(extract_urls(jira_all_text)),
+            "JIRA_All_URLs": ", ".join(_jira_url_list),
             "Tags_Segment": (str(jira.get("segment", "")) if "aldi sued" in _client_lower else "N/A — not checked for this client"),
             "Comment_Thread": "\n".join(jira.get("comments", [])),
         },
@@ -377,6 +626,12 @@ def build_comparison_data(
             "Template_Buttons": ", ".join(tmpl_buttons),
             "API_Tags_And_Filters": api_tag_str,
             "API_URLs_Configured": ", ".join(api_urls),
+        },
+        "Precomputed_Diffs": {
+            "scheduling": _sched_diff,
+            "copy_text":  _text_diff,
+            "tags":       _tag_diff,
+            "cta_urls":   _url_diff,
         },
     }
 
@@ -483,11 +738,14 @@ def run_ai_audit(
                 "Do NOT use German, French, Italian, Dutch, or any other language — ENGLISH ONLY. "
                 "The campaign content may be in any language, but YOUR RESPONSE must always be English. "
                 "If you write in any other language, your response is wrong and will be discarded. "
-                "ABSOLUTE RULE 2: You MUST execute ALL SIX protocol checks in the exact order given. "
-                "Each check must produce its own ### CHECK N header with Expected/Actual/Verdict. "
-                "Never merge checks. Never skip a check. Never reorder checks. "
-                "A missing check block = invalid audit that will be rejected."
+                "ABSOLUTE RULE 2: You MUST evaluate ALL SIX checks in the exact order given. "
+                "Each of the six checks (scheduling, copy, footer, cta, tags, images) must have "
+                "a verdict ('PASS', 'FAIL', or 'NA'), a reason, expected value, and actual value. "
+                "Never merge checks. Never skip a check. "
+                "An empty or missing check field = invalid audit that will be rejected."
             ),
+            response_mime_type="application/json",
+            response_schema=AuditOutput,
             **({} if _thinking_cfg is None else {"thinking_config": _thinking_cfg}),
         )
 
@@ -510,33 +768,48 @@ def run_ai_audit(
                 "You MUST rewrite your ENTIRE response in English only. "
                 "Every single word must be English. "
                 "Do NOT use Japanese, Chinese, German, French, Italian, Korean, Arabic, or any other language. "
-                "ENGLISH ONLY. Produce the full JSON audit report now, entirely in English:"
+                "ENGLISH ONLY. Produce the full JSON audit now, entirely in English:"
             )
-            # Prepend the correction as the first content item for maximum impact
             _retry_contents = [_lang_fix] + list(contents)
             raw_text = client.models.generate_content(
                 model=model_name,
                 contents=_retry_contents,
                 config=_config,
             ).text
-        json_str = _extract_json(raw_text)
-        json_str = _repair_json(json_str)
-        result = json.loads(json_str)
-        # Sanity-check: if the report itself signals a server/model error, flag it
-        report = result.get("audit_report", "")
+
+        # ── Structured output: parse directly into AuditOutput Pydantic model ──
+        audit = AuditOutput.model_validate_json(raw_text)
+        report = _build_report_from_structured(audit)
         if _is_audit_error(report):
-            result["error"] = True
-        return result
-    except json.JSONDecodeError as exc:
-        logger.error("AI audit JSON parse failed: %s", exc)
+            return {
+                "audit_report": report,
+                "structured": audit.model_dump(),
+                "confidence": audit.confidence,
+                "confidence_reason": audit.confidence_reason,
+                "jira_extracted_urls": [],
+                "api_extracted_urls": [],
+                "error": True,
+            }
         return {
-            "audit_report": f"AI audit generated, but JSON parsing failed: {exc}\n\nRaw output:\n{raw_text}",
+            "audit_report": report,
+            "structured": audit.model_dump(),
+            "confidence": audit.confidence,
+            "confidence_reason": audit.confidence_reason,
             "jira_extracted_urls": [],
             "api_extracted_urls": [],
-            "error": True,
         }
     except Exception as exc:
+        from pydantic import ValidationError
         err_str = str(exc)
+        # Pydantic validation failure — structured output mismatch
+        if isinstance(exc, ValidationError):
+            logger.error("AI audit Pydantic validation failed: %s", exc)
+            return {
+                "audit_report": f"AI audit generated, but structured parsing failed: {exc}\n\nRaw output:\n{raw_text}",
+                "jira_extracted_urls": [],
+                "api_extracted_urls": [],
+                "error": True,
+            }
         # Detect Gemini 503 / resource exhaustion — transient, user should retry
         _overload = (
             "503" in err_str
