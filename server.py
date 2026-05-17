@@ -44,6 +44,7 @@ from api_client import (
     write_ai_status_to_jira,
 )
 from ai_audit import build_comparison_data, run_ai_audit
+from ai_examples import ExamplesLibrary, extract_snippet
 import dataclasses
 from bulk_validator import BulkTicketResult, run_bulk_validation, run_bulk_regular_check
 from features import build_dashboard_data, record_validation, validate_scheduled_date
@@ -539,6 +540,9 @@ app = FastAPI(title="Validator Pro API")
 # Initialise tag-registry SQLite DB on startup (no-op if already exists)
 _reg.init_db()
 
+# Initialise few-shot examples library
+_examples_lib = ExamplesLibrary()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -965,11 +969,13 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         api_date=str(a_data.get("scheduled_date", "")),
     )
 
+    _few_shot = _examples_lib.select_for_audit(req.client)
     try:
         result = run_ai_audit(
             GEMINI_KEY, GEMINI_MODEL, comparison_data, req.client,
             jira_images=j_data.get("carousel_images"),
             dma_images=None,
+            examples=_few_shot,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"AI audit failed: {exc}")
@@ -1045,12 +1051,15 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         )
 
     return {
-        "html":       html_output,
-        "ai_result":  ai_result_text,
-        "issues":     issues,
-        "confidence": result.get("confidence", -1),
-        "ticket_key": req.ticket_key,
-        "client":     req.client,
+        "html":            html_output,
+        "ai_result":       ai_result_text,
+        "issues":          issues,
+        "confidence":      result.get("confidence", -1),
+        "confidence_reason": result.get("confidence_reason", ""),
+        "ticket_key":      req.ticket_key,
+        "client":          req.client,
+        "structured":      result.get("structured"),       # per-check verdicts for Save-as-Example
+        "comparison_data": comparison_data,                # snippets extracted server-side on save
     }
 
 
@@ -1088,6 +1097,89 @@ async def dashboard(authorization: Optional[str] = Header(None)):
     except Exception:
         data = {"total": 0, "pass_rate": 0, "log": [], "queue_health": {"queue_size": 0, "due_24h": 0, "due_48h": 0}}
     return data
+
+
+# ── Few-shot Examples Library ────────────────────────────────────────────────
+
+class ExampleSaveRequest(BaseModel):
+    client:      str
+    check:       str                  # scheduling / copy / footer / cta / tags / images
+    scenario:    str                  # human description, e.g. "Wrong segment excluded"
+    verdict:     str                  # PASS / FAIL / NA  (user-confirmed)
+    reason:      str
+    expected:    str
+    actual:      str
+    added_by:    str = ""
+    comparison_data: dict | None = None   # full comparison_data to extract snippet from
+
+
+class ExampleUpdateRequest(BaseModel):
+    active:   bool | None = None
+    scenario: str  | None = None
+    verdict:  str  | None = None
+    reason:   str  | None = None
+    expected: str  | None = None
+    actual:   str  | None = None
+
+
+@app.get("/api/examples")
+async def list_examples(authorization: Optional[str] = Header(None)):
+    _get_session(authorization)
+    return {"examples": _examples_lib.get_all()}
+
+
+@app.post("/api/examples", status_code=201)
+async def add_example(req: ExampleSaveRequest, authorization: Optional[str] = Header(None)):
+    _get_session(authorization)
+    snippet = {}
+    if req.comparison_data:
+        snippet = extract_snippet(req.comparison_data, req.check)
+    ex_id = _examples_lib.add({
+        "client":        req.client,
+        "check":         req.check,
+        "scenario":      req.scenario,
+        "verdict":       req.verdict,
+        "added_by":      req.added_by,
+        "input_snippet": snippet,
+        "correct_output": {
+            "verdict":  req.verdict,
+            "reason":   req.reason,
+            "expected": req.expected,
+            "actual":   req.actual,
+        },
+    })
+    return {"id": ex_id, "ok": True}
+
+
+@app.put("/api/examples/{ex_id}")
+async def update_example(
+    ex_id: str, req: ExampleUpdateRequest,
+    authorization: Optional[str] = Header(None),
+):
+    _get_session(authorization)
+    fields: dict = {k: v for k, v in req.model_dump().items() if v is not None}
+    # If verdict/reason/expected/actual updated, sync correct_output too
+    _out_keys = {"verdict", "reason", "expected", "actual"}
+    out_updates = {k: v for k, v in fields.items() if k in _out_keys}
+    if out_updates:
+        ex = _examples_lib.get_by_id(ex_id)
+        if ex:
+            merged = dict(ex.get("correct_output") or {})
+            merged.update(out_updates)
+            fields["correct_output"] = merged
+    ok = _examples_lib.update(ex_id, fields)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Example not found")
+    return {"ok": True}
+
+
+@app.delete("/api/examples/{ex_id}")
+async def delete_example(ex_id: str, authorization: Optional[str] = Header(None)):
+    _get_session(authorization)
+    ok = _examples_lib.delete(ex_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Example not found")
+    return {"ok": True}
 
 
 # ── G-Sheet refresh ───────────────────────────────────────────────────────────
@@ -1294,6 +1386,7 @@ async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(
         gemini_key=GEMINI_KEY,
         gemini_model=GEMINI_BULK_MODEL,
         on_progress=lambda r, i, t: None,
+        examples_lib=_examples_lib,
     )
 
     session = _sessions.get((authorization or "").split(" ", 1)[-1], {})

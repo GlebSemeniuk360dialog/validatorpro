@@ -38,7 +38,7 @@ class AuditOutput(BaseModel):
     confidence_reason: str
 
 _AUDIT_PROMPT_TEMPLATE = """\
-⚠️ LANGUAGE RULE — HIGHEST PRIORITY ⚠️
+{examples_block}⚠️ LANGUAGE RULE — HIGHEST PRIORITY ⚠️
 YOU MUST WRITE YOUR ENTIRE RESPONSE IN ENGLISH ONLY.
 This overrides everything else. Even if the campaign content is in German, Italian, French, \
 Chinese, Japanese, or any other language — every single word of your response must be English.
@@ -666,17 +666,20 @@ def run_ai_audit(
     client_name: str,
     jira_images: list[dict] | None = None,
     dma_images: list[bytes | None] | None = None,
+    examples: list[dict] | None = None,
 ) -> dict:
     """
     Call Gemini with the comparison data and optional images.
     Returns a dict with keys: audit_report, jira_extracted_urls, api_extracted_urls.
     On parse failure, audit_report contains the raw text.
     """
+    from ai_examples import format_examples_for_prompt
     client = genai.Client(api_key=api_key)
 
     prompt = _AUDIT_PROMPT_TEMPLATE.format(
         client_name=client_name,
         comparison_json=json.dumps(comparison_data, indent=2),
+        examples_block=format_examples_for_prompt(examples or []),
     )
 
     contents: list = [prompt]

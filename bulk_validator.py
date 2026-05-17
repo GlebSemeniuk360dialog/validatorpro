@@ -959,7 +959,7 @@ def run_bulk_regular_check(
 
 def _validate_single_ticket_ai(
     issue, gsheet_data, jira_server, jira_email, jira_token, api_token,
-    gemini_key, gemini_model,
+    gemini_key, gemini_model, examples_lib=None,
 ) -> BulkTicketResult:
     """Validate one ticket in AI mode — thread-safe, returns result."""
     ticket_key   = issue["key"]
@@ -1005,10 +1005,12 @@ def _validate_single_ticket_ai(
             j_data, a_data, t_data, leaflet_data, client
         )
 
+        _few_shot = examples_lib.select_for_audit(client) if examples_lib else []
         audit = run_ai_audit(
             gemini_key, gemini_model, comparison_data, client,
             jira_images=None,
             dma_images=None,
+            examples=_few_shot,
         )
 
         report = audit.get("audit_report", "")
@@ -1048,6 +1050,7 @@ def run_bulk_validation(
     gemini_model: str,
     on_progress,
     max_workers: int = 5,
+    examples_lib=None,
 ) -> list[BulkTicketResult]:
     """
     Validate tickets in parallel using a thread pool.
@@ -1064,7 +1067,7 @@ def run_bulk_validation(
             executor.submit(
                 _validate_single_ticket_ai,
                 issue, gsheet_data, jira_server, jira_email, jira_token,
-                api_token, gemini_key, gemini_model,
+                api_token, gemini_key, gemini_model, examples_lib,
             ): issue["key"]
             for issue in tickets
         }

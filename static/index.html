@@ -244,7 +244,7 @@ function NavPill({ active, onClick, children }) {
   );
 }
 function MainTabs({ active, onChange }) {
-  const tabs = ['Validator', 'Orphan Scanner', 'Dashboard', 'Sendout Form'];
+  const tabs = ['Validator', 'Orphan Scanner', 'Dashboard', 'Sendout Form', 'AI Examples'];
   return (
     <div style={{ position:'sticky', top:0, zIndex:99, background:t.bg.app, borderBottom:`1px solid ${t.border.base}`, padding:'8px 28px' }}>
       <div style={{ display:'flex', gap:4, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:8, padding:5, maxWidth:600 }}>
@@ -683,6 +683,115 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   EXAMPLE SAVE MODAL
+   ═════════════════════════════════════════════════════════════════════════ */
+function ExampleSaveModal({ checkKey, checkData, comparisonData, client, token, onClose, onSaved }) {
+  const LABELS = {scheduling:'Scheduling',copy:'Copy',footer:'Footer',cta:'CTA',tags:'Tags',images:'Images'};
+  const [form, setForm] = React.useState({
+    scenario: '',
+    verdict:  checkData?.verdict  || 'PASS',
+    reason:   checkData?.reason   || '',
+    expected: checkData?.expected || '',
+    actual:   checkData?.actual   || '',
+  });
+  const [saving, setSaving] = React.useState(false);
+  const [err,    setErr]    = React.useState('');
+  const set = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  const save = async () => {
+    if (!form.scenario.trim()) { setErr('Please add a scenario description'); return; }
+    setSaving(true); setErr('');
+    try {
+      await api('POST', '/api/examples', {
+        client, check: checkKey,
+        scenario: form.scenario.trim(),
+        verdict:  form.verdict,
+        reason:   form.reason,
+        expected: form.expected,
+        actual:   form.actual,
+        comparison_data: comparisonData,
+      }, token);
+      onSaved && onSaved();
+      onClose();
+    } catch(e) { setErr(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const inp = (extra={}) => ({
+    style:{ width:'100%', boxSizing:'border-box', padding:'7px 10px', borderRadius:4,
+            border:`1px solid ${t.border.base}`, background:t.bg.surface2,
+            color:t.fg[0], fontSize:12, fontFamily:t.font.mono },
+    ...extra,
+  });
+
+  return (
+    <div onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}
+         style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:9999,
+                  display:'flex', alignItems:'center', justifyContent:'center' }}>
+      <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:10,
+                    padding:28, width:540, maxWidth:'94vw', maxHeight:'90vh', overflowY:'auto',
+                    display:'flex', flexDirection:'column', gap:14, boxShadow:'0 8px 40px rgba(0,0,0,.4)' }}>
+
+        {/* Header */}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div style={{ fontSize:14, fontWeight:700, color:t.fg[0] }}>
+            💾 Save as AI Example — {LABELS[checkKey]||checkKey}
+          </div>
+          <button onClick={onClose} style={{ background:'none',border:'none',cursor:'pointer',color:t.fg[3],fontSize:18 }}>✕</button>
+        </div>
+
+        {/* Client + Check (readonly) */}
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+          {[['CLIENT', client], ['CHECK TYPE', checkKey]].map(([lbl,val])=>(
+            <div key={lbl}>
+              <div style={{ fontSize:10, fontWeight:700, color:t.fg[3], marginBottom:3, textTransform:'uppercase', letterSpacing:'.06em' }}>{lbl}</div>
+              <div style={{ fontSize:12, color:t.fg[1], padding:'6px 10px', background:t.bg.surface2, borderRadius:4, fontFamily:t.font.mono }}>{val}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Scenario */}
+        <div>
+          <div style={{ fontSize:10, fontWeight:700, color:t.fg[3], marginBottom:3, textTransform:'uppercase', letterSpacing:'.06em' }}>
+            SCENARIO DESCRIPTION <span style={{color:t.danger.base}}>*</span>
+          </div>
+          <input {...inp()} value={form.scenario} onChange={e=>set('scenario',e.target.value)}
+            placeholder="e.g. Wrong segment excluded — familien instead of grillen" />
+          <div style={{ fontSize:10, color:t.fg[4], marginTop:3 }}>Short description of what makes this case noteworthy — used as prompt label.</div>
+        </div>
+
+        {/* Verdict */}
+        <div>
+          <div style={{ fontSize:10, fontWeight:700, color:t.fg[3], marginBottom:3, textTransform:'uppercase', letterSpacing:'.06em' }}>VERDICT (edit if AI got it wrong)</div>
+          <select value={form.verdict} onChange={e=>set('verdict',e.target.value)}
+            style={{ padding:'7px 10px', borderRadius:4, border:`1px solid ${t.border.base}`, background:t.bg.surface2, color:t.fg[0], fontSize:12 }}>
+            <option value="PASS">✅ PASS</option>
+            <option value="FAIL">❌ FAIL</option>
+            <option value="NA">🔕 NA</option>
+          </select>
+        </div>
+
+        {/* Reason / Expected / Actual */}
+        {['reason','expected','actual'].map(field=>(
+          <div key={field}>
+            <div style={{ fontSize:10, fontWeight:700, color:t.fg[3], marginBottom:3, textTransform:'uppercase', letterSpacing:'.06em' }}>{field}</div>
+            <textarea {...inp()} value={form[field]} onChange={e=>set(field,e.target.value)} rows={2}
+              style={{ ...inp().style, resize:'vertical', fontFamily:t.font.mono }} />
+          </div>
+        ))}
+
+        {err && <div style={{ padding:'8px 12px', borderRadius:4, background:t.danger.soft, color:t.danger.base, fontSize:12, border:`1px solid ${t.danger.ring}` }}>{err}</div>}
+
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:4 }}>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : '💾 Save Example'}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    TICKET PANEL — wired to real API
    ═════════════════════════════════════════════════════════════════════════ */
 function TicketPanel({ ticket, clients, token, onBack }) {
@@ -702,6 +811,7 @@ function TicketPanel({ ticket, clients, token, onBack }) {
   const [aiResult, setAiResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [saveModal, setSaveModal] = useState(null);  // {checkKey, checkData, comparisonData}
 
   // Fetch sendouts + run enrich when client changes
   useEffect(()=>{
@@ -918,14 +1028,14 @@ function TicketPanel({ ticket, clients, token, onBack }) {
                 </div>
               ) : (
               <>
-              {/* ── Status + Feature 2: Confidence badge ── */}
+              {/* ── Status + Confidence badge ── */}
               <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
                 {aiResult.issues > 0
                   ? <Badge kind="danger">{aiResult.issues} issue(s) found</Badge>
                   : <Badge kind="ok">All checks passed</Badge>}
 
                 {aiResult.confidence != null && aiResult.confidence >= 0 && (() => {
-                  const pct = Math.round(aiResult.confidence);  // already 0-100
+                  const pct = Math.round(aiResult.confidence);
                   const low = pct < 60;
                   return (
                     <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:600, background: low ? t.warn.soft : t.ok.soft, color: low ? t.warn.base : t.ok.base, border:`1px solid ${low ? t.warn.ring : t.ok.ring}` }}>
@@ -942,7 +1052,52 @@ function TicketPanel({ ticket, clients, token, onBack }) {
                 </div>
               )}
 
+              {/* ── Per-check verdict strip with 💾 Save buttons ── */}
+              {aiResult.structured && (() => {
+                const CHECK_KEYS = ['scheduling','copy','footer','cta','tags','images'];
+                const LABELS = {scheduling:'Scheduling',copy:'Copy',footer:'Footer',cta:'CTA',tags:'Tags',images:'Images'};
+                return (
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:6, padding:'10px 14px', background:t.bg.surface2, borderRadius:6, border:`1px solid ${t.border.base}`, alignItems:'center' }}>
+                    {CHECK_KEYS.map(key => {
+                      const chk = aiResult.structured[key];
+                      if (!chk) return null;
+                      const v = chk.verdict;
+                      const emoji = v==='PASS'?'✅':v==='FAIL'?'❌':'🔕';
+                      const bg  = v==='PASS'?t.ok.soft :v==='FAIL'?t.danger.soft :t.bg.surface3;
+                      const bd  = v==='PASS'?t.ok.ring :v==='FAIL'?t.danger.ring :t.border.base;
+                      const clr = v==='PASS'?t.ok.base :v==='FAIL'?t.danger.base :t.fg[3];
+                      return (
+                        <div key={key} title={chk.reason||''}
+                          style={{ display:'inline-flex', alignItems:'center', gap:3, background:bg, border:`1px solid ${bd}`, borderRadius:4, padding:'3px 8px', fontSize:11, fontWeight:600, color:clr }}>
+                          {emoji} {LABELS[key]}
+                          <button
+                            onClick={()=>setSaveModal({checkKey:key, checkData:chk, comparisonData:aiResult.comparison_data})}
+                            title="Save as AI training example"
+                            style={{ marginLeft:3, background:'none', border:'none', cursor:'pointer', color:t.fg[3], fontSize:11, lineHeight:1, padding:'1px 3px', borderRadius:2, opacity:.7 }}>
+                            💾
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <span style={{ fontSize:10, color:t.fg[4], marginLeft:'auto' }}>💾 save check as AI training example</span>
+                  </div>
+                );
+              })()}
+
               <div className="result-frame" dangerouslySetInnerHTML={{ __html: aiResult.html }} />
+
+              {/* Save Example Modal */}
+              {saveModal && (
+                <ExampleSaveModal
+                  checkKey={saveModal.checkKey}
+                  checkData={saveModal.checkData}
+                  comparisonData={saveModal.comparisonData}
+                  client={client}
+                  token={token}
+                  onClose={()=>setSaveModal(null)}
+                  onSaved={()=>setSaveModal(null)}
+                />
+              )}
               </>
               )}
             </>
@@ -2156,6 +2311,245 @@ function SendoutForm({ token, clients }) {
 
 
 /* ══════════════════════════════════════════════════════════════════════════
+   EXAMPLES MANAGER
+   ═════════════════════════════════════════════════════════════════════════ */
+function ExamplesManager({ token }) {
+  const CHECK_KEYS  = ['scheduling','copy','footer','cta','tags','images'];
+  const VERDICT_OPT = ['PASS','FAIL','NA'];
+
+  const [examples, setExamples] = useState([]);
+  const [loading,  setLoading]  = useState(false);
+  const [filter,   setFilter]   = useState({client:'', check:'', verdict:''});
+  const [editId,   setEditId]   = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [saveErr,  setSaveErr]  = useState('');
+  const [toast,    setToast]    = useState('');
+
+  const showToast = (msg) => { setToast(msg); setTimeout(()=>setToast(''), 2500); };
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const data = await api('GET', '/api/examples', null, token);
+      setExamples(data.examples || []);
+    } catch(e) { console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(()=>{ load(); }, []);
+
+  const toggleActive = async (ex) => {
+    try {
+      await api('PUT', `/api/examples/${ex.id}`, { active: !ex.active }, token);
+      showToast(ex.active ? 'Example disabled' : 'Example enabled');
+      load();
+    } catch(e) { alert(e.message); }
+  };
+
+  const deleteEx = async (ex) => {
+    if (!confirm(`Delete example "${ex.scenario}"?\n\nThis cannot be undone.`)) return;
+    try {
+      await api('DELETE', `/api/examples/${ex.id}`, null, token);
+      showToast('Example deleted');
+      load();
+    } catch(e) { alert(e.message); }
+  };
+
+  const startEdit = (ex) => {
+    setEditId(ex.id);
+    setSaveErr('');
+    setEditForm({
+      scenario: ex.scenario || '',
+      verdict:  (ex.correct_output?.verdict) || ex.verdict || 'PASS',
+      reason:   (ex.correct_output?.reason)  || '',
+      expected: (ex.correct_output?.expected)|| '',
+      actual:   (ex.correct_output?.actual)  || '',
+    });
+  };
+
+  const saveEdit = async () => {
+    setSaveErr('');
+    try {
+      await api('PUT', `/api/examples/${editId}`, editForm, token);
+      setEditId(null);
+      showToast('Example updated');
+      load();
+    } catch(e) { setSaveErr(e.message); }
+  };
+
+  const setEF = (k,v) => setEditForm(f=>({...f,[k]:v}));
+
+  const filtered = examples.filter(e => {
+    const cv = (e.correct_output?.verdict) || e.verdict || '';
+    if (filter.client  && !e.client.toLowerCase().includes(filter.client.toLowerCase())) return false;
+    if (filter.check   && e.check !== filter.check) return false;
+    if (filter.verdict && cv !== filter.verdict) return false;
+    return true;
+  });
+
+  const verdictBadge = (v) => {
+    const map = { PASS:{bg:t.ok.soft,bd:t.ok.ring,clr:t.ok.base,lbl:'✅ PASS'},
+                  FAIL:{bg:t.danger.soft,bd:t.danger.ring,clr:t.danger.base,lbl:'❌ FAIL'},
+                  NA:  {bg:t.bg.surface3,bd:t.border.base,clr:t.fg[3],lbl:'🔕 NA'} };
+    const s = map[v] || map.NA;
+    return <span style={{ padding:'2px 8px', borderRadius:4, fontSize:11, fontWeight:600, background:s.bg, border:`1px solid ${s.bd}`, color:s.clr }}>{s.lbl}</span>;
+  };
+
+  const inp = (val,onChange,placeholder='') => (
+    <input value={val} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+      style={{ width:'100%', boxSizing:'border-box', padding:'6px 9px', borderRadius:4, border:`1px solid ${t.border.base}`, background:t.bg.surface2, color:t.fg[0], fontSize:12, fontFamily:t.font.mono }} />
+  );
+  const ta = (val,onChange,rows=2) => (
+    <textarea value={val} onChange={e=>onChange(e.target.value)} rows={rows}
+      style={{ width:'100%', boxSizing:'border-box', padding:'6px 9px', borderRadius:4, border:`1px solid ${t.border.base}`, background:t.bg.surface2, color:t.fg[0], fontSize:12, fontFamily:t.font.mono, resize:'vertical' }} />
+  );
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)', background:t.ok.base, color:'#fff', padding:'10px 20px', borderRadius:8, fontSize:13, fontWeight:600, zIndex:9999, boxShadow:'0 4px 20px rgba(0,0,0,.3)' }}>
+          {toast}
+        </div>
+      )}
+
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <div>
+          <div style={{ fontSize:18, fontWeight:700, color:t.fg[0] }}>🧠 AI Training Examples</div>
+          <div style={{ fontSize:12, color:t.fg[3], marginTop:2 }}>
+            {examples.length} example{examples.length!==1?'s':''} in library · {examples.filter(e=>e.active).length} active
+            · Up to 3 are injected into every AI audit prompt (most relevant first)
+          </div>
+        </div>
+        <Button variant="ghost" onClick={load} disabled={loading}>{loading?'Loading…':'↺ Refresh'}</Button>
+      </div>
+
+      {/* Filters */}
+      <div style={{ display:'flex', gap:10, flexWrap:'wrap', padding:'12px 16px', background:t.bg.surface1, borderRadius:6, border:`1px solid ${t.border.base}` }}>
+        <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+          <label style={{ fontSize:10, fontWeight:700, color:t.fg[3], textTransform:'uppercase', letterSpacing:'.06em' }}>Filter by client</label>
+          <input value={filter.client} onChange={e=>setFilter(f=>({...f,client:e.target.value}))} placeholder="e.g. aldi sued"
+            style={{ padding:'6px 10px', borderRadius:4, border:`1px solid ${t.border.base}`, background:t.bg.surface2, color:t.fg[0], fontSize:12, width:180 }} />
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+          <label style={{ fontSize:10, fontWeight:700, color:t.fg[3], textTransform:'uppercase', letterSpacing:'.06em' }}>Filter by check</label>
+          <select value={filter.check} onChange={e=>setFilter(f=>({...f,check:e.target.value}))}
+            style={{ padding:'6px 10px', borderRadius:4, border:`1px solid ${t.border.base}`, background:t.bg.surface2, color:t.fg[0], fontSize:12 }}>
+            <option value="">All checks</option>
+            {CHECK_KEYS.map(k=><option key={k} value={k}>{k}</option>)}
+          </select>
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+          <label style={{ fontSize:10, fontWeight:700, color:t.fg[3], textTransform:'uppercase', letterSpacing:'.06em' }}>Filter by verdict</label>
+          <select value={filter.verdict} onChange={e=>setFilter(f=>({...f,verdict:e.target.value}))}
+            style={{ padding:'6px 10px', borderRadius:4, border:`1px solid ${t.border.base}`, background:t.bg.surface2, color:t.fg[0], fontSize:12 }}>
+            <option value="">All verdicts</option>
+            {VERDICT_OPT.map(v=><option key={v} value={v}>{v}</option>)}
+          </select>
+        </div>
+        {(filter.client||filter.check||filter.verdict) && (
+          <div style={{ display:'flex', alignItems:'flex-end' }}>
+            <Button variant="ghost" onClick={()=>setFilter({client:'',check:'',verdict:''})}>✕ Clear</Button>
+          </div>
+        )}
+      </div>
+
+      {/* Empty state */}
+      {!loading && filtered.length === 0 && (
+        <div style={{ padding:40, textAlign:'center', color:t.fg[3], fontSize:13 }}>
+          {examples.length === 0
+            ? 'No examples yet. Run an AI audit, then click 💾 on any check to save it as a training example.'
+            : 'No examples match the current filters.'}
+        </div>
+      )}
+
+      {/* Examples list */}
+      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+        {filtered.map(ex => {
+          const cv = (ex.correct_output?.verdict) || ex.verdict || '';
+          const isEditing = editId === ex.id;
+          return (
+            <div key={ex.id} style={{ background:t.bg.surface1, border:`1px solid ${isEditing?t.accent.base:t.border.base}`, borderRadius:8, overflow:'hidden', opacity:ex.active?1:0.55, transition:'opacity .2s' }}>
+              {/* Row header */}
+              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 16px', flexWrap:'wrap' }}>
+                {verdictBadge(cv)}
+                <span style={{ fontSize:11, padding:'2px 8px', borderRadius:4, background:t.bg.surface2, border:`1px solid ${t.border.base}`, color:t.fg[2], fontFamily:t.font.mono }}>{ex.check}</span>
+                <span style={{ fontSize:12, fontWeight:600, color:t.fg[0], flex:1 }}>{ex.scenario}</span>
+                <span style={{ fontSize:11, color:t.fg[3], whiteSpace:'nowrap' }}>{ex.client === 'any' ? '🌐 any client' : ex.client}</span>
+                <span style={{ fontSize:10, color:t.fg[4], fontFamily:t.font.mono, whiteSpace:'nowrap' }}>{ex.added_at||''}</span>
+                {ex.added_by && <span style={{ fontSize:10, color:t.fg[4] }}>by {ex.added_by}</span>}
+
+                {/* Actions */}
+                <div style={{ display:'flex', gap:6, marginLeft:'auto' }}>
+                  <button onClick={()=>toggleActive(ex)} title={ex.active?'Disable (won\'t be used in prompts)':'Enable'}
+                    style={{ padding:'4px 10px', borderRadius:4, fontSize:11, fontWeight:600, cursor:'pointer',
+                             background: ex.active ? t.ok.soft : t.bg.surface3,
+                             border:`1px solid ${ex.active ? t.ok.ring : t.border.base}`,
+                             color: ex.active ? t.ok.base : t.fg[3] }}>
+                    {ex.active ? '● Active' : '○ Disabled'}
+                  </button>
+                  <button onClick={()=>isEditing ? setEditId(null) : startEdit(ex)}
+                    style={{ padding:'4px 10px', borderRadius:4, fontSize:11, cursor:'pointer', background:t.bg.surface2, border:`1px solid ${t.border.base}`, color:t.fg[1] }}>
+                    {isEditing ? '✕ Cancel' : '✏️ Edit'}
+                  </button>
+                  <button onClick={()=>deleteEx(ex)}
+                    style={{ padding:'4px 10px', borderRadius:4, fontSize:11, cursor:'pointer', background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base }}>
+                    🗑
+                  </button>
+                </div>
+              </div>
+
+              {/* Collapsed detail (always visible) */}
+              {!isEditing && (
+                <div style={{ padding:'0 16px 12px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+                  {[['Reason', ex.correct_output?.reason], ['Expected', ex.correct_output?.expected], ['Actual', ex.correct_output?.actual]].filter(([,v])=>v).map(([lbl,val])=>(
+                    <div key={lbl} style={{ gridColumn: lbl==='Reason'?'1 / -1':undefined }}>
+                      <div style={{ fontSize:10, fontWeight:700, color:t.fg[3], marginBottom:2, textTransform:'uppercase', letterSpacing:'.06em' }}>{lbl}</div>
+                      <div style={{ fontSize:11, color:t.fg[1], fontFamily:t.font.mono, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>{val}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Edit form */}
+              {isEditing && (
+                <div style={{ padding:'0 16px 16px', display:'flex', flexDirection:'column', gap:10, borderTop:`1px solid ${t.border.base}` }}>
+                  <div style={{ marginTop:12 }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:t.fg[3], marginBottom:4, textTransform:'uppercase', letterSpacing:'.06em' }}>Scenario</div>
+                    {inp(editForm.scenario, v=>setEF('scenario',v), 'Scenario description')}
+                  </div>
+                  <div>
+                    <div style={{ fontSize:10, fontWeight:700, color:t.fg[3], marginBottom:4, textTransform:'uppercase', letterSpacing:'.06em' }}>Verdict</div>
+                    <select value={editForm.verdict} onChange={e=>setEF('verdict',e.target.value)}
+                      style={{ padding:'6px 9px', borderRadius:4, border:`1px solid ${t.border.base}`, background:t.bg.surface2, color:t.fg[0], fontSize:12 }}>
+                      <option value="PASS">✅ PASS</option><option value="FAIL">❌ FAIL</option><option value="NA">🔕 NA</option>
+                    </select>
+                  </div>
+                  {['reason','expected','actual'].map(field=>(
+                    <div key={field}>
+                      <div style={{ fontSize:10, fontWeight:700, color:t.fg[3], marginBottom:4, textTransform:'uppercase', letterSpacing:'.06em' }}>{field}</div>
+                      {ta(editForm[field], v=>setEF(field,v))}
+                    </div>
+                  ))}
+                  {saveErr && <div style={{ padding:'7px 10px', borderRadius:4, background:t.danger.soft, color:t.danger.base, fontSize:12, border:`1px solid ${t.danger.ring}` }}>{saveErr}</div>}
+                  <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+                    <Button variant="ghost" onClick={()=>setEditId(null)}>Cancel</Button>
+                    <Button onClick={saveEdit}>Save Changes</Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    ROOT APP
    ═════════════════════════════════════════════════════════════════════════ */
 function App() {
@@ -2263,6 +2657,7 @@ function App() {
           {mainTab==='Orphan Scanner'&&<OrphanScanner token={token} />}
           {mainTab==='Dashboard'&&<Dashboard token={token} />}
           {mainTab==='Sendout Form'&&<SendoutForm token={token} clients={clients} />}
+          {mainTab==='AI Examples'&&<ExamplesManager token={token} />}
 
         </main>
       </div>
