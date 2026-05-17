@@ -125,7 +125,7 @@ def _send_slack_alert(
         import urllib.request as _ur
 
         ticket_url = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket_key}"
-        params = {"ticket": ticket_key}
+        params = {"ticket": ticket_key, "client": client}
         if sendout_id:
             params["sendout"] = sendout_id
         app_link = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
@@ -969,12 +969,23 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         api_date=str(a_data.get("scheduled_date", "")),
     )
 
+    # Download DMA images so Gemini can visually compare them (same URLs shown in Visuals tab)
+    import urllib.request as _ur_img
+    _dma_img_bytes: list[bytes | None] = []
+    for _img_url in (dma_image_urls or [])[:6]:   # cap at 6 to stay within Gemini limits
+        try:
+            with _ur_img.urlopen(_img_url, timeout=8) as _resp:
+                _dma_img_bytes.append(_resp.read())
+        except Exception as _img_exc:
+            logger.warning("Could not fetch DMA image %s: %s", _img_url, _img_exc)
+            _dma_img_bytes.append(None)
+
     _few_shot = _examples_lib.select_for_audit(req.client)
     try:
         result = run_ai_audit(
             GEMINI_KEY, GEMINI_MODEL, comparison_data, req.client,
             jira_images=j_data.get("carousel_images"),
-            dma_images=None,
+            dma_images=_dma_img_bytes or None,
             examples=_few_shot,
         )
     except Exception as exc:

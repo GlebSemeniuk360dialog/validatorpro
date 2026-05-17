@@ -794,11 +794,11 @@ function ExampleSaveModal({ checkKey, checkData, comparisonData, client, token, 
 /* ══════════════════════════════════════════════════════════════════════════
    TICKET PANEL — wired to real API
    ═════════════════════════════════════════════════════════════════════════ */
-function TicketPanel({ ticket, clients, token, onBack }) {
+function TicketPanel({ ticket, clients, token, onBack, initialSendout }) {
   const [tab, setTab] = useState('Setup');
   const [client, setClient] = useState(ticket.client);
   const [ticketKey, setTicketKey] = useState(ticket.key);
-  const [sendoutId, setSendoutId] = useState('');
+  const [sendoutId, setSendoutId] = useState(initialSendout || '');
   const [sendouts, setSendouts] = useState([]);
   const [sendoutsLoading, setSendoutsLoading] = useState(false);
 
@@ -812,6 +812,24 @@ function TicketPanel({ ticket, clients, token, onBack }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [saveModal, setSaveModal] = useState(null);  // {checkKey, checkData, comparisonData}
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  // Keep the browser URL in sync so this page can be bookmarked / pasted into Slack
+  useEffect(() => {
+    if (!ticketKey || !sendoutId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('ticket', ticketKey);
+    url.searchParams.set('sendout', sendoutId);
+    url.searchParams.set('client', client);
+    window.history.replaceState({}, '', url.toString());
+  }, [ticketKey, sendoutId, client]);
+
+  const copyLink = () => {
+    navigator.clipboard.writeText(window.location.href).then(() => {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    });
+  };
 
   // Fetch sendouts + run enrich when client changes
   useEffect(()=>{
@@ -836,7 +854,11 @@ function TicketPanel({ ticket, clients, token, onBack }) {
     Promise.all([sendoutFetch, enrichFetch])
       .then(([sendoutData, enrichResult]) => {
         setSendouts(sendoutData);
-        if (enrichResult && enrichResult.sendout_id) {
+        if (initialSendout) {
+          // Deep-link sendout takes priority over auto-match
+          setSendoutId(initialSendout);
+          setAutoMatched(false);
+        } else if (enrichResult && enrichResult.sendout_id) {
           setSendoutId(enrichResult.sendout_id);
           setAutoMatched(true);
         } else if (sendoutData.length > 0) {
@@ -897,7 +919,7 @@ function TicketPanel({ ticket, clients, token, onBack }) {
       <HudPanel>
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
           <div style={{ display:'flex', alignItems:'center', gap:14 }}>
-            <Button variant="ghost" onClick={onBack}>← Back to queue</Button>
+            <Button variant="ghost" onClick={()=>{ window.history.replaceState({}, '', window.location.pathname); onBack(); }}>← Back to queue</Button>
             <div style={{ display:'flex', alignItems:'center', gap:8, fontFamily:t.font.mono, fontSize:12, color:t.fg[3] }}>
               <Led kind="accent" pulse />
               <span style={{color:t.brand.text, fontWeight:600, letterSpacing:'0.04em'}}>{ticketKey}</span>
@@ -908,6 +930,9 @@ function TicketPanel({ ticket, clients, token, onBack }) {
             </div>
             <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:10 }}>
               {loading&&<span className="vp-spinner" />}
+              <Button variant="ghost" onClick={copyLink} title="Copy shareable link to this sendout" style={{fontSize:12}}>
+                {linkCopied ? '✅ Copied!' : '🔗 Copy link'}
+              </Button>
               <Button variant="ghost" onClick={runValidate} disabled={loading||!sendoutId}>⚡ Regular Check</Button>
               <Button onClick={runAiAudit} disabled={loading||!sendoutId}>🤖 Run AI Audit</Button>
             </div>
@@ -2568,6 +2593,13 @@ function App() {
   const [bulkResult, setBulkResult] = useState(null);
   const [slackStatus, setSlackStatus] = useState('unknown');
 
+  // Read deep-link params from URL once on mount (populated by Slack notifications)
+  const [deepLinkParams] = useState(() => {
+    const p = new URLSearchParams(window.location.search);
+    return { ticket: p.get('ticket') || '', sendout: p.get('sendout') || '', client: p.get('client') || '' };
+  });
+  const _deepLinkHandled = React.useRef(false);
+
   const signIn = (tok, name) => {
     localStorage.setItem('vp_token', tok);
     localStorage.setItem('vp_name', name);
@@ -2638,6 +2670,19 @@ function App() {
       });
   }, []);
 
+  // Once the queue is loaded, auto-navigate if a deep-link ?ticket= param is present
+  useEffect(() => {
+    if (_deepLinkHandled.current || !deepLinkParams.ticket || queueRows.length === 0) return;
+    _deepLinkHandled.current = true;
+    const found = queueRows.find(r => r.key === deepLinkParams.ticket);
+    if (found) {
+      setCurrentTicket(found);
+    } else if (deepLinkParams.client) {
+      // Ticket not in current queue — create a stub from URL params so the panel can still load
+      setCurrentTicket({ key: deepLinkParams.ticket, client: deepLinkParams.client, date: '', summary: '(opened from link)' });
+    }
+  }, [queueRows]);
+
   if (!token) return <Login onSignIn={signIn} />;
 
   return (
@@ -2650,7 +2695,7 @@ function App() {
 
           {mainTab==='Validator'&&(
             currentTicket
-              ? <TicketPanel key={`${cacheKey}-${currentTicket.key}`} ticket={currentTicket} clients={clients} token={token} onBack={()=>setCurrentTicket(null)} />
+              ? <TicketPanel key={`${cacheKey}-${currentTicket.key}`} ticket={currentTicket} clients={clients} token={token} onBack={()=>setCurrentTicket(null)} initialSendout={currentTicket.key === deepLinkParams.ticket ? deepLinkParams.sendout : ''} />
               : bulkResult
                 ? <BulkResultPanel results={bulkResult.results} mode={bulkResult.mode} onBack={()=>setBulkResult(null)} />
                 : <Queue rows={queueRows} onLoad={row=>{setCurrentTicket(row);}} loading={queueLoading} onRefresh={()=>fetchQueue()} token={token} onBulkResult={(data,mode)=>setBulkResult({results:data,mode})} fetchError={queueError} />
