@@ -132,6 +132,16 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
      domain/service, treat them as equivalent. Only flag a URL mismatch if the JIRA
      specifies a full URL and the API has a completely different domain with no obvious
      connection to the JIRA URL.
+   - *EXTRA SHORT URL RULE (ABSOLUTE — NEVER OVERRIDE):*
+     If the API contains MORE short URLs than JIRA specifies (e.g. two aldi.co/ links
+     while JIRA only listed one), this is NEVER a ❌ FAIL.
+     Multiple short URLs on the same domain are for different sendout periods or stores.
+     The CHECK 4 rule is: "is the JIRA URL PRESENT in the API?" — NOT "is the API URL list
+     identical to JIRA?" Extra same-domain short URLs must be completely ignored.
+     Check `Precomputed_Diffs.cta_urls.same_domain_ignored` — if it lists any URLs,
+     they are already confirmed as same-domain and should be treated as ✅ PASS.
+     Only ❌ FAIL if a JIRA URL is MISSING from the API, or if a truly foreign domain
+     (unrelated to the JIRA URL domain) appears unexpectedly.
    - *LEAFLET URL RULE:* If the DMA API contains a URL with `{{{{1}}}}` as a path
      segment (e.g. `https://bit.ly/{{{{1}}}}` or similar), this is a leaflet URL
      placeholder that resolves to the same destination as the actual URL in JIRA.
@@ -444,25 +454,76 @@ def _compute_tag_diff(expected_incl: str, expected_excl: str, api_tag_str: str) 
     }
 
 
+_SHORT_URL_DOMAINS = frozenset({
+    "aldi.co", "aldi.de", "bit.ly", "tinyurl.com", "shorturl.at",
+    "t.co", "goo.gl", "rewe.de", "kaufland.de", "lidl.de", "edeka.de",
+    "netto.de", "penny.de", "rossmann.de", "dm.de",
+})
+
+
+def _url_domain(url: str) -> str:
+    """Extract lowercase domain from a URL, stripping www."""
+    try:
+        from urllib.parse import urlparse
+        return urlparse(url.lower()).netloc.lstrip("www.")
+    except Exception:
+        return ""
+
+
+def _is_short_url(url: str) -> bool:
+    """Return True if this URL is from a known short-URL / retailer domain."""
+    d = _url_domain(url)
+    return d in _SHORT_URL_DOMAINS
+
+
 def _compute_url_diff(jira_urls: list, api_urls: list) -> dict:
-    """Filter image CDN URLs and compute CTA-only URL diff."""
+    """
+    Filter image CDN URLs and compute CTA-only URL diff.
+
+    SAME-DOMAIN SHORT URL RULE:
+    If all JIRA CTA URLs are present in the API, any additional API URLs from
+    the same domain as a JIRA URL are NOT a mismatch — they are URLs for other
+    sendout periods / stores and should be ignored.  Only flag truly foreign
+    domains that were not mentioned in JIRA at all.
+    """
     jira_cta = [u for u in jira_urls if not _is_image_url(u)]
     api_cta  = [u for u in api_urls  if not _is_image_url(u)]
     img_cnt  = len([u for u in api_urls if _is_image_url(u)])
 
     missing = [u for u in jira_cta if u not in api_cta]
     extra   = [u for u in api_cta  if u not in jira_cta]
-    ok      = not (missing or extra)
+
+    # Filter "extra" URLs that are same-domain short URLs when the JIRA URL
+    # from that domain is already present (different code, same service).
+    jira_domains = {_url_domain(u) for u in jira_cta}
+    extra_real = [
+        u for u in extra
+        if not (_is_short_url(u) and _url_domain(u) in jira_domains)
+    ]
+    same_domain_ignored = [u for u in extra if u not in extra_real]
+
+    ok = not (missing or extra_real)
+
+    note_parts = []
+    if ok:
+        note_parts.append("✅ CTA URLs match")
+    else:
+        if missing:   note_parts.append(f"missing from API: {missing}")
+        if extra_real: note_parts.append(f"unexpected in API: {extra_real}")
+    if same_domain_ignored:
+        note_parts.append(
+            f"ℹ️ ignored {len(same_domain_ignored)} same-domain short URL(s) as equivalent: {same_domain_ignored}"
+        )
 
     return {
-        "jira_cta_urls":      jira_cta,
-        "api_cta_urls":       api_cta,
-        "image_urls_ignored": img_cnt,
-        "missing_from_api":   missing,
-        "extra_in_api":       extra,
-        "pre_verdict":        "PASS" if ok else "FAIL",
-        "note":               "✅ CTA URLs match" if ok else
-                              f"❌ URL mismatch — missing={missing}, extra={extra}",
+        "jira_cta_urls":           jira_cta,
+        "api_cta_urls":            api_cta,
+        "image_urls_ignored":      img_cnt,
+        "missing_from_api":        missing,
+        "extra_in_api":            extra_real,
+        "same_domain_ignored":     same_domain_ignored,
+        "pre_verdict":             "PASS" if ok else "FAIL",
+        "note":                    " | ".join(note_parts) if note_parts else "✅ CTA URLs match",
     }
 
 

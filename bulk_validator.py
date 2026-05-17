@@ -1023,7 +1023,12 @@ def _validate_single_ticket_ai(
             result.status    = "error"
             result.error_msg = report
         else:
-            result.issues_found = report.count("❌")
+            _s = audit.get("structured") or {}
+            _CHK = ("scheduling", "copy", "footer", "cta", "tags", "images")
+            result.issues_found = (
+                sum(1 for k in _CHK if isinstance(_s.get(k), dict) and _s[k].get("verdict") == "FAIL")
+                if _s else report.count("❌")
+            )
             result.confidence   = int(audit.get("confidence", -1))
             result.confidence_reason = str(audit.get("confidence_reason", ""))
             result.status = "failed" if result.issues_found > 0 else "passed"

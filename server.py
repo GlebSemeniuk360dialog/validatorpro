@@ -998,7 +998,17 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         "jira": result.get("jira_extracted_urls", []),
         "api":  result.get("api_extracted_urls", []),
     }
-    issues = ai_result_text.count("❌") if ai_result_text else 0
+    # Count FAIL verdicts from structured output (avoids counting ❌ multiple times
+    # per failed check in the generated markdown — header + verdict + table + overall)
+    _structured = result.get("structured") or {}
+    _CHECK_NAMES = ("scheduling", "copy", "footer", "cta", "tags", "images")
+    if _structured:
+        issues = sum(
+            1 for k in _CHECK_NAMES
+            if isinstance(_structured.get(k), dict) and _structured[k].get("verdict") == "FAIL"
+        )
+    else:
+        issues = ai_result_text.count("❌") if ai_result_text else 0
 
     jira_for_html = dict(j_data)
     if jira_for_html.get("description"):

@@ -713,7 +713,7 @@ function ExampleSaveModal({ checkKey, checkData, comparisonData, client, token, 
       }, token);
       onSaved && onSaved();
       onClose();
-    } catch(e) { setErr(e.message); }
+    } catch(e) { setErr(e.message || String(e) || 'Unknown error — check browser console'); }
     finally { setSaving(false); }
   };
 
@@ -891,6 +891,7 @@ function TicketPanel({ ticket, clients, token, onBack }) {
   if (sendoutOptions.length===0) sendoutOptions.push({ value:'', label:'— no sendouts within 7 days —' });
 
   return (
+    <>
     <div style={{ display:'flex', flexDirection:'column', gap:18 }}>
       {/* HUD bar */}
       <HudPanel>
@@ -1085,19 +1086,6 @@ function TicketPanel({ ticket, clients, token, onBack }) {
               })()}
 
               <div className="result-frame" dangerouslySetInnerHTML={{ __html: aiResult.html }} />
-
-              {/* Save Example Modal */}
-              {saveModal && (
-                <ExampleSaveModal
-                  checkKey={saveModal.checkKey}
-                  checkData={saveModal.checkData}
-                  comparisonData={saveModal.comparisonData}
-                  client={client}
-                  token={token}
-                  onClose={()=>setSaveModal(null)}
-                  onSaved={()=>setSaveModal(null)}
-                />
-              )}
               </>
               )}
             </>
@@ -1105,6 +1093,20 @@ function TicketPanel({ ticket, clients, token, onBack }) {
         </div>
       )}
     </div>
+
+    {/* ── Save Example Modal — at fragment root so it's never trapped in conditionals ── */}
+    {saveModal && (
+      <ExampleSaveModal
+        checkKey={saveModal.checkKey}
+        checkData={saveModal.checkData}
+        comparisonData={saveModal.comparisonData}
+        client={client}
+        token={token}
+        onClose={()=>setSaveModal(null)}
+        onSaved={()=>setSaveModal(null)}
+      />
+    )}
+    </>
   );
 }
 
