@@ -37,6 +37,20 @@ class AuditOutput(BaseModel):
     confidence: int           # 0-100
     confidence_reason: str
 
+
+# ── Orphan triage schema ───────────────────────────────────────────────────────
+
+class OrphanTriageItem(BaseModel):
+    sendout_id: str
+    risk:     Literal["HIGH", "MEDIUM", "LOW"]
+    category: Literal["test_qa", "legitimate_missed", "config_error",
+                       "duplicate", "system_task", "unknown"]
+    action: str   # one-sentence recommended action (English)
+    reason: str   # one-sentence explanation (English)
+
+class OrphanTriageOutput(BaseModel):
+    results: list[OrphanTriageItem]
+
 _AUDIT_PROMPT_TEMPLATE = """\
 {examples_block}⚠️ LANGUAGE RULE — HIGHEST PRIORITY ⚠️
 YOU MUST WRITE YOUR ENTIRE RESPONSE IN ENGLISH ONLY.
@@ -882,6 +896,68 @@ def build_comparison_data(
         },
     }
 
+
+
+_TRIAGE_PROMPT = """\
+LANGUAGE RULE: Respond in ENGLISH ONLY.
+
+You are triaging DMA sendouts that exist in the system but have no matching JIRA ticket
+or G-Sheet row. For each sendout, assign a RISK level, a CATEGORY, and recommend an ACTION.
+
+CATEGORY - pick exactly one:
+  test_qa           - Name/pattern clearly indicates a test, QA, demo, or sandbox sendout
+  legitimate_missed - Real marketing sendout that missed the JIRA / G-Sheet approval process
+  config_error      - Filter configuration is wrong or missing a mandatory filter
+  duplicate         - Appears to be a duplicate of another sendout in this list
+  system_task       - Automated system task (shop loader, leaflet sync, etc.) - not a campaign
+  unknown           - Cannot determine from available data
+
+RISK - pick exactly one:
+  HIGH   - Sendout is live within 48 hours AND is missing oversight, OR config_ok=false on
+            an imminent sendout, OR looks like an unauthorized campaign
+  MEDIUM - Real sendout needing attention within the week; solution is clear
+  LOW    - Test, system task, far-future date, or very low business impact
+
+ACTION: one English sentence - what should be done (create JIRA ticket, fix config, ignore, etc.)
+REASON: one English sentence - why you classified it this way (reference name / filters / date)
+
+Hints:
+  Name contains test, TEST, QA, demo, sandbox, probe  ->  test_qa, LOW
+  Name contains Load shops, Sync, Update leaflets      ->  system_task, LOW
+  config_ok = false AND date is today or tomorrow      ->  HIGH
+  status = no_jira AND date is today or tomorrow       ->  HIGH
+  status = no_gsheet only (JIRA exists)                ->  MEDIUM typically
+
+Today's date: {today}
+
+Orphan sendouts to triage:
+{orphans_json}
+"""
+
+
+def run_orphan_triage(api_key: str, model_name: str, orphans: list[dict]) -> list[dict]:
+    """
+    Triage a list of orphan sendouts with Gemini.
+    Each orphan dict should have: id, name, client, date, status, filters, config_ok.
+    Returns list of dicts matching OrphanTriageItem fields.
+    """
+    from datetime import date as _date2
+    _client_ai = genai.Client(api_key=api_key)
+    prompt = _TRIAGE_PROMPT.format(
+        today=_date2.today().isoformat(),
+        orphans_json=json.dumps(orphans, indent=2, ensure_ascii=False),
+    )
+    from google.genai import types as _gt2
+    _cfg = _gt2.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=OrphanTriageOutput,
+        thinking_config=_gt2.ThinkingConfig(thinking_budget=0),
+    )
+    raw = _client_ai.models.generate_content(
+        model=model_name, contents=[prompt], config=_cfg
+    ).text
+    output = OrphanTriageOutput.model_validate_json(raw)
+    return [item.model_dump() for item in output.results]
 
 
 def _repair_json(raw: str) -> str:

@@ -1445,6 +1445,26 @@ async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(
 
 # ── Orphan Scanner ────────────────────────────────────────────────────────────
 
+class OrphanTriageRequest(BaseModel):
+    orphans: list[dict]
+
+@app.post("/api/orphan-triage")
+async def orphan_triage(req: OrphanTriageRequest, authorization: Optional[str] = Header(None)):
+    """AI triage of orphan sendouts — classifies risk, category and recommended action."""
+    _get_session(authorization)
+    if not GEMINI_KEY:
+        raise HTTPException(status_code=400, detail="GEMINI_API_KEY not configured")
+    if not req.orphans:
+        return {"results": []}
+    try:
+        from ai_audit import run_orphan_triage
+        results = run_orphan_triage(GEMINI_KEY, GEMINI_BULK_MODEL, req.orphans)
+        return {"results": results}
+    except Exception as exc:
+        logger.error("Orphan triage failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Triage failed: {exc}")
+
+
 @app.get("/api/orphan-scan")
 async def orphan_scan(
     days_ahead: int = 7,
