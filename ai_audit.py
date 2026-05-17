@@ -901,32 +901,41 @@ def build_comparison_data(
 _TRIAGE_PROMPT = """\
 LANGUAGE RULE: Respond in ENGLISH ONLY.
 
-You are triaging DMA sendouts that exist in the system but have no matching JIRA ticket
-or G-Sheet row. For each sendout, assign a RISK level, a CATEGORY, and recommend an ACTION.
+You are triaging DMA sendouts that exist in the system but are missing a JIRA ticket,
+a G-Sheet row, or both. Each sendout has in_jira and in_gsheet boolean fields.
 
 CATEGORY - pick exactly one:
   test_qa           - Name/pattern clearly indicates a test, QA, demo, or sandbox sendout
-  legitimate_missed - Real marketing sendout that missed the JIRA / G-Sheet approval process
+  legitimate_missed - Real marketing sendout that missed part of the approval/tracking process
   config_error      - Filter configuration is wrong or missing a mandatory filter
   duplicate         - Appears to be a duplicate of another sendout in this list
   system_task       - Automated system task (shop loader, leaflet sync, etc.) - not a campaign
   unknown           - Cannot determine from available data
 
 RISK - pick exactly one:
-  HIGH   - Sendout is live within 48 hours AND is missing oversight, OR config_ok=false on
+  HIGH   - Sendout goes live within 48 hours with missing oversight, OR config_ok=false on
             an imminent sendout, OR looks like an unauthorized campaign
-  MEDIUM - Real sendout needing attention within the week; solution is clear
+  MEDIUM - Needs attention within the week; issue is clear and solvable
   LOW    - Test, system task, far-future date, or very low business impact
 
-ACTION: one English sentence - what should be done (create JIRA ticket, fix config, ignore, etc.)
-REASON: one English sentence - why you classified it this way (reference name / filters / date)
+ACTION RULES — use EXACTLY the right action for the situation:
+  in_jira=false, in_gsheet=false  ->  "Investigate who created this sendout in DMA and whether it is legitimate."
+  in_jira=false, in_gsheet=true   ->  "Find the G-Sheet entry and open a JIRA ticket to formally track this sendout."
+  in_jira=true,  in_gsheet=false  ->  "Add this sendout to the G-Sheet schedule for [date]."
+  category=test_qa                ->  "Confirm this is a test sendout and delete or archive it if no longer needed."
+  category=system_task            ->  "No action needed — this is an automated system task."
+  category=config_error           ->  "Fix the filter configuration in DMA before [date]: [describe what is wrong]."
+  category=duplicate              ->  "Verify this is a duplicate of another sendout and remove if confirmed."
+  Do NOT use generic phrases like "Create a JIRA ticket immediately" — always be specific about what exactly to do and why.
 
-Hints:
-  Name contains test, TEST, QA, demo, sandbox, probe  ->  test_qa, LOW
-  Name contains Load shops, Sync, Update leaflets      ->  system_task, LOW
-  config_ok = false AND date is today or tomorrow      ->  HIGH
-  status = no_jira AND date is today or tomorrow       ->  HIGH
-  status = no_gsheet only (JIRA exists)                ->  MEDIUM typically
+REASON: one sentence explaining WHY you chose this category/risk. Reference the sendout name, date, or filter issue specifically.
+
+Classification hints:
+  Name contains test / TEST / QA / demo / sandbox / probe  ->  test_qa, LOW
+  Name contains Load shops / Sync / Update leaflets         ->  system_task, LOW
+  config_ok = false AND date within 2 days                  ->  HIGH
+  in_jira = false AND date is today or tomorrow             ->  HIGH
+  in_jira = true, in_gsheet = false only                    ->  MEDIUM typically
 
 Today's date: {today}
 
