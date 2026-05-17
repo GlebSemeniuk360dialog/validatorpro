@@ -244,7 +244,7 @@ function NavPill({ active, onClick, children }) {
   );
 }
 function MainTabs({ active, onChange }) {
-  const tabs = ['Validator', 'Orphan Scanner', 'Dashboard', 'Sendout Form', 'AI Examples'];
+  const tabs = ['Validator', 'Queue Scanner', 'Dashboard', 'Sendout Form', 'AI Examples'];
   return (
     <div style={{ position:'sticky', top:0, zIndex:99, background:t.bg.app, borderBottom:`1px solid ${t.border.base}`, padding:'8px 28px' }}>
       <div style={{ display:'flex', gap:4, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:8, padding:5, maxWidth:600 }}>
@@ -2751,7 +2751,7 @@ function App() {
                 : <Queue rows={queueRows} onLoad={row=>{setCurrentTicket(row);}} loading={queueLoading} onRefresh={()=>fetchQueue()} token={token} onBulkResult={(data,mode)=>setBulkResult({results:data,mode})} fetchError={queueError} />
           )}
 
-          {mainTab==='Orphan Scanner'&&<OrphanScanner token={token} />}
+          {mainTab==='Queue Scanner'&&<OrphanScanner token={token} />}
           {mainTab==='Dashboard'&&<Dashboard token={token} />}
           {mainTab==='Sendout Form'&&<SendoutForm token={token} clients={clients} />}
           {mainTab==='AI Examples'&&<ExamplesManager token={token} />}
