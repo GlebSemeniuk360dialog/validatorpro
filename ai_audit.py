@@ -94,6 +94,15 @@ rules listed further below. They reduce your workload: you are confirming, not r
     • missing_from_api / extra_in_api are CTA-only URL diffs.
     • pre_verdict PASS means CTA URLs match after filtering. Apply CTA RULES below.
 
+  Precomputed_Diffs.carousel:
+    • jira_slide_count = number of slides detected in JIRA (from parsed_carousel list or Slide N: labels).
+    • dma_card_count   = number of non-empty cards in the DMA template.
+    • count_match = True/False (or absent if pre_verdict=NA — not a carousel sendout).
+    • pre_verdict FAIL means JIRA and DMA have DIFFERENT numbers of carousel cards.
+      ❌ A card count mismatch is an IMMEDIATE FAIL for CHECK 2 (copy) — do not look further.
+    • pre_verdict NA means no carousel was detected or JIRA has no countable slides — evaluate normally.
+    • pre_verdict PASS means counts match — proceed to verify card CONTENT.
+
 CHECK 1 — SCHEDULING: Compare JIRA date/time to DMA Date_Time. Apply SCHEDULING RULE.
 CHECK 2 — COPY: Compare DMA template body to JIRA description. Apply TEXT/COPY RULES.
 CHECK 3 — FOOTER: Compare DMA footer to JIRA footer spec. Apply FOOTER RULE.
@@ -113,8 +122,13 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
      Evaluate the DMA setup against the *latest* requested changes.
 2. **Scheduling:** Check Date and Time.
    - *TAG EQUIVALENCE RULE:* `offset days=1` in the G-Sheet means `leaflet_tag=1` in
-     the DMA API (`leaflet_filter.offset_days=1`). Treat these as identical — never flag
-     this difference as a mismatch. Similarly `offset days=3` = `leaflet_tag=3` etc.
+     the DMA API (`leaflet_filter.offset_days=1`). Treat these as identical notation —
+     SAME value = ✅ PASS; DIFFERENT value = ❌ FAIL (wrong leaflet week).
+     Examples: `offset days=1` = `leaflet_tag=1` → ✅ PASS (same notation, same value).
+               `offset days=1` ≠ `leaflet_tag=3` → ❌ FAIL (same notation, wrong week!).
+               `offset days=3` = `leaflet_tag=3` → ✅ PASS.
+     The pre-computed tag diff already normalizes these — if `missing_include` or
+     `extra_include` lists a leaflet_tag=X mismatch, the value truly does not match.
    - *URL PLACEHOLDER RULE:* `https://rewe.de/{{1}}/angebote/` is the same URL as
      `https://rewe.de/angebote/{{shop_number}}/` — {{{{1}}}} and {{shop_number}} are both
      dynamic store ID placeholders. Query parameters like `?ecid=...` do not affect
@@ -164,9 +178,14 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
      Do NOT flag based on comments or client requests — only the clock difference matters.
 3. **Text / Copy Validation:**
    - Does the DMA Template match the JIRA Description (or the overridden intent from comments)?
-   - *CAROUSEL RULE:* If the DMA Template contains `Template_Carousel_Cards`, check text and buttons
-     for EVERY single card against the corresponding slides in the JIRA Description.
-     If `JIRA_Parsed_Carousel` is provided, use it to cross-reference exactly.
+   - *CAROUSEL RULE:* If the DMA Template contains `Template_Carousel_Cards`:
+     STEP 1 — Card COUNT: Check `Precomputed_Diffs.carousel.pre_verdict` FIRST.
+       If pre_verdict = FAIL → card count mismatch → ❌ FAIL CHECK 2 IMMEDIATELY.
+       Do NOT proceed to text comparison if counts differ — the setup is structurally wrong.
+       State in reason: "JIRA has X slides but DMA has Y cards — count mismatch."
+     STEP 2 — Card CONTENT (only if count matches or is NA): Compare text and buttons
+       for EVERY single card against the corresponding slides in the JIRA Description.
+       If `JIRA_Parsed_Carousel` is provided, use it to cross-reference exactly.
    - *MARKDOWN/BOLD RULE:* Differences in bold markdown formatting (e.g. `*word*` vs
      `*word word*`, or split vs merged bold phrases) are NOT errors. Only compare the
      actual text content, ignoring asterisks and formatting markers entirely.
@@ -220,11 +239,16 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
      Northern' it MUST include the Northern shop list. If the wrong shop numbers
      are configured or shop_number filter is missing, flag as ❌ FAIL.
    - *MANDATORY FILTER RULE:* Some clients have mandatory system filters that are
-     always present in the DMA API regardless of what JIRA specifies (e.g. ALDI Italy
-     always has leaflet_tag=1 for regular sendouts, REWE always has declined_new_terms exclude). If the DMA
-     API contains a filter that is not mentioned in JIRA but is a known mandatory client
-     filter, do NOT flag it as an audience mismatch. Only flag filters that are
-     unexpected AND not part of the client's standard configuration.
+     ALWAYS present in the DMA API regardless of what JIRA/G-Sheet specifies.
+     These are listed in `Client_Context.Mandatory_Filters` in the comparison data.
+     RULE: If a DMA filter appears in `Client_Context.Mandatory_Filters`, do NOT flag
+     it as unexpected or as an audience mismatch — it is part of the standard setup.
+     Only flag filters that are (a) not in G-Sheet AND (b) not in Mandatory_Filters.
+     Examples: REWE always has `declined_new_terms=true (exclude)`;
+               ALDI Sued always has `leaflet_accepted=true (include)`;
+               Hofer always has `leaflet_accepted=true (include)` + `leaflet_tag=1 (include)`.
+     Check the `Client_Context.Mandatory_Filters` field — it is pre-populated for
+     this specific client and schedule, so you do not need to memorize client configs.
    - *ALDI ITALY CAROUSEL RULE:* If the ALDI Italy sendout is a carousel (contains
      carousel cards / custom_cards in component_parameters), the leaflet_tag filter
      is NOT required and its absence is NOT an error. Do NOT flag missing leaflet_tag
@@ -309,6 +333,25 @@ def _norm_tags_list(s: str) -> list:
         if p:
             cleaned.append(p)
     return cleaned
+
+
+def _canonical_tag(tag: str) -> str:
+    """
+    Normalize tag notation so equivalent forms compare equal in set operations.
+
+    Equivalences handled:
+      "offset days=X"                → "leaflet_tag=X"
+      "offset_days=X"                → "leaflet_tag=X"
+      "leaflet_filter.offset_days=X" → "leaflet_tag=X"
+
+    IMPORTANT: the numeric value X must match — offset_days=1 ≠ leaflet_tag=3.
+    Different values = different leaflet week → mismatch should be flagged.
+    """
+    t = tag.strip()
+    m = _re.match(r'^(?:leaflet_filter\.)?offset[\s_]days\s*=\s*(\d+)$', t, _re.I)
+    if m:
+        return f"leaflet_tag={m.group(1)}"
+    return t
 
 
 # ── Pre-computation helpers ────────────────────────────────────────────────────
@@ -412,9 +455,14 @@ def _compute_text_similarity(jira_text: str, dma_text: str) -> dict:
 
 
 def _compute_tag_diff(expected_incl: str, expected_excl: str, api_tag_str: str) -> dict:
-    """Pre-compute tag set differences so AI just reads the result."""
-    exp_inc = set(_norm_tags_list(expected_incl))
-    exp_exc = set(_norm_tags_list(expected_excl))
+    """
+    Pre-compute tag set differences so AI just reads the result.
+    All tags are normalized through _canonical_tag() so that equivalent
+    notations (e.g. 'offset_days=1' and 'leaflet_tag=1') compare as equal,
+    while VALUE mismatches ('offset_days=1' vs 'leaflet_tag=3') still show as errors.
+    """
+    exp_inc = set(_canonical_tag(t) for t in _norm_tags_list(expected_incl))
+    exp_exc = set(_canonical_tag(t) for t in _norm_tags_list(expected_excl))
 
     actual_lines = _re.split(r'[,\n;]+', str(api_tag_str or ""))
     actual_inc, actual_exc = set(), set()
@@ -424,9 +472,9 @@ def _compute_tag_diff(expected_incl: str, expected_excl: str, api_tag_str: str) 
         lo = line.lower()
         if _re.match(r'^excl[:.\s]', lo) or "exclude" in lo[:10]:
             tag = _re.sub(r'^excl[:\s.]+|^exclude[:\s]+', '', line, flags=_re.I).strip()
-            if tag: actual_exc.add(tag)
+            if tag: actual_exc.add(_canonical_tag(tag))
         else:
-            actual_inc.add(line)
+            actual_inc.add(_canonical_tag(line))
 
     missing_inc = sorted(exp_inc - actual_inc)
     extra_inc   = sorted(actual_inc - exp_inc) if exp_inc else []
@@ -525,6 +573,129 @@ def _compute_url_diff(jira_urls: list, api_urls: list) -> dict:
         "pre_verdict":             "PASS" if ok else "FAIL",
         "note":                    " | ".join(note_parts) if note_parts else "✅ CTA URLs match",
     }
+
+
+def _compute_carousel_diff(
+    jira_desc: str,
+    parsed_carousel: list | None,
+    dma_carousel_texts: list,
+) -> dict:
+    """
+    Pre-compute carousel card count comparison so AI doesn't have to count manually.
+
+    JIRA slide count: prefer parsed_carousel length; fall back to counting
+    'Slide N:' / 'Card N:' labels in the raw description.
+    DMA card count: number of non-empty entries in dma_carousel_texts.
+    """
+    # Determine JIRA slide count
+    if parsed_carousel and isinstance(parsed_carousel, list) and len(parsed_carousel) > 0:
+        jira_count = len(parsed_carousel)
+        jira_source = f"JIRA_Parsed_Carousel list ({jira_count} items)"
+    else:
+        slide_labels = _re.findall(
+            r'(?:Slide|Slider|Card)\s*\d+\s*:', str(jira_desc or ""), _re.I
+        )
+        jira_count = len(slide_labels)
+        jira_source = (
+            f"Slide/Card N: labels in description: {slide_labels}"
+            if slide_labels else "no slide labels found in description"
+        )
+
+    # Determine DMA card count
+    dma_count = len([c for c in (dma_carousel_texts or []) if c])
+
+    if jira_count == 0 and dma_count == 0:
+        return {
+            "jira_slide_count": 0,
+            "dma_card_count": 0,
+            "jira_source": jira_source,
+            "pre_verdict": "NA",
+            "note": "No carousel detected in JIRA or DMA — not a carousel sendout; skip count check",
+        }
+
+    if jira_count == 0:
+        return {
+            "jira_slide_count": 0,
+            "dma_card_count": dma_count,
+            "jira_source": jira_source,
+            "pre_verdict": "NA",
+            "note": (
+                f"JIRA has no detectable slide count — DMA has {dma_count} card(s). "
+                "AI must verify card content manually; cannot pre-compute count verdict."
+            ),
+        }
+
+    count_match = (jira_count == dma_count)
+    return {
+        "jira_slide_count": jira_count,
+        "dma_card_count": dma_count,
+        "jira_source": jira_source,
+        "count_match": count_match,
+        "pre_verdict": "PASS" if count_match else "FAIL",
+        "note": (
+            f"✅ Card count matches: JIRA={jira_count}, DMA={dma_count}"
+            if count_match
+            else (
+                f"❌ Card count MISMATCH: JIRA expects {jira_count} slide(s) "
+                f"but DMA has {dma_count} card(s) — this is a ❌ FAIL for CHECK 2 (copy)"
+            )
+        ),
+    }
+
+
+def _get_client_mandatory_filters(client_name: str, api_date: str = "") -> str:
+    """
+    Derive mandatory system filters for a client from CLIENT_CONFIGS.
+    Returns a human-readable string for injection into the comparison data.
+    Returns empty string if no mandatory filters are defined for this client.
+
+    These are filters that are ALWAYS present in the DMA API for this client
+    regardless of JIRA/G-Sheet content — the AI must not flag them as unexpected.
+    """
+    from config import CLIENT_CONFIGS
+
+    cfg = CLIENT_CONFIGS.get(client_name, {})
+    filters_cfg = cfg.get("filters", {})
+    if not filters_cfg:
+        return ""
+
+    # Determine the active schedule for this client
+    client_lower = client_name.lower()
+    if "kaufland" in client_lower:
+        from datetime import datetime as _dt2
+        try:
+            is_sun = _dt2.fromisoformat(api_date.replace("Z", "+00:00")).weekday() == 6
+        except Exception:
+            is_sun = False
+        schedule = "Sunday" if is_sun else "Wednesday"
+        cf = filters_cfg.get(schedule, filters_cfg.get("Standard", []))
+    else:
+        cf = filters_cfg.get("Standard", [])
+
+    if not cf:
+        return ""
+
+    parts = []
+    for f in cf:
+        mode  = f.get("mode", "include")
+        ftype = f.get("type", "")
+        name  = f.get("name") or ftype or ""
+        val   = f.get("value", "")
+        od    = f.get("offset_days")
+        values = f.get("values", [])
+
+        if ftype == "leaflet_tag" and od is not None:
+            parts.append(f"leaflet_tag={od} ({mode})")
+        elif ftype == "shop_number" and values:
+            parts.append(f"shop_number ({mode}, {len(values)} shop IDs)")
+        elif ftype == "locale" and val:
+            parts.append(f"locale={val} ({mode})")
+        elif name and val:
+            parts.append(f"{name}={val} ({mode})")
+        elif name:
+            parts.append(f"{name} ({mode})")
+
+    return ", ".join(parts) if parts else ""
 
 
 def _build_report_from_structured(audit: AuditOutput) -> str:
@@ -649,16 +820,22 @@ def build_comparison_data(
 
     # ── Pre-compute diffs so AI confirms results rather than discovering them ──
     _jira_url_list = extract_urls(jira_all_text)
-    _sched_diff = _compute_scheduling_diff(
+    _sched_diff    = _compute_scheduling_diff(
         str(jira.get("date", "")),
         api_date or str(jira.get("date", "")),
     )
-    _text_diff = _compute_text_similarity(
+    _text_diff     = _compute_text_similarity(
         str(jira.get("description", "")),
         tmpl_body,
     )
-    _tag_diff = _compute_tag_diff(expected_incl, expected_excl, api_tag_str)
-    _url_diff = _compute_url_diff(_jira_url_list, list(filter(None, api_urls)))
+    _tag_diff      = _compute_tag_diff(expected_incl, expected_excl, api_tag_str)
+    _url_diff      = _compute_url_diff(_jira_url_list, list(filter(None, api_urls)))
+    _carousel_diff = _compute_carousel_diff(
+        str(jira.get("description", "")),
+        jira.get("parsed_carousel"),
+        dma_carousel_texts,
+    )
+    _mandatory_filters = _get_client_mandatory_filters(client_name, api_date)
 
     return {
         "JIRA_Intent": {
@@ -688,11 +865,20 @@ def build_comparison_data(
             "API_Tags_And_Filters": api_tag_str,
             "API_URLs_Configured": ", ".join(api_urls),
         },
+        "Client_Context": {
+            "Mandatory_Filters": _mandatory_filters or "none defined for this client",
+            "Note": (
+                "These filters are ALWAYS present in the DMA API for this client "
+                "regardless of JIRA/G-Sheet content. Do NOT flag them as unexpected. "
+                "Only flag filters that are extra AND not listed here."
+            ) if _mandatory_filters else "",
+        },
         "Precomputed_Diffs": {
             "scheduling": _sched_diff,
             "copy_text":  _text_diff,
             "tags":       _tag_diff,
             "cta_urls":   _url_diff,
+            "carousel":   _carousel_diff,
         },
     }
 
