@@ -2746,7 +2746,7 @@ function App() {
     if (!token) return;
     // Ping the server to check the token is still valid
     api('GET', '/api/clients', null, token)
-      .then(data => { setClients(data); fetchQueue(); fetchSlackStatus(); })
+      .then(data => { setClients(data); fetchQueue(); fetchSlackStatus(); fetchSchedulerStatus(); })
       .catch(() => {
         // Token rejected (server restarted, session expired) — force re-login
         localStorage.removeItem('vp_token'); localStorage.removeItem('vp_name');

@@ -2196,10 +2196,14 @@ _scheduler = None
 
 @app.on_event("startup")
 async def _start_scheduler():
+    import asyncio as _aio
     global _scheduler
     if not _APSCHEDULER_AVAILABLE:
         return
     _scheduler = _APScheduler()
+    # Explicitly bind the running event loop so AsyncIOScheduler works correctly
+    # inside FastAPI's async startup context (Python 3.10+ deprecates get_event_loop)
+    _scheduler._event_loop = _aio.get_running_loop()
     _scheduler.add_job(
         _job_orphan_digest,   _CronTrigger(hour=8,  minute=0,  timezone="UTC"), id="orphan_digest"
     )
@@ -2211,7 +2215,8 @@ async def _start_scheduler():
     )
     _scheduler.start()
     logger.info(
-        "APScheduler started: orphan_digest@08:00, preflight@08:30, auto_audit@09:00 UTC"
+        "APScheduler started: state=%s running=%s orphan_digest@08:00, preflight@08:30, auto_audit@09:00 UTC",
+        _scheduler.state, _scheduler.running,
     )
 
 
@@ -2229,16 +2234,26 @@ async def scheduler_status(authorization: Optional[str] = Header(None)):
     _get_session(authorization)
     if not _scheduler:
         return {
-            "running": False,
-            "reason": "APScheduler not available or not started",
-            "audited_sendouts": len(_audited_sendouts),
+            "running":           False,
+            "reason":            "APScheduler not available or not started",
+            "audited_sendouts":  len(_audited_sendouts),
+            "jobs":              [],
         }
+    # Use raw state for diagnostics; treat any non-stopped state as running
+    raw_state = getattr(_scheduler, "state", -1)
+    try:
+        from apscheduler.schedulers.base import STATE_STOPPED
+        is_running = (raw_state != STATE_STOPPED)
+    except Exception:
+        is_running = bool(_scheduler.running)
     jobs = [
         {"id": job.id, "next_run": str(job.next_run_time) if job.next_run_time else None}
         for job in _scheduler.get_jobs()
     ]
+    logger.info("SCHEDULER_STATUS: state=%s running=%s jobs=%d", raw_state, is_running, len(jobs))
     return {
-        "running":           _scheduler.running,
+        "running":           is_running,
+        "state":             raw_state,
         "jobs":              jobs,
         "audited_sendouts":  len(_audited_sendouts),
     }
