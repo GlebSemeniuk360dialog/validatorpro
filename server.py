@@ -89,6 +89,9 @@ _gsheet_fetched_at: float = 0.0
 _queue_cache: list[dict] = []
 _queue_fetched_at: float = 0.0
 
+# sendout_id → {ticket_key, client, issues, confidence, ts}
+_audited_sendouts: dict[str, dict] = {}
+
 # ── Slack notifications ───────────────────────────────────────────────────────
 
 def _extract_failed_checks(ai_text: str) -> list[str]:
@@ -1058,6 +1061,16 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, req.ticket_key, jira_status)
         logger.info("JIRA AI status → %s for %s", jira_status, req.ticket_key)
 
+    # Record audit result so scheduled jobs can skip already-audited sendouts
+    if req.sendout_id:
+        _audited_sendouts[req.sendout_id] = {
+            "ticket_key": req.ticket_key,
+            "client":     req.client,
+            "issues":     issues,
+            "confidence": result.get("confidence", -1),
+            "ts":         datetime.now(timezone.utc).isoformat(),
+        }
+
     # Fire Slack alert when AI audit finds issues
     if issues > 0:
         failed = _extract_failed_checks(ai_result_text)
@@ -1685,6 +1698,549 @@ def _orphan_scan_sync(days_ahead: int, days_back: int) -> dict:
         "results":      results,
         "jira_count":   jira_scan_count,
         "gsheet_count": sum(len(v) for v in gsheet_by_client_date.values()),
+    }
+
+
+# ── Proactive Monitoring (APScheduler) ───────────────────────────────────────
+
+def _send_slack_block(
+    header: str,
+    sections: list[str],
+    actions: list[dict] | None = None,
+    webhook: str = "",
+) -> None:
+    """Post a rich Slack Block Kit message."""
+    url = webhook or SLACK_WEBHOOK
+    if not url:
+        return
+    try:
+        import json as _json
+        import urllib.request as _ur
+
+        blocks: list[dict] = [
+            {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
+        ]
+        for sec in sections:
+            if sec:
+                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": sec[:3000]}})
+        if actions:
+            blocks.append({"type": "actions", "elements": actions[:5]})
+
+        payload = {"text": header, "blocks": blocks}
+        req = _ur.Request(
+            url,
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        _ur.urlopen(req, timeout=5)
+        logger.info("SLACK_BLOCK sent: %s", header[:80])
+    except Exception as exc:
+        logger.warning("_send_slack_block failed: %s", exc)
+
+
+def _safe_date_delta(date_str: str, today) -> int:
+    """Return (parsed_date - today).days or 999 on parse error."""
+    try:
+        from datetime import datetime as _dt
+        return (_dt.fromisoformat(date_str[:10]).date() - today).days
+    except Exception:
+        return 999
+
+
+def _safe_date_str_match(date_str: str, target_date) -> bool:
+    """Return True if date_str parses to target_date."""
+    try:
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(date_str).date() == target_date
+    except Exception:
+        return False
+
+
+def _enrich_for_scheduler(
+    client: str, ticket_key: str, jira_date: str, jira_summary: str
+) -> dict:
+    """Synchronous sendout enrichment for use in a thread executor."""
+    import difflib as _dl
+    from datetime import datetime as _dti
+
+    result: dict = {
+        "sendout_id": "", "sendout_name": "", "sendout_date": "",
+        "gsheet_tags": "", "gsheet_exclude_tags": "", "leaflet_url": "",
+    }
+
+    _client_lower = client.lower()
+    _is_aldi_sued = "aldi sued" in _client_lower or "aldi süd" in _client_lower
+
+    if _is_aldi_sued and jira_date:
+        from bulk_validator import _find_sendout_id as _bv_find
+        _sid = _bv_find(
+            ticket_key, client, _gsheet(),
+            api_token=API_TOKEN, jira_date=jira_date, jira_summary=jira_summary
+        )
+        if _sid:
+            result["sendout_id"] = _sid
+    else:
+        cfg = CLIENT_CONFIGS.get(client, {})
+        account_id = cfg.get("account_id")
+        if account_id and jira_date:
+            try:
+                jira_dt = _dti.fromisoformat(jira_date[:10]).date()
+            except Exception:
+                return result
+            try:
+                from api_client import fetch_pending_sendouts as _fps
+                tasks = _fps(API_TOKEN, account_id)
+            except Exception:
+                return result
+
+            date_matches = [
+                t for t in tasks
+                if t.get("is_active") is not False
+                and _safe_date_str_match(str(t.get("scheduled_date") or "")[:10], jira_dt)
+            ]
+
+            if date_matches:
+                if len(date_matches) == 1 or not jira_summary:
+                    best = date_matches[0]
+                else:
+                    summary_lower = jira_summary.lower()
+                    summary_words = set(summary_lower.split())
+
+                    def _score(t):
+                        tn = (t.get("name") or t.get("campaign_name") or "").lower()
+                        hits = sum(1 for w in summary_words if len(w) > 3 and w in tn)
+                        sim = _dl.SequenceMatcher(None, summary_lower, tn).ratio()
+                        return hits * 10 + sim
+
+                    best = max(date_matches, key=_score)
+                result["sendout_id"]   = str(best.get("id") or best.get("task_id") or "")
+                result["sendout_name"] = str(best.get("name") or best.get("campaign_name") or "")
+                result["sendout_date"] = str(best.get("scheduled_date") or "")[:10]
+
+    # G-Sheet tags
+    gsheet = _gsheet()
+    if gsheet and client:
+        schedule = get_client_schedule_wide(gsheet, client)
+        for row in schedule:
+            try:
+                row_date = str(row.get("_parsed_date", ""))[:10]
+                if not row_date:
+                    from dateutil import parser as _dup
+                    row_date = _dup.parse(
+                        str(row.get(GSHEET_COLS.get("date", ""), "")), dayfirst=True
+                    ).strftime("%Y-%m-%d")
+                if row_date == jira_date[:10]:
+                    def _clean(v):
+                        return str(v or "").replace("nan", "").strip()
+                    result["gsheet_tags"]         = _clean(row.get(GSHEET_COLS.get("include_tags", ""), ""))
+                    result["gsheet_exclude_tags"] = _clean(row.get(GSHEET_COLS.get("exclude_tags", ""), ""))
+                    result["leaflet_url"]         = _clean(row.get(GSHEET_COLS.get("leaflet", ""), ""))
+                    break
+            except Exception:
+                continue
+
+    return result
+
+
+def _run_audit_sync(
+    client: str, ticket_key: str, sendout_id: str,
+    leaflet_url: str = "", gsheet_tags: str = "", exclude_tags: str = "",
+) -> dict:
+    """Full AI audit, synchronous — intended for thread executor calls."""
+    try:
+        j_data, a_data, t_data, leaflet_data = _fetch_core_data(
+            client, ticket_key, sendout_id, leaflet_url, gsheet_tags, exclude_tags
+        )
+    except Exception as exc:
+        logger.warning("_run_audit_sync fetch failed for %s: %s", ticket_key, exc)
+        return {"issues": -1, "confidence": -1, "ai_result": ""}
+
+    (tmpl_body, tmpl_footer, tmpl_buttons,
+     dma_carousel_texts, dma_image_urls, tag_str, api_urls, rcs_cards) = _prepare_audit_data(
+        a_data, t_data, leaflet_data, j_data, client
+    )
+
+    jira_for_comparison = dict(j_data)
+    if jira_for_comparison.get("description"):
+        jira_for_comparison["description"] = _strip_slide_labels(jira_for_comparison["description"])
+
+    comparison_data = build_comparison_data(
+        jira=jira_for_comparison,
+        tmpl_body=tmpl_body,
+        tmpl_footer=tmpl_footer,
+        tmpl_buttons=tmpl_buttons,
+        dma_carousel_texts=dma_carousel_texts,
+        api_tag_str=tag_str,
+        api_urls=[u for u in api_urls if "{{" not in u],
+        client_name=client,
+        api_date=str(a_data.get("scheduled_date", "")),
+    )
+
+    import urllib.request as _ur_img
+    _dma_img_bytes: list[bytes | None] = []
+    for _img_url in (dma_image_urls or [])[:6]:
+        try:
+            with _ur_img.urlopen(_img_url, timeout=8) as _resp:
+                _dma_img_bytes.append(_resp.read())
+        except Exception as _img_exc:
+            logger.warning("auto-audit: could not fetch image %s: %s", _img_url, _img_exc)
+            _dma_img_bytes.append(None)
+
+    _few_shot = _examples_lib.select_for_audit(client)
+    try:
+        result = run_ai_audit(
+            GEMINI_KEY, GEMINI_BULK_MODEL, comparison_data, client,
+            jira_images=j_data.get("carousel_images"),
+            dma_images=_dma_img_bytes or None,
+            examples=_few_shot,
+        )
+    except Exception as exc:
+        logger.warning("_run_audit_sync AI call failed for %s: %s", ticket_key, exc)
+        return {"issues": -1, "confidence": -1, "ai_result": ""}
+
+    if result.get("retry_later"):
+        return {"issues": -1, "confidence": -1, "ai_result": "model_overloaded"}
+
+    ai_text = result.get("audit_report", "")
+    _structured = result.get("structured") or {}
+    _CHECK_NAMES = ("scheduling", "copy", "footer", "cta", "tags", "images")
+    if _structured:
+        issues = sum(
+            1 for k in _CHECK_NAMES
+            if isinstance(_structured.get(k), dict) and _structured[k].get("verdict") == "FAIL"
+        )
+    else:
+        issues = ai_text.count("❌") if ai_text else 0
+
+    return {"issues": issues, "confidence": result.get("confidence", -1), "ai_result": ai_text}
+
+
+# ── Scheduled jobs ─────────────────────────────────────────────────────────────
+
+async def _job_preflight_alert() -> None:
+    """
+    Daily 08:30 UTC — post a Slack preflight digest for all JIRA tickets
+    going live in the next 48 hours.
+    """
+    import asyncio as _asyncio
+    import urllib.parse as _up
+    from datetime import datetime as _dt
+
+    logger.info("SCHEDULER: running preflight alert job")
+    if not SLACK_WEBHOOK:
+        logger.info("SCHEDULER: preflight skipped — no SLACK_WEBHOOK")
+        return
+
+    loop = _asyncio.get_event_loop()
+    try:
+        queue = await loop.run_in_executor(None, _cached_queue)
+    except Exception as exc:
+        logger.warning("SCHEDULER preflight: queue fetch failed: %s", exc)
+        return
+
+    today = _dt.utcnow().date()
+    upcoming: list[dict] = []
+    for t in queue:
+        raw = (t.get("date") or "")[:10]
+        if not raw:
+            continue
+        delta = _safe_date_delta(raw, today)
+        if 0 <= delta <= 2:
+            upcoming.append({**t, "_delta": delta})
+
+    if not upcoming:
+        logger.info("SCHEDULER: preflight — no tickets due in 48h, skipping")
+        return
+
+    upcoming.sort(key=lambda x: x["date"])
+    lines: list[str] = []
+    for t in upcoming[:15]:
+        delta     = t["_delta"]
+        label     = "🔴 TODAY" if delta == 0 else ("🟡 Tomorrow" if delta == 1 else "🟠 In 2 days")
+        ticket    = t["key"]
+        client    = t.get("client", "")
+        date      = t.get("date", "")
+        status    = t.get("status", "")
+        # Check if this ticket's sendout was already audited
+        audited   = next(
+            (v for v in _audited_sendouts.values() if v.get("ticket_key") == ticket), None
+        )
+        if audited:
+            audit_icon = "✅ AI PASS" if audited.get("issues", 1) == 0 else f"❌ AI FAIL ({audited['issues']} issue(s))"
+        else:
+            audit_icon = "⏳ Not AI-audited"
+
+        params   = {"ticket": ticket, "client": client}
+        app_link = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
+        jira_link = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket}"
+        lines.append(
+            f"{label}  *{date}* — <{jira_link}|{ticket}> | {client}\n"
+            f"   Status: _{status}_ | AI: {audit_icon} | <{app_link}|Open in Validator>"
+        )
+
+    summary = (
+        f"*{len(upcoming)}* sendout(s) going live in the next 48 hours — please review.\n"
+        f"Open the <{APP_BASE_URL.rstrip('/')}|Validator> to check each one."
+    )
+    _send_slack_block(
+        header="🔔 Preflight Check — Upcoming Sendouts",
+        sections=[summary, "\n\n".join(lines)],
+    )
+    logger.info("SCHEDULER: preflight alert sent for %d tickets", len(upcoming))
+
+
+async def _job_orphan_digest() -> None:
+    """
+    Daily 08:00 UTC — run orphan scan and post a Slack digest if orphans are found.
+    """
+    import asyncio as _asyncio
+
+    logger.info("SCHEDULER: running orphan digest job")
+    if not SLACK_WEBHOOK:
+        logger.info("SCHEDULER: orphan digest skipped — no SLACK_WEBHOOK")
+        return
+
+    loop = _asyncio.get_event_loop()
+    try:
+        scan = await loop.run_in_executor(None, _orphan_scan_sync, 7, 1)
+    except Exception as exc:
+        logger.warning("SCHEDULER orphan digest: scan failed: %s", exc)
+        return
+
+    orphans = [r for r in scan.get("results", []) if r["status"] in ("no_jira", "no_gsheet")]
+    if not orphans:
+        logger.info("SCHEDULER: orphan digest — no orphans found, skipping")
+        return
+
+    no_jira   = [r for r in orphans if not r["in_jira"]]
+    no_gsheet = [r for r in orphans if r["in_jira"] and not r["in_gsheet"]]
+
+    lines: list[str] = []
+    for r in orphans[:12]:
+        icon    = "🚨" if not r["in_jira"] else "⚠️"
+        label   = "No JIRA ticket" if not r["in_jira"] else "Not in G-Sheet"
+        filters = ", ".join(r.get("filters", [])[:3]) or "—"
+        lines.append(
+            f"{icon} *{r['client']}* | {r['date']} | _{r['name']}_\n"
+            f"   {label} | Filters: {filters}"
+        )
+
+    summary = (
+        f"Found *{len(orphans)}* orphan sendout(s): "
+        f"*{len(no_jira)}* missing JIRA ticket, *{len(no_gsheet)}* missing G-Sheet entry.\n"
+        f"Open the <{APP_BASE_URL.rstrip('/')}|Queue Scanner> to investigate."
+    )
+    _send_slack_block(
+        header=f"🔍 Daily Orphan Digest — {len(orphans)} issue(s) found",
+        sections=[summary, "\n\n".join(lines)],
+    )
+    logger.info("SCHEDULER: orphan digest sent — %d orphans", len(orphans))
+
+
+async def _job_auto_audit() -> None:
+    """
+    Daily 09:00 UTC — find JIRA tickets going live in ≤24h that haven't been
+    AI-audited yet, run a full audit for each, post results to Slack.
+    """
+    import asyncio as _asyncio
+    import urllib.parse as _up
+    from datetime import datetime as _dt
+
+    logger.info("SCHEDULER: running auto-audit job")
+    if not GEMINI_KEY:
+        logger.info("SCHEDULER: auto-audit skipped — no GEMINI_API_KEY")
+        return
+    if not SLACK_WEBHOOK:
+        logger.info("SCHEDULER: auto-audit skipped — no SLACK_WEBHOOK")
+        return
+
+    loop = _asyncio.get_event_loop()
+    try:
+        queue = await loop.run_in_executor(None, _cached_queue)
+    except Exception as exc:
+        logger.warning("SCHEDULER auto-audit: queue fetch failed: %s", exc)
+        return
+
+    today    = _dt.utcnow().date()
+    imminent = [
+        t for t in queue
+        if _safe_date_delta((t.get("date") or "")[:10], today) in (0, 1)
+    ]
+
+    if not imminent:
+        logger.info("SCHEDULER: auto-audit — no imminent tickets, skipping")
+        return
+
+    audited_count = 0
+    skipped_count = 0
+    already_audited_keys = {v.get("ticket_key") for v in _audited_sendouts.values()}
+
+    for t in imminent[:5]:   # cap at 5 to stay within Gemini rate limits
+        ticket_key = t["key"]
+        client     = t.get("client", "")
+        jira_date  = t.get("date", "")
+
+        if ticket_key in already_audited_keys:
+            skipped_count += 1
+            logger.info("SCHEDULER auto-audit: %s already audited, skipping", ticket_key)
+            continue
+
+        logger.info("SCHEDULER auto-audit: processing %s (%s) for %s", ticket_key, client, jira_date)
+
+        try:
+            enrich = await loop.run_in_executor(
+                None, _enrich_for_scheduler, client, ticket_key, jira_date, t.get("summary", "")
+            )
+        except Exception as exc:
+            logger.warning("SCHEDULER auto-audit: enrich failed for %s: %s", ticket_key, exc)
+            continue
+
+        sendout_id = enrich.get("sendout_id", "")
+        if not sendout_id:
+            logger.info("SCHEDULER auto-audit: no sendout_id for %s, skipping", ticket_key)
+            continue
+        if sendout_id in _audited_sendouts:
+            skipped_count += 1
+            continue
+
+        try:
+            audit = await loop.run_in_executor(
+                None, _run_audit_sync, client, ticket_key, sendout_id,
+                enrich.get("leaflet_url", ""),
+                enrich.get("gsheet_tags", ""),
+                enrich.get("gsheet_exclude_tags", ""),
+            )
+        except Exception as exc:
+            logger.warning("SCHEDULER auto-audit: audit failed for %s: %s", ticket_key, exc)
+            continue
+
+        issues     = audit.get("issues", -1)
+        confidence = audit.get("confidence", -1)
+        ai_text    = audit.get("ai_result", "")
+
+        if issues < 0:
+            logger.info("SCHEDULER auto-audit: %s returned error/overload, skipping record", ticket_key)
+            continue
+
+        # Record so we don't re-audit (and preflight job can show status)
+        _audited_sendouts[sendout_id] = {
+            "ticket_key": ticket_key,
+            "client":     client,
+            "issues":     issues,
+            "confidence": confidence,
+            "ts":         _dt.utcnow().isoformat(),
+        }
+        audited_count += 1
+        already_audited_keys.add(ticket_key)
+
+        params    = {"ticket": ticket_key, "client": client, "sendout": sendout_id}
+        app_link  = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
+        jira_link = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket_key}"
+
+        if issues > 0:
+            failed_checks = _extract_failed_checks(ai_text)
+            checks_text   = "\n".join(f"• {c}" for c in failed_checks[:8])
+            _send_slack_block(
+                header=f"🤖 Auto-Audit: ❌ {ticket_key} FAILED — {client}",
+                sections=[
+                    f"<!here> Auto AI audit found *{issues}* issue(s) for "
+                    f"<{jira_link}|{ticket_key}> ({client}) going live *{jira_date}*."
+                    + (f" Confidence: {confidence}%" if confidence >= 0 else ""),
+                    f"*Failed checks:*\n{checks_text}",
+                ],
+                actions=[
+                    {"type": "button", "text": {"type": "plain_text", "text": "Open in Validator"},
+                     "url": app_link, "style": "danger"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "Open in JIRA"},
+                     "url": jira_link},
+                ],
+            )
+            try:
+                write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Rejected")
+            except Exception:
+                pass
+        else:
+            conf_str = f" Confidence: {confidence}%." if confidence >= 0 else ""
+            _send_slack_block(
+                header=f"🤖 Auto-Audit: ✅ {ticket_key} PASSED — {client}",
+                sections=[
+                    f"Auto AI audit *passed* for <{jira_link}|{ticket_key}> ({client}) "
+                    f"going live *{jira_date}*.{conf_str} "
+                    f"<{app_link}|View in Validator>"
+                ],
+            )
+            try:
+                write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Approved")
+            except Exception:
+                pass
+
+    logger.info("SCHEDULER: auto-audit done — %d audited, %d skipped", audited_count, skipped_count)
+
+
+# ── APScheduler startup / shutdown ────────────────────────────────────────────
+
+try:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler as _APScheduler
+    from apscheduler.triggers.cron import CronTrigger as _CronTrigger
+    _APSCHEDULER_AVAILABLE = True
+except ImportError:
+    _APSCHEDULER_AVAILABLE = False
+    logger.warning(
+        "APScheduler not installed — proactive monitoring disabled. "
+        "Run: pip install apscheduler"
+    )
+
+_scheduler = None
+
+
+@app.on_event("startup")
+async def _start_scheduler():
+    global _scheduler
+    if not _APSCHEDULER_AVAILABLE:
+        return
+    _scheduler = _APScheduler()
+    _scheduler.add_job(
+        _job_orphan_digest,   _CronTrigger(hour=8,  minute=0,  timezone="UTC"), id="orphan_digest"
+    )
+    _scheduler.add_job(
+        _job_preflight_alert, _CronTrigger(hour=8,  minute=30, timezone="UTC"), id="preflight"
+    )
+    _scheduler.add_job(
+        _job_auto_audit,      _CronTrigger(hour=9,  minute=0,  timezone="UTC"), id="auto_audit"
+    )
+    _scheduler.start()
+    logger.info(
+        "APScheduler started: orphan_digest@08:00, preflight@08:30, auto_audit@09:00 UTC"
+    )
+
+
+@app.on_event("shutdown")
+async def _stop_scheduler():
+    global _scheduler
+    if _scheduler and _scheduler.running:
+        _scheduler.shutdown(wait=False)
+        logger.info("APScheduler stopped")
+
+
+@app.get("/api/scheduler/status")
+async def scheduler_status(authorization: Optional[str] = Header(None)):
+    """Return scheduler state — running jobs and next fire times."""
+    _get_session(authorization)
+    if not _scheduler:
+        return {
+            "running": False,
+            "reason": "APScheduler not available or not started",
+            "audited_sendouts": len(_audited_sendouts),
+        }
+    jobs = [
+        {"id": job.id, "next_run": str(job.next_run_time) if job.next_run_time else None}
+        for job in _scheduler.get_jobs()
+    ]
+    return {
+        "running":           _scheduler.running,
+        "jobs":              jobs,
+        "audited_sendouts":  len(_audited_sendouts),
     }
 
 
