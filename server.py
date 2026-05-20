@@ -2005,7 +2005,11 @@ async def _job_preflight_alert() -> None:
 async def _job_orphan_digest() -> None:
     """
     Daily 08:00 UTC — run orphan scan and post a Slack digest if orphans are found.
+    Disabled: orphan Slack notifications are turned off until matching logic is fixed.
     """
+    logger.info("SCHEDULER: orphan digest skipped — notifications disabled")
+    return
+
     import asyncio as _asyncio
 
     logger.info("SCHEDULER: running orphan digest job")
