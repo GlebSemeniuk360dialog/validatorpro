@@ -51,6 +51,9 @@ from features import build_dashboard_data, record_validation, validate_scheduled
 from parsers import pick_carousel_parser
 from schedule import fetch_gsheet_data_csv, get_client_schedule_wide
 import tag_registry as _reg
+import client_config as _cfg
+import audit_log as _al
+import user_db as _udb
 from ui_renderer import build_results_html
 from utils import (
     check_tags,
@@ -299,6 +302,26 @@ def _hash_pwd(pwd: str) -> str:
     return hashlib.sha256(pwd.encode()).hexdigest()
 
 
+def _friendly_exc(exc: Exception) -> str:
+    """
+    Return a short, human-readable version of an exception string.
+    Strips verbose Python dotted-class prefixes and long URLs.
+    """
+    s = str(exc)
+    # Strip dotted class prefix like "google.api_core.exceptions.ResourceExhausted: "
+    s = re.sub(r'^(?:[a-zA-Z_][a-zA-Z0-9_]*\.)+[a-zA-Z_][a-zA-Z0-9_]*:\s*', '', s)
+    # Strip "Please retry or report in https://..." fragments
+    s = re.sub(r'[Pp]lease retry or report in\s+https?://\S*', 'please try again later', s)
+    # Strip bare URLs
+    s = re.sub(r'https?://\S+', '', s).strip()
+    # Collapse repeated whitespace / punctuation left by URL removal
+    s = re.sub(r'\s{2,}', ' ', s).strip().rstrip('. ')
+    # Truncate
+    if len(s) > 280:
+        s = s[:277] + '…'
+    return s or str(exc)[:280]
+
+
 def _get_session(authorization: Optional[str]) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -307,6 +330,13 @@ def _get_session(authorization: Optional[str]) -> dict:
     if not session or session["expires"] < time.time():
         _sessions.pop(token, None)
         raise HTTPException(status_code=401, detail="Session expired")
+    return session
+
+
+def _require_admin(authorization: Optional[str]) -> dict:
+    session = _get_session(authorization)
+    if not session.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
     return session
 
 
@@ -445,9 +475,7 @@ def _prepare_audit_data(api: dict, tmpl: Optional[dict], leaflet_data: list, jir
         mode = ("Exclude" if ("exclude_value" in tg or "exclude_values" in tg
                               or tg.get("mode") == "exclude") else "Include")
         if tg.get("type") == "leaflet_tag" and tg.get("offset_days") is not None:
-            tag_parts.append(
-                f"[{mode}] leaflet_tag={tg.get('offset_days')} (offset_days={tg.get('offset_days')})"
-            )
+            tag_parts.append(f"[{mode}] leaflet_tag={tg.get('offset_days')}")
         else:
             tag_parts.append(f"[{mode}] {_norm_tags(f'{key_name}={val}')}")
 
@@ -543,6 +571,14 @@ app = FastAPI(title="Validator Pro API")
 # Initialise tag-registry SQLite DB on startup (no-op if already exists)
 _reg.init_db()
 
+# Initialise client-config SQLite DB, seed from config.py on first run
+_cfg.init_db(CLIENT_CONFIGS, CLIENT_ALIASES)
+_cfg.apply_to_memory(CLIENT_CONFIGS, CLIENT_ALIASES)
+
+# Initialise audit log and user DB
+_al.init_db()
+_udb.init_db(_USERS)
+
 # Initialise few-shot examples library
 _examples_lib = ExamplesLibrary()
 
@@ -606,13 +642,22 @@ class LoginRequest(BaseModel):
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
     username = req.username.strip().lower()
-    entry = _USERS.get(username)
-    if not entry or not hmac.compare_digest(_hash_pwd(req.password), entry[1]):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+    user = _udb.authenticate(username, req.password)
+    if not user:
+        # Fallback: check legacy hardcoded _USERS (so existing sessions survive the migration)
+        entry = _USERS.get(username)
+        if not entry or not hmac.compare_digest(_hash_pwd(req.password), entry[1]):
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        user = {"username": username, "display_name": entry[0], "is_admin": username == "gleb", "active": 1}
     token = secrets.token_hex(32)
-    _sessions[token] = {"user": username, "name": entry[0], "expires": time.time() + SESSION_TTL}
-    logger.info("LOGIN\t%s", entry[0])
-    return {"token": token, "name": entry[0]}
+    _sessions[token] = {
+        "user":     user["username"],
+        "name":     user["display_name"],
+        "is_admin": bool(user.get("is_admin")),
+        "expires":  time.time() + SESSION_TTL,
+    }
+    logger.info("LOGIN\t%s (admin=%s)", user["display_name"], user.get("is_admin"))
+    return {"token": token, "name": user["display_name"], "is_admin": bool(user.get("is_admin"))}
 
 
 @app.post("/api/auth/logout")
@@ -864,7 +909,7 @@ async def validate(req: ValidateRequest, authorization: Optional[str] = Header(N
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_friendly_exc(exc))
 
     jira_for_html = dict(j_data)
     if jira_for_html.get("description"):
@@ -929,7 +974,7 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_friendly_exc(exc))
 
     # Prepare all data needed for build_comparison_data
     (tmpl_body, tmpl_footer, tmpl_buttons,
@@ -1004,7 +1049,7 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
             examples=_few_shot,
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"AI audit failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"AI audit failed: {_friendly_exc(exc)}")
 
     # Gemini 503 / overload — return a structured "retry later" response instead of
     # an ugly raw error string embedded in the HTML output.
@@ -1074,6 +1119,15 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         logger.info("JIRA AI status → %s for %s", jira_status, req.ticket_key)
 
     # Record audit result so scheduled jobs can skip already-audited sendouts
+    _al.record_audit(
+        ticket_key=req.ticket_key,
+        client=req.client,
+        sendout_id=req.sendout_id or "",
+        overall="FAIL" if issues > 0 else "PASS",
+        structured=result.get("structured"),
+        confidence=result.get("confidence", -1),
+        triggered_by="manual",
+    )
     if req.sendout_id:
         _audited_sendouts[req.sendout_id] = {
             "ticket_key": req.ticket_key,
@@ -1334,6 +1388,69 @@ async def registry_delete(entry_id: int, authorization: Optional[str] = Header(N
     return {"ok": True}
 
 
+# ── Client config editor ──────────────────────────────────────────────────────
+
+class ClientConfigUpdate(BaseModel):
+    timezone_name: str
+    requires_jira: bool
+    filters:       dict
+    aliases:       list
+    mappings:      Optional[dict] = None
+
+
+def _enrich_client_row(row: dict) -> dict:
+    """Merge read-only account_id from CLIENT_CONFIGS into a DB config row."""
+    name = row.get("name", "")
+    row["account_id"] = CLIENT_CONFIGS.get(name, {}).get("account_id", "")
+    return row
+
+
+@app.get("/api/config/clients")
+async def config_list_clients(authorization: Optional[str] = Header(None)):
+    """Return all editable client configs (account_id is read-only, included for display)."""
+    _get_session(authorization)
+    return [_enrich_client_row(r) for r in _cfg.list_clients()]
+
+
+@app.get("/api/config/clients/{name}")
+async def config_get_client(name: str, authorization: Optional[str] = Header(None)):
+    _get_session(authorization)
+    row = _cfg.get_client(name)
+    if not row:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return _enrich_client_row(row)
+
+
+@app.put("/api/config/clients/{name}")
+async def config_update_client(
+    name: str,
+    body: ClientConfigUpdate,
+    authorization: Optional[str] = Header(None),
+):
+    _get_session(authorization)
+    if name not in CLIENT_CONFIGS:
+        raise HTTPException(status_code=404, detail="Client not found")
+    saved = _cfg.upsert_client(
+        name=name,
+        timezone_name=body.timezone_name,
+        requires_jira=body.requires_jira,
+        filters=body.filters,
+        aliases=body.aliases,
+        mappings=body.mappings,
+    )
+    # Hot-reload into memory immediately
+    _cfg.apply_to_memory(CLIENT_CONFIGS, CLIENT_ALIASES)
+    return saved
+
+
+@app.post("/api/config/reload")
+async def config_reload(authorization: Optional[str] = Header(None)):
+    """Re-apply all DB rows to in-memory CLIENT_CONFIGS / CLIENT_ALIASES."""
+    _get_session(authorization)
+    _cfg.apply_to_memory(CLIENT_CONFIGS, CLIENT_ALIASES)
+    return {"ok": True, "clients": len(CLIENT_CONFIGS)}
+
+
 # ── Slack test ────────────────────────────────────────────────────────────────
 
 @app.get("/api/slack/status")
@@ -1364,6 +1481,100 @@ async def slack_test(authorization: Optional[str] = Header(None)):
 async def get_clients(authorization: Optional[str] = Header(None)):
     _get_session(authorization)
     return list(CLIENT_CONFIGS.keys())
+
+
+# ── Audit history ─────────────────────────────────────────────────────────────
+
+@app.get("/api/audit-history")
+async def audit_history(
+    limit:      int = 100,
+    client:     Optional[str] = None,
+    ticket_key: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+):
+    _get_session(authorization)
+    return _al.list_audits(limit=limit, client=client or None, ticket_key=ticket_key or None)
+
+
+# ── Preflight history ─────────────────────────────────────────────────────────
+
+@app.get("/api/preflight/runs")
+async def preflight_runs(authorization: Optional[str] = Header(None)):
+    _get_session(authorization)
+    return _al.list_preflight_runs(limit=14)
+
+
+@app.post("/api/preflight/run-now")
+async def preflight_run_now(authorization: Optional[str] = Header(None)):
+    """Manually trigger the preflight job (admin only)."""
+    _require_admin(authorization)
+    import asyncio as _aio
+    await _aio.get_event_loop().run_in_executor(None, lambda: None)  # yield
+    await _job_preflight_alert()
+    return {"ok": True}
+
+
+# ── User management ───────────────────────────────────────────────────────────
+
+class UserCreate(BaseModel):
+    username:     str
+    display_name: str
+    password:     str
+    is_admin:     bool = False
+
+
+class UserUpdate(BaseModel):
+    display_name: Optional[str] = None
+    password:     Optional[str] = None
+    is_admin:     Optional[bool] = None
+    active:       Optional[bool] = None
+
+
+@app.get("/api/users")
+async def users_list(authorization: Optional[str] = Header(None)):
+    _require_admin(authorization)
+    return _udb.list_users()
+
+
+@app.post("/api/users", status_code=201)
+async def users_create(body: UserCreate, authorization: Optional[str] = Header(None)):
+    _require_admin(authorization)
+    existing = _udb.get_user(body.username.strip().lower())
+    if existing:
+        raise HTTPException(status_code=409, detail="Username already exists")
+    return _udb.create_user(
+        username=body.username,
+        display_name=body.display_name,
+        password=body.password,
+        is_admin=body.is_admin,
+    )
+
+
+@app.put("/api/users/{username}")
+async def users_update(username: str, body: UserUpdate, authorization: Optional[str] = Header(None)):
+    session = _require_admin(authorization)
+    if not _udb.get_user(username):
+        raise HTTPException(status_code=404, detail="User not found")
+    # Prevent admin from accidentally removing their own admin flag
+    if username == session["user"] and body.is_admin is False:
+        raise HTTPException(status_code=400, detail="Cannot remove your own admin privileges")
+    return _udb.update_user(
+        username=username,
+        display_name=body.display_name,
+        password=body.password,
+        is_admin=body.is_admin,
+        active=body.active,
+    )
+
+
+@app.delete("/api/users/{username}")
+async def users_delete(username: str, authorization: Optional[str] = Header(None)):
+    session = _require_admin(authorization)
+    if username == session["user"]:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    if not _udb.delete_user(username):
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True}
 
 
 # ── Bulk validation ──────────────────────────────────────────────────────────
@@ -1974,12 +2185,16 @@ async def _job_preflight_alert() -> None:
         client    = t.get("client", "")
         date      = t.get("date", "")
         status    = t.get("status", "")
-        # Check if this ticket's sendout was already audited
-        audited   = next(
-            (v for v in _audited_sendouts.values() if v.get("ticket_key") == ticket), None
-        )
+        # Check if this ticket was already audited (DB-backed)
+        audited = _al.get_audit_for_ticket(ticket)
+        if not audited:
+            # Fallback to in-memory cache
+            audited = next((v for v in _audited_sendouts.values() if v.get("ticket_key") == ticket), None)
         if audited:
-            audit_icon = "✅ AI PASS" if audited.get("issues", 1) == 0 else f"❌ AI FAIL ({audited['issues']} issue(s))"
+            if audited.get("overall") == "FAIL" or audited.get("issues", 0) > 0:
+                audit_icon = f"❌ AI FAIL"
+            else:
+                audit_icon = "✅ AI PASS"
         else:
             audit_icon = "⏳ Not AI-audited"
 
@@ -2000,6 +2215,22 @@ async def _job_preflight_alert() -> None:
         sections=[summary, "\n\n".join(lines)],
     )
     logger.info("SCHEDULER: preflight alert sent for %d tickets", len(upcoming))
+
+    # Persist run so UI can display history even when Slack is unavailable
+    pf_tickets = []
+    for t in upcoming[:15]:
+        tk = t["key"]
+        audited = _al.get_audit_for_ticket(tk)
+        pf_tickets.append({
+            "key":        tk,
+            "client":     t.get("client", ""),
+            "date":       t.get("date", ""),
+            "delta":      t.get("_delta", -1),
+            "status":     t.get("status", ""),
+            "audit":      audited.get("overall") if audited else None,
+            "confidence": audited.get("confidence", -1) if audited else -1,
+        })
+    _al.record_preflight(pf_tickets, sent_slack=True)
 
 
 async def _job_orphan_digest() -> None:
@@ -2147,6 +2378,15 @@ async def _job_auto_audit() -> None:
             "confidence": confidence,
             "ts":         _dt.utcnow().isoformat(),
         }
+        _al.record_audit(
+            ticket_key=ticket_key,
+            client=client,
+            sendout_id=sendout_id,
+            overall="FAIL" if issues > 0 else "PASS",
+            structured=audit.get("structured"),
+            confidence=confidence,
+            triggered_by="auto",
+        )
         audited_count += 1
         already_audited_keys.add(ticket_key)
 

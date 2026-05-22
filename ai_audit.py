@@ -390,9 +390,14 @@ def _compute_scheduling_diff(jira_date_str: str, api_date_str: str) -> dict:
     """
     def _parse_local(s: str):
         s = str(s or "").strip()
+        # Strip trailing timezone abbreviations
         s = _re.sub(r'\s*(CET|CEST|UTC|GMT|MEZ|MESZ)$', '', s, flags=_re.I).strip()
+        # Replace T and Z separators with space
         s = _re.sub(r'[TZ]', ' ', s).strip().rstrip('+').rstrip('-')
-        s = _re.sub(r'\s+\+\d{2}:\d{2}$', '', s).strip()
+        # Strip timezone offsets: +02:00, +0200, -05:00, -0500 (with or without preceding space)
+        s = _re.sub(r'\s*[+-]\d{2}:?\d{2}$', '', s).strip()
+        # Strip milliseconds / microseconds (e.g. .000 or .123456)
+        s = _re.sub(r'\.\d+', '', s).strip()
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H", "%Y-%m-%d"):
             try: return _dt.strptime(s.strip(), fmt)
             except ValueError: continue
@@ -484,6 +489,23 @@ def _compute_tag_diff(expected_incl: str, expected_excl: str, api_tag_str: str) 
         line = line.strip()
         if not line: continue
         lo = line.lower()
+
+        # Handle [Include] / [Exclude] bracket-prefix format produced by _prepare_audit_data
+        # e.g. "[Include] leaflet_accepted=true" or "[Exclude] aldithemen_042025=garten"
+        m_bracket = _re.match(r'^\[(include|exclude)\]\s*', line, _re.I)
+        if m_bracket:
+            tag = line[m_bracket.end():].strip()
+            # Also strip trailing parenthetical annotations like " (offset_days=1)"
+            tag = _re.sub(r'\s*\(offset_days=\d+\)\s*$', '', tag).strip()
+            if not tag:
+                continue
+            if m_bracket.group(1).lower() == 'exclude':
+                actual_exc.add(_canonical_tag(tag))
+            else:
+                actual_inc.add(_canonical_tag(tag))
+            continue
+
+        # Legacy formats: "excl: tag", "exclude: tag"
         if _re.match(r'^excl[:.\s]', lo) or "exclude" in lo[:10]:
             tag = _re.sub(r'^excl[:\s.]+|^exclude[:\s]+', '', line, flags=_re.I).strip()
             if tag: actual_exc.add(_canonical_tag(tag))

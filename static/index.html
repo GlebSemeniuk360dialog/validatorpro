@@ -200,6 +200,39 @@ function Select({ value, onChange, options=[], style }) {
   );
 }
 
+function ErrorBanner({ title, message, onDismiss, onRetry, style }) {
+  if (!message) return null;
+  // Map common server error patterns to friendlier copy
+  let display = message;
+  if (/^500\b/.test(display)) display = display.replace(/^500\s*/,'');
+  if (/^502\b/.test(display)) display = display.replace(/^502\s*/,'');
+  if (/^429\b/.test(display)) display = 'Rate limit reached — the AI model is busy. ' + display.replace(/^429\s*/,'');
+  if (/^503\b/.test(display)) display = 'Service temporarily unavailable. ' + display.replace(/^503\s*/,'');
+  return (
+    <div style={{ display:'flex', gap:12, padding:'14px 16px', borderRadius:6,
+      background:t.danger.soft2, border:`1px solid ${t.danger.border}`,
+      alignItems:'flex-start', ...style }}>
+      <span style={{ fontSize:18, lineHeight:1, marginTop:1, flexShrink:0 }}>⚠️</span>
+      <div style={{ flex:1, minWidth:0 }}>
+        {title && <div style={{ fontSize:13, fontWeight:600, color:t.danger.base, marginBottom:3 }}>{title}</div>}
+        <div style={{ fontSize:12, color:t.fg[2], fontFamily:t.font.mono, wordBreak:'break-word', lineHeight:1.55 }}>{display}</div>
+      </div>
+      <div style={{ display:'flex', gap:6, flexShrink:0, alignItems:'center' }}>
+        {onRetry && (
+          <button onClick={onRetry} style={{ fontFamily:t.font.sans, fontSize:12, fontWeight:500,
+            padding:'5px 12px', borderRadius:4, border:`1px solid ${t.danger.ring}`,
+            background:'transparent', color:t.danger.base, cursor:'pointer' }}>↺ Retry</button>
+        )}
+        {onDismiss && (
+          <button onClick={onDismiss} style={{ fontFamily:t.font.sans, fontSize:13, fontWeight:700,
+            padding:'4px 8px', borderRadius:4, border:'none',
+            background:'transparent', color:t.fg[3], cursor:'pointer', lineHeight:1 }}>✕</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    SHELL  (from Shell.jsx)
    ═════════════════════════════════════════════════════════════════════════ */
@@ -243,12 +276,53 @@ function NavPill({ active, onClick, children }) {
     </div>
   );
 }
-function MainTabs({ active, onChange }) {
-  const tabs = ['Validator', 'Queue Scanner', 'Dashboard', 'Sendout Form', 'AI Examples'];
+function MainTabs({ active, onChange, isAdmin }) {
+  const PRIMARY = ['Validator', 'Queue Scanner', 'Sendout Form', 'Config'];
+  const MORE    = ['Dashboard', 'AI Examples', ...(isAdmin ? ['Users'] : [])];
+  const moreActive = MORE.includes(active);
+
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  function pick(tab) { onChange(tab); setOpen(false); }
+
   return (
     <div style={{ position:'sticky', top:0, zIndex:99, background:t.bg.app, borderBottom:`1px solid ${t.border.base}`, padding:'8px 28px' }}>
-      <div style={{ display:'flex', gap:4, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:8, padding:5, maxWidth:600 }}>
-        {tabs.map(tb=><NavPill key={tb} active={active===tb} onClick={()=>onChange(tb)}>{tb}</NavPill>)}
+      <div style={{ display:'flex', gap:4, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:8, padding:5, width:'fit-content' }}>
+        {PRIMARY.map(tb => <NavPill key={tb} active={active===tb} onClick={()=>onChange(tb)}>{tb}</NavPill>)}
+
+        {/* More dropdown */}
+        <div ref={ref} style={{ position:'relative' }}>
+          <NavPill active={moreActive} onClick={()=>setOpen(o=>!o)}>
+            {moreActive ? active : '···'}
+            <span style={{ fontSize:9, marginLeft:4, opacity:.7 }}>▾</span>
+          </NavPill>
+          {open && (
+            <div style={{ position:'absolute', top:'calc(100% + 6px)', right:0, minWidth:150,
+              background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:8,
+              padding:4, boxShadow:`0 8px 24px rgba(0,0,0,.35)`, zIndex:200 }}>
+              {MORE.map(tb => (
+                <div key={tb} onClick={()=>pick(tb)}
+                  style={{ padding:'9px 14px', borderRadius:5, cursor:'pointer', fontSize:13,
+                    fontFamily:t.font.sans, fontWeight: active===tb ? 600 : 400,
+                    color: active===tb ? t.brand.base : t.fg[2],
+                    background: active===tb ? t.bg.surface2 : 'transparent',
+                    transition:'background .12s' }}
+                  onMouseEnter={e=>e.currentTarget.style.background=t.bg.surface2}
+                  onMouseLeave={e=>e.currentTarget.style.background=active===tb?t.bg.surface2:'transparent'}>
+                  {tb}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -324,7 +398,7 @@ function Login({ onSignIn }) {
     setLoading(true); setErr('');
     try {
       const data = await api('POST', '/api/auth/login', { username: u, password: p });
-      onSignIn(data.token, data.name);
+      onSignIn(data.token, data.name, data.is_admin);
     } catch (e) {
       setErr(e.message || 'Invalid credentials');
     } finally {
@@ -651,7 +725,7 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
         )}
       </div>
 
-      {bulkError && <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:13 }}>⚠️ {bulkError}</div>}
+      <ErrorBanner title="Bulk operation failed" message={bulkError} onDismiss={()=>setBulkError('')} />
 
       <div style={{ fontSize:12, color:t.fg[3] }}>
         {filtered.length} ticket(s) · sorted by earliest date
@@ -817,6 +891,154 @@ function ExampleSaveModal({ checkKey, checkData, comparisonData, client, token, 
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   AI AUDIT REPORT — replaces dangerouslySetInnerHTML blob
+   ═════════════════════════════════════════════════════════════════════════ */
+function AiAuditReport({ structured, confidence, confidenceReason, issues, onSave, comparisonData, client }) {
+  const [expanded, setExpanded] = useState({});
+  if (!structured) return null;
+
+  const CHECK_KEYS  = ['scheduling','copy','footer','cta','tags','images'];
+  const CHECK_LABEL = { scheduling:'Scheduling', copy:'Copy / Text', footer:'Footer', cta:'CTA & Links', tags:'Tags & Filters', images:'Images' };
+  const CHECK_NUM   = { scheduling:'01', copy:'02', footer:'03', cta:'04', tags:'05', images:'06' };
+
+  const VERDICT = {
+    PASS: { bg:t.ok.soft,     bd:t.ok.ring,     fg:t.ok.base,     icon:'✅', label:'PASS' },
+    FAIL: { bg:t.danger.soft, bd:t.danger.ring,  fg:t.danger.base, icon:'❌', label:'FAIL' },
+    NA:   { bg:t.bg.surface3, bd:t.border.base,  fg:t.fg[4],       icon:'—',  label:'N/A'  },
+    '':   { bg:t.bg.surface3, bd:t.border.base,  fg:t.fg[4],       icon:'—',  label:'—'    },
+  };
+
+  const overall   = structured.overall || (issues > 0 ? 'FAIL' : 'PASS');
+  const ov        = VERDICT[overall] || VERDICT.PASS;
+  const confColor = confidence >= 80 ? t.ok.base : confidence >= 60 ? t.warn.base : t.danger.base;
+
+  function toggle(key) { setExpanded(e => ({ ...e, [key]: !e[key] })); }
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+
+      {/* ── Overall verdict bar ── */}
+      <div style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 18px',
+        borderRadius:8, background:ov.bg, border:`1px solid ${ov.bd}` }}>
+        <span style={{ fontSize:22 }}>{ov.icon}</span>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:15, fontWeight:700, color:ov.fg }}>
+            Overall: {ov.label}
+          </div>
+          {confidenceReason && (
+            <div style={{ fontSize:12, color:t.fg[3], marginTop:2 }}>{confidenceReason}</div>
+          )}
+        </div>
+        {confidence >= 0 && (
+          <div style={{ textAlign:'right' }}>
+            <div style={{ fontFamily:t.font.mono, fontSize:20, fontWeight:700, color:confColor }}>
+              {confidence}%
+            </div>
+            <div style={{ fontSize:10, color:t.fg[4], textTransform:'uppercase', letterSpacing:'.08em' }}>confidence</div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Check cards ── */}
+      {CHECK_KEYS.map(key => {
+        const chk = structured[key];
+        if (!chk) return null;
+        const v   = VERDICT[chk.verdict] || VERDICT[''];
+        const exp = expanded[key];
+
+        return (
+          <div key={key} style={{ border:`1px solid ${chk.verdict==='FAIL' ? v.bd : t.border.base}`,
+            borderRadius:6, overflow:'hidden',
+            background: chk.verdict==='FAIL' ? v.bg : t.bg.surface1 }}>
+
+            {/* Header row — always visible */}
+            <div onClick={()=>toggle(key)}
+              style={{ display:'flex', alignItems:'center', gap:12, padding:'11px 16px', cursor:'pointer', userSelect:'none' }}>
+
+              {/* Number glyph */}
+              <span style={{ fontFamily:t.font.mono, fontSize:10, color:t.fg[4], minWidth:18 }}>
+                {CHECK_NUM[key]}
+              </span>
+
+              {/* Verdict pill */}
+              <span style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'3px 10px',
+                borderRadius:999, fontSize:11, fontWeight:700,
+                background: v.bg, color: v.fg, border:`1px solid ${v.bd}`, flexShrink:0 }}>
+                {v.icon} {v.label}
+              </span>
+
+              {/* Check name */}
+              <span style={{ fontFamily:t.font.sans, fontWeight:600, fontSize:13, color:t.fg[1], flex:1 }}>
+                {CHECK_LABEL[key]}
+              </span>
+
+              {/* One-line reason preview (collapsed) */}
+              {!exp && chk.reason && (
+                <span style={{ fontSize:12, color:t.fg[3], flex:2,
+                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  {chk.reason}
+                </span>
+              )}
+
+              {/* Save + expand */}
+              <div style={{ display:'flex', alignItems:'center', gap:6, flexShrink:0 }} onClick={e=>e.stopPropagation()}>
+                {onSave && (
+                  <button onClick={()=>onSave(key, chk)}
+                    title="Save as AI training example"
+                    style={{ background:'none', border:`1px solid ${t.border.input}`, cursor:'pointer',
+                      color:t.fg[3], fontSize:11, borderRadius:4, padding:'3px 7px' }}>
+                    💾
+                  </button>
+                )}
+              </div>
+              <span style={{ color:t.fg[4], fontSize:12, flexShrink:0 }} onClick={()=>toggle(key)}>{exp ? '▲' : '▼'}</span>
+            </div>
+
+            {/* Expanded detail */}
+            {exp && (
+              <div style={{ borderTop:`1px solid ${t.border.base}`, padding:'14px 16px',
+                display:'flex', flexDirection:'column', gap:10 }}>
+
+                {/* Expected / Actual */}
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                  {[['Expected', chk.expected], ['Actual', chk.actual]].map(([label, val]) => (
+                    <div key={label} style={{ background:t.bg.surface2, border:`1px solid ${t.border.input}`,
+                      borderRadius:5, padding:'10px 12px' }}>
+                      <div style={{ fontFamily:t.font.mono, fontSize:10, color:t.fg[4],
+                        textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5 }}>
+                        {label}
+                      </div>
+                      <div style={{ fontSize:12, color:t.fg[1], lineHeight:1.6,
+                        fontFamily: val && val.length > 60 ? t.font.sans : t.font.mono,
+                        wordBreak:'break-word' }}>
+                        {val || <span style={{ color:t.fg[4] }}>—</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Reason */}
+                <div style={{ padding:'10px 12px', borderRadius:5,
+                  background: chk.verdict==='FAIL' ? t.danger.soft2 : chk.verdict==='PASS' ? t.ok.soft2 : t.bg.surface2,
+                  border:`1px solid ${chk.verdict==='FAIL' ? t.danger.soft : chk.verdict==='PASS' ? t.ok.soft : t.border.base}` }}>
+                  <div style={{ fontFamily:t.font.mono, fontSize:10, color:t.fg[4],
+                    textTransform:'uppercase', letterSpacing:'.08em', marginBottom:4 }}>
+                    Reasoning
+                  </div>
+                  <div style={{ fontSize:13, color:t.fg[1], lineHeight:1.65 }}>
+                    {chk.reason}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    TICKET PANEL — wired to real API
    ═════════════════════════════════════════════════════════════════════════ */
 function TicketPanel({ ticket, clients, token, onBack, initialSendout }) {
@@ -836,6 +1058,7 @@ function TicketPanel({ ticket, clients, token, onBack, initialSendout }) {
   const [aiResult, setAiResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [errorCtx, setErrorCtx] = useState('');
   const [saveModal, setSaveModal] = useState(null);  // {checkKey, checkData, comparisonData}
   const [linkCopied, setLinkCopied] = useState(false);
 
@@ -904,24 +1127,30 @@ function TicketPanel({ ticket, clients, token, onBack, initialSendout }) {
   } : {};
 
   const runValidate = async () => {
-    setLoading(true); setError(''); setValidateResult(null);
+    setLoading(true); setError(''); setErrorCtx(''); setValidateResult(null);
     try {
       const res = await api('POST', '/api/validate',
         { client, ticket_key: ticketKey, sendout_id: sendoutId, ...gsheetBody }, token);
       setValidateResult(res);
       setTab('Results');
-    } catch(e) { setError(e.message); }
+    } catch(e) {
+      setErrorCtx('Regular Check failed');
+      setError(e.message);
+    }
     finally { setLoading(false); }
   };
 
   const runAiAudit = async () => {
-    setLoading(true); setError(''); setAiResult(null);
+    setLoading(true); setError(''); setErrorCtx(''); setAiResult(null);
     try {
       const res = await api('POST', '/api/ai-audit',
         { client, ticket_key: ticketKey, sendout_id: sendoutId, ...gsheetBody }, token);
       setAiResult(res);
       setTab('AI Audit');
-    } catch(e) { setError(e.message); }
+    } catch(e) {
+      setErrorCtx('AI Audit failed');
+      setError(e.message);
+    }
     finally { setLoading(false); }
   };
 
@@ -975,7 +1204,7 @@ function TicketPanel({ ticket, clients, token, onBack, initialSendout }) {
         </div>
       </div>
 
-      {error&&<div style={{ padding:'12px 16px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:13 }}>⚠️ {error}</div>}
+      <ErrorBanner title={errorCtx} message={error} onDismiss={()=>setError('')} />
 
       {tab==='Setup'&&(
         <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
@@ -1079,63 +1308,15 @@ function TicketPanel({ ticket, clients, token, onBack, initialSendout }) {
                 </div>
               ) : (
               <>
-              {/* ── Status + Confidence badge ── */}
-              <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-                {aiResult.issues > 0
-                  ? <Badge kind="danger">{aiResult.issues} issue(s) found</Badge>
-                  : <Badge kind="ok">All checks passed</Badge>}
-
-                {aiResult.confidence != null && aiResult.confidence >= 0 && (() => {
-                  const pct = Math.round(aiResult.confidence);
-                  const low = pct < 60;
-                  return (
-                    <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:600, background: low ? t.warn.soft : t.ok.soft, color: low ? t.warn.base : t.ok.base, border:`1px solid ${low ? t.warn.ring : t.ok.ring}` }}>
-                      🎯 Confidence: {pct}%{low ? ' — low, review manually' : ''}
-                    </div>
-                  );
-                })()}
-              </div>
-
-              {/* Low-confidence warning */}
-              {aiResult.confidence != null && aiResult.confidence >= 0 && aiResult.confidence < 60 && (
-                <div style={{ padding:'10px 14px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12 }}>
-                  ⚠️ AI confidence is below 60% — the result may be unreliable. Consider reviewing the sendout manually before approving.
-                </div>
-              )}
-
-              {/* ── Per-check verdict strip with 💾 Save buttons ── */}
-              {aiResult.structured && (() => {
-                const CHECK_KEYS = ['scheduling','copy','footer','cta','tags','images'];
-                const LABELS = {scheduling:'Scheduling',copy:'Copy',footer:'Footer',cta:'CTA',tags:'Tags',images:'Images'};
-                return (
-                  <div style={{ display:'flex', flexWrap:'wrap', gap:6, padding:'10px 14px', background:t.bg.surface2, borderRadius:6, border:`1px solid ${t.border.base}`, alignItems:'center' }}>
-                    {CHECK_KEYS.map(key => {
-                      const chk = aiResult.structured[key];
-                      if (!chk) return null;
-                      const v = chk.verdict;
-                      const emoji = v==='PASS'?'✅':v==='FAIL'?'❌':'🔕';
-                      const bg  = v==='PASS'?t.ok.soft :v==='FAIL'?t.danger.soft :t.bg.surface3;
-                      const bd  = v==='PASS'?t.ok.ring :v==='FAIL'?t.danger.ring :t.border.base;
-                      const clr = v==='PASS'?t.ok.base :v==='FAIL'?t.danger.base :t.fg[3];
-                      return (
-                        <div key={key} title={chk.reason||''}
-                          style={{ display:'inline-flex', alignItems:'center', gap:3, background:bg, border:`1px solid ${bd}`, borderRadius:4, padding:'3px 8px', fontSize:11, fontWeight:600, color:clr }}>
-                          {emoji} {LABELS[key]}
-                          <button
-                            onClick={()=>setSaveModal({checkKey:key, checkData:chk, comparisonData:aiResult.comparison_data})}
-                            title="Save as AI training example"
-                            style={{ marginLeft:3, background:'none', border:'none', cursor:'pointer', color:t.fg[3], fontSize:11, lineHeight:1, padding:'1px 3px', borderRadius:2, opacity:.7 }}>
-                            💾
-                          </button>
-                        </div>
-                      );
-                    })}
-                    <span style={{ fontSize:10, color:t.fg[4], marginLeft:'auto' }}>💾 save check as AI training example</span>
-                  </div>
-                );
-              })()}
-
-              <div className="result-frame" dangerouslySetInnerHTML={{ __html: aiResult.html }} />
+              <AiAuditReport
+                structured={aiResult.structured}
+                confidence={aiResult.confidence}
+                confidenceReason={aiResult.confidence_reason}
+                issues={aiResult.issues}
+                comparisonData={aiResult.comparison_data}
+                client={client}
+                onSave={(key, chk) => setSaveModal({ checkKey:key, checkData:chk, comparisonData:aiResult.comparison_data })}
+              />
               </>
               )}
             </>
@@ -1392,6 +1573,12 @@ function Dashboard({ token }) {
         </div>
       )}
 
+      {/* ── Preflight History ─────────────────────────────────────────────── */}
+      <PreflightHistory token={token} />
+
+      {/* ── AI Audit History ──────────────────────────────────────────────── */}
+      <AuditHistory token={token} />
+
       {/* ── Audit Log ─────────────────────────────────────────────────────── */}
       <div>
         <SectionHeader style={{ marginTop:0 }}>📋 Audit Log</SectionHeader>
@@ -1614,8 +1801,8 @@ function OrphanScanner({ token }) {
         </div>
       </HudPanel>
 
-      {error && <div style={{ padding:'12px 16px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:13 }}>⚠️ {error}</div>}
-      {triageError && <div style={{ padding:'12px 16px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:13 }}>🤖 Triage error: {triageError}</div>}
+      <ErrorBanner title="Queue scan failed" message={error} onDismiss={()=>setError('')} onRetry={runScan} />
+      <ErrorBanner title="AI Triage failed" message={triageError} onDismiss={()=>setTriageError('')} onRetry={runTriage} />
 
       {!scanData && !loading && (
         <div style={{ padding:48, textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>Click <strong>Scan all accounts</strong> to start.</div>
@@ -2652,11 +2839,647 @@ function ExamplesManager({ token }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   PREFLIGHT HISTORY
+   ═════════════════════════════════════════════════════════════════════════ */
+function PreflightHistory({ token }) {
+  const [runs,    setRuns]    = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [open,    setOpen]    = useState(null);  // expanded run id
+  const [running, setRunning] = useState(false);
+  const [err,     setErr]     = useState('');
+
+  async function load() {
+    try {
+      const data = await api('GET', '/api/preflight/runs', null, token);
+      setRuns(data);
+    } catch(e) { setErr(e.message); }
+    finally { setLoading(false); }
+  }
+
+  async function runNow() {
+    setRunning(true); setErr('');
+    try {
+      await api('POST', '/api/preflight/run-now', null, token);
+      await load();
+    } catch(e) { setErr(e.message); }
+    finally { setRunning(false); }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  const DELTA_LABEL = { 0:'🔴 TODAY', 1:'🟡 Tomorrow', 2:'🟠 In 2 days' };
+  const AUDIT_COLOR = { PASS: t.ok.base, FAIL: t.danger.base };
+
+  return (
+    <div>
+      <SectionHeader style={{ marginTop:0 }}>
+        🔔 Preflight History
+        <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'center' }}>
+          {err && <span style={{ fontSize:11, color:t.danger.base }}>{err}</span>}
+          <Button variant="ghost" onClick={runNow} disabled={running} style={{ fontSize:11, padding:'4px 10px' }}>
+            {running ? 'Running…' : '▶ Run now'}
+          </Button>
+          <Button variant="ghost" onClick={load} style={{ fontSize:11, padding:'4px 10px' }}>↻</Button>
+        </div>
+      </SectionHeader>
+      {loading && <div style={{ fontSize:12, color:t.fg[3], fontFamily:t.font.mono }}>Loading…</div>}
+      {!loading && runs.length === 0 && (
+        <div style={{ fontSize:12, color:t.fg[4], fontFamily:t.font.mono }}>No preflight runs recorded yet.</div>
+      )}
+      {runs.map(run => (
+        <div key={run.id} style={{ border:`1px solid ${t.border.base}`, borderRadius:6, marginBottom:8, overflow:'hidden' }}>
+          <div onClick={() => setOpen(o => o===run.id ? null : run.id)}
+            style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 14px', cursor:'pointer',
+              background: open===run.id ? t.bg.surface2 : t.bg.surface1 }}>
+            <span style={{ fontSize:14 }}>{open===run.id ? '▾' : '›'}</span>
+            <span style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>
+              {(run.ran_at||'').slice(0,16).replace('T',' ')} UTC
+            </span>
+            <Badge kind={run.sent_slack ? 'ok' : 'warn'} style={{ fontSize:10 }}>
+              {run.sent_slack ? '✓ Slack sent' : 'no Slack'}
+            </Badge>
+            <span style={{ fontSize:12, color:t.fg[2] }}>{(run.tickets||[]).length} ticket(s)</span>
+            <span style={{ marginLeft:'auto', display:'flex', gap:5 }}>
+              {(run.tickets||[]).map(tk => (
+                <span key={tk.key} style={{ fontSize:10, padding:'2px 7px', borderRadius:999,
+                  color: tk.audit ? AUDIT_COLOR[tk.audit]||t.fg[2] : t.fg[4],
+                  background: tk.audit==='PASS'?t.ok.soft : tk.audit==='FAIL'?t.danger.soft : t.bg.surface3,
+                  border:`1px solid ${tk.audit==='PASS'?t.ok.ring : tk.audit==='FAIL'?t.danger.ring : t.border.base}` }}>
+                  {tk.key}
+                </span>
+              ))}
+            </span>
+          </div>
+          {open===run.id && (
+            <div style={{ padding:'12px 14px', borderTop:`1px solid ${t.border.base}`, display:'flex', flexDirection:'column', gap:6 }}>
+              {(run.tickets||[]).map(tk => (
+                <div key={tk.key} style={{ display:'grid', gridTemplateColumns:'90px 180px 1fr 90px 80px', gap:8, alignItems:'center',
+                  padding:'7px 10px', borderRadius:4, background:t.bg.surface2, fontSize:12 }}>
+                  <span style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>{tk.date}</span>
+                  <span style={{ fontFamily:t.font.mono, fontSize:11, color:t.brand.base }}>{tk.key}</span>
+                  <span style={{ color:t.fg[2], fontSize:12 }}>{tk.client}</span>
+                  <span style={{ fontSize:11, color:t.fg[3] }}>{DELTA_LABEL[tk.delta]||''}</span>
+                  <span style={{ fontSize:11, fontWeight:600,
+                    color: tk.audit ? AUDIT_COLOR[tk.audit]||t.fg[3] : t.fg[4] }}>
+                    {tk.audit ? `AI ${tk.audit}` : '⏳ pending'}
+                    {tk.confidence >= 0 && <span style={{ fontWeight:400, color:t.fg[4] }}> {tk.confidence}%</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   AI AUDIT HISTORY
+   ═════════════════════════════════════════════════════════════════════════ */
+function AuditHistory({ token }) {
+  const [rows,    setRows]    = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter,  setFilter]  = useState('');
+
+  useEffect(() => {
+    api('GET', '/api/audit-history?limit=100', null, token)
+      .then(setRows).catch(()=>{}).finally(()=>setLoading(false));
+  }, [token]);
+
+  const VERDICT_COLOR = { PASS: t.ok.base, FAIL: t.danger.base, NA: t.fg[4], '': t.fg[4] };
+  const VERDICT_BG    = { PASS: t.ok.soft, FAIL: t.danger.soft, NA: t.bg.surface3, '': t.bg.surface3 };
+  const VERDICT_BD    = { PASS: t.ok.ring, FAIL: t.danger.ring, NA: t.border.base, '': t.border.base };
+
+  function VerdictDot({ v }) {
+    return <span style={{ display:'inline-block', width:7, height:7, borderRadius:'50%',
+      background: VERDICT_COLOR[v]||t.fg[4], flexShrink:0 }} />;
+  }
+
+  const checks = ['scheduling','copy','footer','cta','tags','images'];
+  const filtered = rows.filter(r =>
+    !filter ||
+    r.ticket_key.toLowerCase().includes(filter.toLowerCase()) ||
+    r.client.toLowerCase().includes(filter.toLowerCase())
+  );
+
+  return (
+    <div>
+      <SectionHeader style={{ marginTop:0 }}>
+        🤖 AI Audit History
+        <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'center' }}>
+          <Input value={filter} onChange={setFilter} placeholder="filter by ticket or client…"
+            style={{ fontSize:11, padding:'4px 8px', width:200 }} />
+        </div>
+      </SectionHeader>
+      {loading && <div style={{ fontSize:12, color:t.fg[3], fontFamily:t.font.mono }}>Loading…</div>}
+      {!loading && filtered.length === 0 && (
+        <div style={{ fontSize:12, color:t.fg[4], fontFamily:t.font.mono }}>No AI audits recorded yet.</div>
+      )}
+      {filtered.length > 0 && (
+        <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
+          {/* Header */}
+          <div style={{ display:'grid', gridTemplateColumns:'130px 90px 150px 60px 60px repeat(6,46px)', gap:0,
+            padding:'6px 12px', borderBottom:`1px solid ${t.border.base}`, fontSize:10,
+            fontWeight:700, textTransform:'uppercase', letterSpacing:'.08em', color:t.fg[3] }}>
+            <span>Time</span><span>Ticket</span><span>Client</span>
+            <span>Overall</span><span>Conf.</span>
+            {checks.map(c => <span key={c} style={{ textAlign:'center', fontSize:9 }}>{c.slice(0,4)}</span>)}
+          </div>
+          {filtered.slice(0, 50).map((r, i) => (
+            <div key={r.id} style={{ display:'grid', gridTemplateColumns:'130px 90px 150px 60px 60px repeat(6,46px)',
+              gap:0, padding:'6px 12px', alignItems:'center',
+              borderBottom: i<filtered.length-1 ? `1px solid ${t.border.base}` : 'none',
+              background: i%2===0 ? 'transparent' : t.bg.surface2 }}>
+              <span style={{ fontFamily:t.font.mono, fontSize:10, color:t.fg[3] }}>
+                {(r.created_at||'').slice(0,16).replace('T',' ')}
+              </span>
+              <span style={{ fontFamily:t.font.mono, fontSize:11, color:t.brand.base }}>{r.ticket_key||'—'}</span>
+              <span style={{ fontSize:11, color:t.fg[2], overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.client||'—'}</span>
+              <span>
+                <span style={{ fontSize:10, padding:'2px 7px', borderRadius:999, fontWeight:600,
+                  color: VERDICT_COLOR[r.overall]||t.fg[3],
+                  background: VERDICT_BG[r.overall]||t.bg.surface3,
+                  border:`1px solid ${VERDICT_BD[r.overall]||t.border.base}` }}>
+                  {r.overall||'—'}
+                </span>
+              </span>
+              <span style={{ fontFamily:t.font.mono, fontSize:11,
+                color: r.confidence>=80?t.ok.base:r.confidence>=60?t.warn.base:r.confidence>=0?t.danger.base:t.fg[4] }}>
+                {r.confidence >= 0 ? `${r.confidence}%` : '—'}
+              </span>
+              {checks.map(c => (
+                <span key={c} style={{ textAlign:'center' }}>
+                  <VerdictDot v={r[c]||''} />
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+      {filtered.length > 50 && (
+        <div style={{ fontSize:11, color:t.fg[4], fontFamily:t.font.mono, marginTop:6 }}>
+          Showing 50 of {filtered.length} — use the ticket/client filter to narrow results.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   USER MANAGEMENT
+   ═════════════════════════════════════════════════════════════════════════ */
+function UsersPanel({ token }) {
+  const [users,   setUsers]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err,     setErr]     = useState('');
+  const [form,    setForm]    = useState({ username:'', display_name:'', password:'', is_admin:false });
+  const [saving,  setSaving]  = useState(false);
+  const [editPwd, setEditPwd] = useState({});   // {username: newPwd}
+
+  async function load() {
+    try {
+      const data = await api('GET', '/api/users', null, token);
+      setUsers(data);
+    } catch(e) { setErr(e.message); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function createUser() {
+    if (!form.username.trim() || !form.password.trim() || !form.display_name.trim()) {
+      setErr('Username, display name and password are required'); return;
+    }
+    setSaving(true); setErr('');
+    try {
+      await api('POST', '/api/users', form, token);
+      setForm({ username:'', display_name:'', password:'', is_admin:false });
+      await load();
+    } catch(e) { setErr(e.message); }
+    finally { setSaving(false); }
+  }
+
+  async function toggleActive(u) {
+    try {
+      await api('PUT', `/api/users/${u.username}`, { active: !u.active }, token);
+      await load();
+    } catch(e) { setErr(e.message); }
+  }
+
+  async function toggleAdmin(u) {
+    try {
+      await api('PUT', `/api/users/${u.username}`, { is_admin: !u.is_admin }, token);
+      await load();
+    } catch(e) { setErr(e.message); }
+  }
+
+  async function resetPassword(username) {
+    const pwd = editPwd[username];
+    if (!pwd || pwd.length < 6) { setErr('Password must be at least 6 characters'); return; }
+    try {
+      await api('PUT', `/api/users/${username}`, { password: pwd }, token);
+      setEditPwd(p => ({ ...p, [username]: '' }));
+      setErr('');
+    } catch(e) { setErr(e.message); }
+  }
+
+  async function deleteUser(username) {
+    if (!window.confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+    try {
+      await api('DELETE', `/api/users/${username}`, null, token);
+      await load();
+    } catch(e) { setErr(e.message); }
+  }
+
+  return (
+    <div style={{ padding:'24px 32px', maxWidth:860 }}>
+      <div style={{ fontFamily:t.font.display, fontSize:20, fontWeight:600, color:t.fg[1], marginBottom:24 }}>
+        User Management
+      </div>
+
+      {err && <div style={{ color:t.danger.base, fontSize:13, marginBottom:12 }}>{err}</div>}
+
+      {/* User list */}
+      <SectionHeader style={{ marginTop:0 }}>Team Members</SectionHeader>
+      {loading ? (
+        <div style={{ fontSize:12, color:t.fg[3], fontFamily:t.font.mono }}>Loading…</div>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+          {users.map(u => (
+            <div key={u.username} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 14px',
+              background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6,
+              opacity: u.active ? 1 : 0.5 }}>
+              <div style={{ width:34, height:34, borderRadius:'50%', background:t.bg.surface2,
+                border:`1px solid ${t.border.base}`, display:'flex', alignItems:'center', justifyContent:'center',
+                fontFamily:t.font.mono, fontSize:14, color:t.brand.base, flexShrink:0 }}>
+                {u.display_name.slice(0,1).toUpperCase()}
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:13, fontWeight:600, color:t.fg[1] }}>{u.display_name}</div>
+                <div style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>@{u.username}</div>
+              </div>
+              {u.is_admin && <Badge kind="warn" style={{ fontSize:10 }}>admin</Badge>}
+              {!u.active  && <Badge kind="danger" style={{ fontSize:10 }}>inactive</Badge>}
+
+              {/* Password reset inline */}
+              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                <Input value={editPwd[u.username]||''} type="password"
+                  onChange={v => setEditPwd(p=>({...p,[u.username]:v}))}
+                  placeholder="new password…" style={{ fontSize:12, padding:'5px 8px', width:140 }} />
+                <Button variant="ghost" onClick={()=>resetPassword(u.username)}
+                  style={{ fontSize:11, padding:'4px 9px', whiteSpace:'nowrap' }}>Reset pwd</Button>
+              </div>
+
+              <Button variant="ghost" onClick={()=>toggleAdmin(u)} style={{ fontSize:11, padding:'4px 9px' }}>
+                {u.is_admin ? 'Remove admin' : 'Make admin'}
+              </Button>
+              <Button variant="ghost" onClick={()=>toggleActive(u)} style={{ fontSize:11, padding:'4px 9px' }}>
+                {u.active ? 'Deactivate' : 'Reactivate'}
+              </Button>
+              <Button variant="danger" onClick={()=>deleteUser(u.username)} style={{ fontSize:11, padding:'4px 9px' }}>
+                Delete
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add user */}
+      <SectionHeader>Add New User</SectionHeader>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr auto', gap:10, alignItems:'end' }}>
+        <div>
+          <Overline style={{ marginBottom:5 }}>— username</Overline>
+          <Input value={form.username} onChange={v=>setForm(f=>({...f,username:v}))} placeholder="e.g. anna" />
+        </div>
+        <div>
+          <Overline style={{ marginBottom:5 }}>— display name</Overline>
+          <Input value={form.display_name} onChange={v=>setForm(f=>({...f,display_name:v}))} placeholder="e.g. Anna Smith" />
+        </div>
+        <div>
+          <Overline style={{ marginBottom:5 }}>— password</Overline>
+          <Input type="password" value={form.password} onChange={v=>setForm(f=>({...f,password:v}))} placeholder="initial password" />
+        </div>
+        <Button onClick={createUser} disabled={saving}>{saving?'Creating…':'Add user'}</Button>
+      </div>
+      <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8 }}>
+        <label style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', fontSize:13, color:t.fg[2] }}>
+          <input type="checkbox" checked={form.is_admin} onChange={e=>setForm(f=>({...f,is_admin:e.target.checked}))}
+            style={{ accentColor:t.brand.base }} />
+          Grant admin privileges
+        </label>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CONFIG EDITOR
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/** Single alias chip with delete button */
+function AliasChip({ value, onDelete }) {
+  return (
+    <span style={{ display:'inline-flex', alignItems:'center', gap:5, background:t.bg.surface2, border:`1px solid ${t.border.input}`, borderRadius:4, padding:'4px 10px', fontFamily:t.font.mono, fontSize:12, color:t.fg[2] }}>
+      {value}
+      <button onClick={onDelete} style={{ background:'none', border:'none', cursor:'pointer', color:t.danger.base, fontSize:14, lineHeight:1, padding:0 }}>×</button>
+    </span>
+  );
+}
+
+/** Alias list editor: shows chips + an "add" input */
+function AliasEditor({ aliases, onChange }) {
+  const [draft, setDraft] = useState('');
+  function add() {
+    const v = draft.trim();
+    if (v && !aliases.includes(v)) onChange([...aliases, v]);
+    setDraft('');
+  }
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+      <div style={{ display:'flex', flexWrap:'wrap', gap:6, minHeight:32 }}>
+        {aliases.map((a,i)=>(
+          <AliasChip key={i} value={a} onDelete={()=>onChange(aliases.filter((_,j)=>j!==i))} />
+        ))}
+        {aliases.length===0&&<span style={{fontFamily:t.font.mono,fontSize:12,color:t.fg[4]}}>no aliases</span>}
+      </div>
+      <div style={{ display:'flex', gap:8 }}>
+        <Input value={draft} onChange={setDraft} placeholder="add alias…" style={{ flex:1 }}
+          onKeyDown={e=>{ if(e.key==='Enter'){e.preventDefault();add();} }} />
+        <Button variant="ghost" onClick={add} style={{ whiteSpace:'nowrap', flexShrink:0 }}>+ Add</Button>
+      </div>
+    </div>
+  );
+}
+
+/** One filter rule row inside a filter set */
+function FilterRuleRow({ rule, onChange, onDelete }) {
+  const fields = Object.keys(rule);
+  return (
+    <div style={{ background:t.bg.surface2, border:`1px solid ${t.border.input}`, borderRadius:4, padding:'10px 12px', display:'flex', flexDirection:'column', gap:8, position:'relative' }}>
+      <button onClick={onDelete} title="Remove rule"
+        style={{ position:'absolute', top:6, right:8, background:'none', border:'none', cursor:'pointer', color:t.danger.base, fontSize:16, lineHeight:1 }}>×</button>
+      {fields.map(k=>(
+        <div key={k} style={{ display:'grid', gridTemplateColumns:'140px 1fr', gap:8, alignItems:'center' }}>
+          <label style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3], textAlign:'right', paddingRight:4 }}>{k}</label>
+          <Input value={typeof rule[k]==='object'?JSON.stringify(rule[k]):String(rule[k]??'')}
+            onChange={v=>{ let parsed=v; try{ parsed=JSON.parse(v); }catch(e){ parsed=v; } onChange({...rule,[k]:parsed}); }}
+            style={{ fontSize:12, fontFamily:t.font.mono }} />
+        </div>
+      ))}
+      <div style={{ display:'grid', gridTemplateColumns:'140px 1fr', gap:8, alignItems:'center' }}>
+        <label style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3], textAlign:'right', paddingRight:4 }}>+ new field</label>
+        <AddFieldInline onAdd={key=>{ if(key&&!(key in rule)) onChange({...rule,[key]:''}); }} />
+      </div>
+    </div>
+  );
+}
+
+function AddFieldInline({ onAdd }) {
+  const [v, setV] = useState('');
+  return (
+    <div style={{ display:'flex', gap:6 }}>
+      <Input value={v} onChange={setV} placeholder="field name…" style={{ fontSize:12, fontFamily:t.font.mono }}
+        onKeyDown={e=>{ if(e.key==='Enter'){e.preventDefault();onAdd(v.trim());setV('');} }} />
+      <Button variant="ghost" onClick={()=>{onAdd(v.trim());setV('');}} style={{ whiteSpace:'nowrap', flexShrink:0, fontSize:12, padding:'6px 10px' }}>Add</Button>
+    </div>
+  );
+}
+
+/** Editor for a single filter set (list of rule objects) */
+function FilterRulesEditor({ setName, rules, onChangeRules, onDeleteSet }) {
+  const [open, setOpen] = useState(false);
+  function addRule() {
+    onChangeRules([...rules, { type:'exact', value:'' }]);
+    setOpen(true);
+  }
+  return (
+    <div style={{ border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden', marginBottom:8 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', background:t.bg.surface2, cursor:'pointer' }} onClick={()=>setOpen(o=>!o)}>
+        <span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[2] }}>{setName} <span style={{ color:t.fg[4] }}>({rules.length} rule{rules.length!==1?'s':''})</span></span>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <Button variant="danger" onClick={e=>{e.stopPropagation();onDeleteSet();}} style={{ fontSize:11, padding:'3px 9px' }}>Delete set</Button>
+          <span style={{ color:t.fg[3], fontSize:14 }}>{open?'▲':'▼'}</span>
+        </div>
+      </div>
+      {open&&(
+        <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
+          {rules.map((rule,i)=>(
+            <FilterRuleRow key={i} rule={rule}
+              onChange={r=>{ const next=[...rules]; next[i]=r; onChangeRules(next); }}
+              onDelete={()=>onChangeRules(rules.filter((_,j)=>j!==i))} />
+          ))}
+          <Button variant="ghost" onClick={addRule} style={{ alignSelf:'flex-start', fontSize:12 }}>+ Add rule</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Editor for the full filters dict: {setName: [rules]} */
+function FilterSetsEditor({ filters, onChange }) {
+  const [newSetName, setNewSetName] = useState('');
+  const setNames = Object.keys(filters);
+  function addSet() {
+    const n = newSetName.trim();
+    if (!n || n in filters) return;
+    onChange({ ...filters, [n]: [] });
+    setNewSetName('');
+  }
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+      {setNames.length===0&&<span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[4] }}>no filter sets defined</span>}
+      {setNames.map(sn=>(
+        <FilterRulesEditor key={sn} setName={sn} rules={filters[sn]||[]}
+          onChangeRules={rules=>onChange({...filters,[sn]:rules})}
+          onDeleteSet={()=>{ const f={...filters}; delete f[sn]; onChange(f); }} />
+      ))}
+      <div style={{ display:'flex', gap:8, marginTop:4 }}>
+        <Input value={newSetName} onChange={setNewSetName} placeholder="new filter set name…" style={{ flex:1 }}
+          onKeyDown={e=>{ if(e.key==='Enter'){e.preventDefault();addSet();} }} />
+        <Button variant="ghost" onClick={addSet} style={{ whiteSpace:'nowrap', flexShrink:0 }}>+ Add set</Button>
+      </div>
+    </div>
+  );
+}
+
+/** Full config editor panel for one client */
+function ClientEditPanel({ client, token, onSaved }) {
+  const [tz,       setTz]       = useState(client.timezone_name || 'Europe/Berlin');
+  const [reqJira,  setReqJira]  = useState(client.requires_jira !== false);
+  const [aliases,  setAliases]  = useState(client.aliases  || []);
+  const [filters,  setFilters]  = useState(client.filters  || {});
+  const [mappings, setMappings] = useState(client.mappings || {});
+  const [mappingsRaw, setMappingsRaw] = useState(JSON.stringify(client.mappings||{}, null, 2));
+  const [mappingsErr, setMappingsErr] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saved,  setSaved]  = useState(false);
+  const [err,    setErr]    = useState('');
+
+  const TZ_OPTIONS = [
+    'Europe/Berlin','Europe/London','Europe/Paris','Europe/Warsaw','Europe/Vienna',
+    'Europe/Zurich','Europe/Amsterdam','Europe/Brussels','Europe/Stockholm',
+    'America/New_York','America/Chicago','America/Los_Angeles',
+    'Asia/Dubai','Asia/Singapore','UTC',
+  ];
+
+  function onMappingsChange(raw) {
+    setMappingsRaw(raw);
+    try { setMappings(JSON.parse(raw)); setMappingsErr(''); }
+    catch(e) { setMappingsErr('Invalid JSON: '+e.message); }
+  }
+
+  async function save() {
+    if (mappingsErr) { setErr('Fix mappings JSON first'); return; }
+    setSaving(true); setErr(''); setSaved(false);
+    try {
+      await api('PUT', '/api/config/clients/'+encodeURIComponent(client.name),
+        { timezone_name:tz, requires_jira:reqJira, filters, aliases, mappings }, token);
+      setSaved(true);
+      setTimeout(()=>setSaved(false), 2500);
+      if (onSaved) onSaved();
+    } catch(e) { setErr(e.message); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+      {/* General */}
+      <div>
+        <SectionHeader>General</SectionHeader>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+          <div>
+            <Overline style={{ marginBottom:6 }}>— timezone</Overline>
+            <Select value={tz} onChange={setTz}
+              options={TZ_OPTIONS.map(z=>({value:z,label:z}))} />
+          </div>
+          <div>
+            <Overline style={{ marginBottom:6 }}>— requires jira</Overline>
+            <div style={{ display:'flex', gap:10, marginTop:4 }}>
+              {[true,false].map(v=>(
+                <label key={String(v)} style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', fontFamily:t.font.sans, fontSize:13, color:t.fg[2] }}>
+                  <input type="radio" checked={reqJira===v} onChange={()=>setReqJira(v)}
+                    style={{ accentColor:t.brand.base }} />
+                  {v?'Yes':'No'}
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div style={{ marginTop:12 }}>
+          <Overline style={{ marginBottom:6 }}>— account id <span style={{ color:t.fg[4], textTransform:'none', letterSpacing:0, fontSize:11 }}>(read-only)</span></Overline>
+          <div style={{ fontFamily:t.font.mono, fontSize:13, color:t.fg[4], background:t.bg.surface2, border:`1px solid ${t.border.input}`, borderRadius:4, padding:'9px 12px', opacity:.7 }}>
+            {client.account_id || '—'}
+          </div>
+        </div>
+      </div>
+
+      {/* Aliases */}
+      <div>
+        <SectionHeader>Aliases</SectionHeader>
+        <AliasEditor aliases={aliases} onChange={setAliases} />
+      </div>
+
+      {/* Filter sets */}
+      <div>
+        <SectionHeader>Filter Sets</SectionHeader>
+        <FilterSetsEditor filters={filters} onChange={setFilters} />
+      </div>
+
+      {/* Mappings */}
+      <div>
+        <SectionHeader>Segment Mappings</SectionHeader>
+        <Overline style={{ marginBottom:8, color:t.fg[4] }}>— raw JSON: {`{segment_key: {label: tag}}`}</Overline>
+        <textarea value={mappingsRaw} onChange={e=>onMappingsChange(e.target.value)}
+          rows={8} spellCheck={false}
+          style={{ width:'100%', background:t.bg.surface2, border:`1px solid ${mappingsErr?t.danger.base:t.border.input}`, color:t.fg[1], borderRadius:4, padding:'10px 12px', fontFamily:t.font.mono, fontSize:12, resize:'vertical', outline:'none', boxSizing:'border-box' }} />
+        {mappingsErr&&<div style={{ color:t.danger.base, fontSize:12, marginTop:4 }}>{mappingsErr}</div>}
+      </div>
+
+      {/* Save bar */}
+      <div style={{ display:'flex', alignItems:'center', gap:12, paddingTop:4 }}>
+        <Button onClick={save} disabled={saving||!!mappingsErr}>
+          {saving?'Saving…':'Save changes'}
+        </Button>
+        {saved&&<Badge kind="ok">✓ Saved</Badge>}
+        {err&&<span style={{ color:t.danger.base, fontSize:13 }}>{err}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** Main Config tab component */
+function ConfigEditor({ token }) {
+  const [clients,  setClients]  = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [loading,  setLoading]  = useState(true);
+  const [err,      setErr]      = useState('');
+  const [search,   setSearch]   = useState('');
+
+  async function load() {
+    try {
+      const data = await api('GET', '/api/config/clients', null, token);
+      setClients(data);
+      if (!selected && data.length) setSelected(data[0].name);
+    } catch(e) { setErr(e.message); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(()=>{ load(); }, []);
+
+  const filtered = clients.filter(c=>c.name.toLowerCase().includes(search.toLowerCase()));
+  const activeClient = clients.find(c=>c.name===selected);
+
+  if (loading) return <div style={{ padding:40, fontFamily:t.font.mono, color:t.fg[3] }}>Loading configs…</div>;
+  if (err) return <div style={{ padding:40, color:t.danger.base }}>{err}</div>;
+
+  return (
+    <div style={{ display:'flex', height:'calc(100vh - 110px)', overflow:'hidden' }}>
+      {/* Client list sidebar */}
+      <div style={{ width:220, flexShrink:0, borderRight:`1px solid ${t.border.base}`, overflowY:'auto', display:'flex', flexDirection:'column' }}>
+        <div style={{ padding:'12px 14px', borderBottom:`1px solid ${t.border.base}` }}>
+          <Input value={search} onChange={setSearch} placeholder="search clients…" style={{ fontSize:12 }} />
+        </div>
+        <div style={{ flex:1, overflowY:'auto' }}>
+          {filtered.map(c=>(
+            <div key={c.name} onClick={()=>setSelected(c.name)}
+              style={{ padding:'10px 14px', cursor:'pointer', fontSize:13, fontFamily:t.font.sans,
+                background: selected===c.name ? t.bg.surface2 : 'transparent',
+                borderLeft: selected===c.name ? `3px solid ${t.brand.base}` : '3px solid transparent',
+                color: selected===c.name ? t.fg[1] : t.fg[3],
+                borderBottom:`1px solid ${t.border.base}` }}>
+              {c.name}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Editor panel */}
+      <div style={{ flex:1, overflowY:'auto', padding:'24px 32px' }}>
+        {activeClient ? (
+          <div>
+            <div style={{ display:'flex', alignItems:'baseline', gap:12, marginBottom:20 }}>
+              <div style={{ fontFamily:t.font.display, fontSize:20, fontWeight:600, color:t.fg[1] }}>{activeClient.name}</div>
+              <Badge kind="info">{activeClient.requires_jira?'jira required':'no jira'}</Badge>
+              <div style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[4] }}>updated {activeClient.updated_at?.slice(0,16)}</div>
+            </div>
+            <ClientEditPanel key={activeClient.name} client={activeClient} token={token} onSaved={load} />
+          </div>
+        ) : (
+          <div style={{ color:t.fg[4], fontFamily:t.font.mono, fontSize:13 }}>Select a client to edit</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    ROOT APP
    ═════════════════════════════════════════════════════════════════════════ */
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('vp_token') || '');
   const [userName, setUserName] = useState(() => localStorage.getItem('vp_name') || '');
+  const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem('vp_admin') === '1');
   const [mainTab, setMainTab] = useState('Validator');
   const [currentTicket, setCurrentTicket] = useState(null);
   const [queueRows, setQueueRows] = useState([]);
@@ -2676,10 +3499,11 @@ function App() {
   });
   const _deepLinkHandled = React.useRef(false);
 
-  const signIn = (tok, name) => {
+  const signIn = (tok, name, admin) => {
     localStorage.setItem('vp_token', tok);
     localStorage.setItem('vp_name', name);
-    setToken(tok); setUserName(name);
+    localStorage.setItem('vp_admin', admin ? '1' : '0');
+    setToken(tok); setUserName(name); setIsAdmin(!!admin);
     fetchQueue(tok);
     fetchClients(tok);
     fetchSlackStatus(tok);
@@ -2688,8 +3512,8 @@ function App() {
 
   const signOut = async () => {
     try { await api('POST', '/api/auth/logout', null, token); } catch(_){}
-    localStorage.removeItem('vp_token'); localStorage.removeItem('vp_name');
-    setToken(''); setUserName(''); setQueueRows([]); setCurrentTicket(null);
+    localStorage.removeItem('vp_token'); localStorage.removeItem('vp_name'); localStorage.removeItem('vp_admin');
+    setToken(''); setUserName(''); setIsAdmin(false); setQueueRows([]); setCurrentTicket(null);
   };
 
   const fetchQueue = async (tok) => {
@@ -2772,7 +3596,7 @@ function App() {
   return (
     <div style={{ display:'flex', flexDirection:'column', minHeight:'100vh', background:t.bg.app }}>
       <Topbar title="Validator Pro" user={userName} />
-      <MainTabs active={mainTab} onChange={tab=>{ setMainTab(tab); setCurrentTicket(null); }} />
+      <MainTabs active={mainTab} onChange={tab=>{ setMainTab(tab); setCurrentTicket(null); }} isAdmin={isAdmin} />
       <div style={{ display:'flex', flex:1 }}>
         <Sidebar user={userName} onSignOut={signOut} onRefreshSheet={refreshGsheet} onClearCache={clearCache} gsheetStatus={gsheetStatus} slackStatus={slackStatus} onTestSlack={testSlack} schedulerStatus={schedulerStatus} />
         <main style={{ flex:1, padding:'24px 28px', overflow:'auto', minWidth:0 }}>
@@ -2789,6 +3613,8 @@ function App() {
           {mainTab==='Dashboard'&&<Dashboard token={token} />}
           {mainTab==='Sendout Form'&&<SendoutForm token={token} clients={clients} />}
           {mainTab==='AI Examples'&&<ExamplesManager token={token} />}
+          {mainTab==='Config'&&<ConfigEditor token={token} />}
+          {mainTab==='Users'&&isAdmin&&<UsersPanel token={token} />}
 
         </main>
       </div>
