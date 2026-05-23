@@ -465,7 +465,7 @@ def write_ai_status_to_jira(
         return False
 
 
-def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str) -> dict | None:
+def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch_images: bool = True, max_images: int = 10) -> dict | None:
     """
     Return a normalised dict of JIRA ticket data including attachments.
     Returns None on fatal error.
@@ -590,6 +590,10 @@ def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str) -> di
 
     sorted_atts = _sort_attachments(img_atts)
 
+    # Always store sorted attachment metadata (no bytes) so callers can
+    # selectively download later (e.g. bulk mode detects card count first).
+    data["_img_attachments"] = sorted_atts
+
     # Download attachments sequentially using requests with basic auth.
     # The jira session causes "multiple values for timeout" on some attachments,
     # so we use requests directly with explicit basic auth.
@@ -597,25 +601,28 @@ def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str) -> di
     _creds  = _b64.b64encode(f"{email}:{token.strip()}".encode()).decode()
     _headers = {"Authorization": f"Basic {_creds}"}
 
-    for att in sorted_atts[:10]:
-        att_url = getattr(att, "content", None)
-        if not att_url:
-            logger.warning("Attachment '%s' has no content URL", att.filename)
-            continue
-        logger.info("Downloading attachment '%s' from %s", att.filename, att_url)
-        try:
-            r = requests.get(att_url, headers=_headers,
-                             timeout=HTTP_TIMEOUT, allow_redirects=True)
-            logger.info("  -> HTTP %d, %d bytes, content-type: %s",
-                        r.status_code, len(r.content),
-                        r.headers.get("Content-Type", "?"))
-            if r.status_code == 200 and len(r.content) > 100:
-                data["carousel_images"].append({"name": att.filename, "bytes": r.content})
-            else:
-                logger.warning("  -> Failed: HTTP %d body: %s",
-                               r.status_code, r.text[:200])
-        except Exception as exc:
-            logger.error("  -> Exception downloading '%s': %s", att.filename, exc)
+    if not fetch_images:
+        logger.info("Ticket %s: skipping image downloads (fetch_images=False)", ticket_id)
+    else:
+        for att in sorted_atts[:max_images]:
+            att_url = getattr(att, "content", None)
+            if not att_url:
+                logger.warning("Attachment '%s' has no content URL", att.filename)
+                continue
+            logger.info("Downloading attachment '%s' from %s", att.filename, att_url)
+            try:
+                r = requests.get(att_url, headers=_headers,
+                                 timeout=HTTP_TIMEOUT, allow_redirects=True)
+                logger.info("  -> HTTP %d, %d bytes, content-type: %s",
+                            r.status_code, len(r.content),
+                            r.headers.get("Content-Type", "?"))
+                if r.status_code == 200 and len(r.content) > 100:
+                    data["carousel_images"].append({"name": att.filename, "bytes": r.content})
+                else:
+                    logger.warning("  -> Failed: HTTP %d body: %s",
+                                   r.status_code, r.text[:200])
+            except Exception as exc:
+                logger.error("  -> Exception downloading '%s': %s", att.filename, exc)
 
     if data["carousel_images"]:
         data["attachment_bytes"] = data["carousel_images"][0]["bytes"]

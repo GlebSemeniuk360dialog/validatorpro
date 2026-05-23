@@ -1039,7 +1039,8 @@ def run_ai_audit(
     contents: list = [prompt]
 
     if jira_images:
-        contents.append("\n--- JIRA REQUESTED IMAGES (sorted by slide number from filename) ---")
+        contents.append("\n--- JIRA REQUESTED IMAGES (newest revision per card slot, sorted by slide number) ---")
+        # In bulk mode images are pre-filtered: newest attachment per card slot surfaces first.
         # Sort by slide number extracted from filename so image01 -> Slide 1, etc.
         import re as _re
         def _slide_num_ai(name: str) -> int:

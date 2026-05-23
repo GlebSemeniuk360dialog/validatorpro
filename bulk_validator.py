@@ -369,6 +369,69 @@ def _build_audit_payload(
     return comparison_data, dma_image_urls, dma_image_bytes
 
 
+def _detect_card_count(a_data: dict, t_data: dict | None) -> int:
+    """
+    Return the number of carousel cards in this sendout.
+    Falls back to 1 for single-image (non-carousel) sendouts.
+    Capped at 6 to stay within Gemini limits.
+    """
+    # RCS carousel
+    rcs_cards = len(
+        a_data.get("google_rcs_content", {})
+              .get("richCard", {})
+              .get("carouselCard", {})
+              .get("cardContents", [])
+    )
+    if rcs_cards:
+        return min(rcs_cards, 6)
+    # WABA carousel from template components
+    if t_data:
+        for comp in (t_data.get("components") or []):
+            if comp.get("type") == "CAROUSEL":
+                n = len(comp.get("cards", []))
+                if n:
+                    return min(n, 6)
+    # Custom carousel images already extracted (one per card)
+    custom = [img for img in _collect_custom_carousel_images(a_data) if img]
+    if len(custom) > 1:
+        return min(len(custom), 6)
+    return 1  # single-image (regular template)
+
+
+def _download_jira_images(
+    sorted_atts: list,
+    max_images: int,
+    email: str,
+    token: str,
+) -> list[dict]:
+    """
+    Download up to max_images from pre-sorted attachment metadata.
+    sorted_atts comes from j_data["_img_attachments"] — already deduplicated
+    newest-per-slot by fetch_ticket_data.
+    Returns list of {name, bytes} dicts suitable for run_ai_audit(jira_images=...).
+    """
+    import base64 as _b64
+    import requests as _rq
+    _creds   = _b64.b64encode(f"{email}:{token.strip()}".encode()).decode()
+    _headers = {"Authorization": f"Basic {_creds}"}
+    result   = []
+    for att in sorted_atts[:max_images]:
+        att_url = getattr(att, "content", None)
+        if not att_url:
+            continue
+        try:
+            r = _rq.get(att_url, headers=_headers, timeout=15, allow_redirects=True)
+            if r.status_code == 200 and len(r.content) > 100:
+                result.append({"name": getattr(att, "filename", "image"), "bytes": r.content})
+            else:
+                logger.warning("bulk img download HTTP %d for %s", r.status_code,
+                               getattr(att, "filename", "?"))
+        except Exception as exc:
+            logger.warning("bulk img download failed for %s: %s",
+                           getattr(att, "filename", "?"), exc)
+    return result
+
+
 def _collect_custom_carousel_images(api_data) -> list[str | None]:
     images: list[str | None] = []
 
@@ -688,7 +751,7 @@ def _fetch_and_enrich(
     api_token: str,
 ) -> tuple[dict, dict, dict | None, list]:
     """Shared fetch logic for both bulk modes. Raises RuntimeError on failure."""
-    j_data = fetch_ticket_data(jira_server, jira_email, jira_token, ticket_key)
+    j_data = fetch_ticket_data(jira_server, jira_email, jira_token, ticket_key, fetch_images=False)
     if not j_data:
         raise RuntimeError("JIRA fetch returned no data.")
 
@@ -1005,11 +1068,24 @@ def _validate_single_ticket_ai(
             j_data, a_data, t_data, leaflet_data, client
         )
 
+        # Download JIRA images — exactly as many as the template has cards
+        card_count  = _detect_card_count(a_data, t_data)
+        jira_imgs   = _download_jira_images(
+            j_data.get("_img_attachments", []),
+            max_images=card_count,
+            email=jira_email,
+            token=jira_token,
+        )
+        logger.info(
+            "%s: card_count=%d  jira_imgs=%d  dma_imgs=%d",
+            ticket_key, card_count, len(jira_imgs), len(dma_bytes),
+        )
+
         _few_shot = examples_lib.select_for_audit(client) if examples_lib else []
         audit = run_ai_audit(
             gemini_key, gemini_model, comparison_data, client,
-            jira_images=None,
-            dma_images=None,
+            jira_images=jira_imgs or None,
+            dma_images=dma_bytes[:card_count] or None,
             examples=_few_shot,
         )
 
