@@ -759,7 +759,7 @@ def _build_report_from_structured(audit: AuditOutput) -> str:
         lines.append(f"### {e} {NAMES[key]}")
         lines.append(f"**Expected:** {chk.expected}")
         lines.append(f"**Actual:** {chk.actual}")
-        lines.append(f"**Verdict:** {e} {chk.verdict} — {chk.reason}")
+        lines.append(f"**Reason:** {chk.reason}")
         lines.append("")
 
     # Summary table
@@ -1100,10 +1100,17 @@ def run_ai_audit(
                 "Each of the six checks (scheduling, copy, footer, cta, tags, images) must have "
                 "a verdict ('PASS', 'FAIL', or 'NA'), a reason, expected value, and actual value. "
                 "Never merge checks. Never skip a check. "
-                "An empty or missing check field = invalid audit that will be rejected."
+                "An empty or missing check field = invalid audit that will be rejected. "
+                "ABSOLUTE RULE 3: BE CONCISE. "
+                "reason: maximum 2 sentences. "
+                "expected: maximum 80 characters — key value only, no prose. "
+                "actual: maximum 80 characters — key value only, no prose. "
+                "confidence_reason: maximum 1 sentence. "
+                "Total JSON output MUST stay under 3000 characters."
             ),
             response_mime_type="application/json",
             response_schema=AuditOutput,
+            max_output_tokens=2048,
             **({} if _thinking_cfg is None else {"thinking_config": _thinking_cfg}),
         )
 
@@ -1135,8 +1142,35 @@ def run_ai_audit(
                 config=_config,
             ).text
 
+        # ── Sanitise Gemini output before parsing ──────────────────────────────
+        # Strip control characters Gemini occasionally embeds in string values
+        # (all C0 control chars except \t \n \r which are valid in JSON).
+        clean_text = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', raw_text)
+
+        # Detect truncation: JSON string cut off mid-value (EOF in string).
+        # If the last non-whitespace char is not } or ], the response was truncated.
+        _stripped = clean_text.rstrip()
+        if _stripped and _stripped[-1] not in ('}', ']'):
+            logger.warning(
+                "Gemini response appears truncated at %d chars (ends: %r) — "
+                "retrying with stricter brevity instruction",
+                len(clean_text), _stripped[-30:],
+            )
+            _brevity_fix = (
+                "CRITICAL: your previous response was too long and got cut off. "
+                "You MUST be extremely brief: reason ≤ 15 words, expected ≤ 10 words, "
+                "actual ≤ 10 words. Produce the complete valid JSON now:"
+            )
+            _retry2 = list(contents) + [_brevity_fix]
+            raw_text = client.models.generate_content(
+                model=model_name,
+                contents=_retry2,
+                config=_config,
+            ).text or ""
+            clean_text = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', raw_text)
+
         # ── Structured output: parse directly into AuditOutput Pydantic model ──
-        audit = AuditOutput.model_validate_json(raw_text)
+        audit = AuditOutput.model_validate_json(clean_text)
         report = _build_report_from_structured(audit)
         if _is_audit_error(report):
             return {
@@ -1162,8 +1196,9 @@ def run_ai_audit(
         # Pydantic validation failure — structured output mismatch
         if isinstance(exc, ValidationError):
             logger.error("AI audit Pydantic validation failed: %s", exc)
+            _display_raw = locals().get("clean_text") or raw_text
             return {
-                "audit_report": f"AI audit generated, but structured parsing failed: {exc}\n\nRaw output:\n{raw_text}",
+                "audit_report": f"AI audit generated, but structured parsing failed: {exc}\n\nRaw output:\n{_display_raw}",
                 "jira_extracted_urls": [],
                 "api_extracted_urls": [],
                 "error": True,
