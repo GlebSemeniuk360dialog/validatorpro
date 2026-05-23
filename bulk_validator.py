@@ -1117,6 +1117,39 @@ def _validate_single_ticket_ai(
             result.structured        = _s
             result.overrides         = audit.get("overrides", [])
 
+            # ── Data-quality confidence penalty ────────────────────────────────
+            # If key template data was absent, the AI's copy/footer checks were
+            # speculative — cap confidence to prevent false auto-approvals.
+            _has_template_body = bool(
+                comparison_data.get("DMA_API_Setup", {}).get("Template_Body_Intro")
+                or comparison_data.get("DMA_API_Setup", {}).get("Template_Carousel_Cards")
+            )
+            _has_jira_desc = bool(
+                str(comparison_data.get("JIRA_Intent", {}).get("Text_Description", "")).strip()
+            )
+            if not _has_template_body and result.confidence > 55:
+                old_conf = result.confidence
+                result.confidence = 55
+                result.confidence_reason = (
+                    f"[Auto-capped: no DMA template body — copy check was speculative] "
+                    + result.confidence_reason
+                )
+                logger.warning(
+                    "%s: confidence capped %d→55%% — no template body in comparison data",
+                    ticket_key, old_conf,
+                )
+            elif not _has_jira_desc and result.confidence > 65:
+                old_conf = result.confidence
+                result.confidence = 65
+                result.confidence_reason = (
+                    f"[Auto-capped: no JIRA description — copy check unverifiable] "
+                    + result.confidence_reason
+                )
+                logger.warning(
+                    "%s: confidence capped %d→65%% — no JIRA description",
+                    ticket_key, old_conf,
+                )
+
             if result.issues_found > 0:
                 # Issues found — reject regardless of confidence
                 result.status = "failed"

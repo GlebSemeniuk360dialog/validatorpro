@@ -71,64 +71,32 @@ DATA TO AUDIT (JSON):
 {comparison_json}
 
 ══════════════════════════════════════════════════════════
-MANDATORY AUDIT PROTOCOL — EXECUTE EVERY CHECK IN ORDER
+AUDIT PROTOCOL — TWO-STEP CONFIRMATION PROCESS
 ══════════════════════════════════════════════════════════
-You MUST complete ALL SIX checks below. Do NOT skip any check. Do NOT merge checks.
+STEP 1 — READ Pre_Verdict_Summary FIRST (top of the JSON).
+  It contains Python-computed verdicts for all checks. Your default is to ACCEPT them.
+  You may OVERRIDE a pre_verdict ONLY if you have a specific, articulable reason:
+    • A Comment_Thread entry shows the client approved a change (makes a FAIL acceptable)
+    • A prompt rule below explicitly marks a pattern as acceptable (template variables, short URLs, etc.)
+  Do NOT override "just because it looks fine" — the pre-computed math is reliable.
+  Do NOT override scheduling or tag diffs — those are exact arithmetic and set comparisons.
 
-For each check, populate these four fields:
+STEP 2 — FOR EACH OF THE SIX CHECKS, produce a JSON field:
   verdict:  "PASS", "FAIL", or "NA" (exact string — no emoji, no extra text)
-  reason:   ONE sentence in English explaining the verdict
-  expected: brief exact value from JIRA / G-Sheet
-  actual:   brief exact value from DMA API / Template
+  reason:   ONE sentence stating what the pre_verdict was and whether you confirmed or overrode it
+  expected: brief exact value from JIRA / G-Sheet (≤80 chars)
+  actual:   brief exact value from DMA API / Template (≤80 chars)
 
-N/A rules: use "NA" ONLY when the check genuinely cannot be evaluated
-(e.g. CHECK 6 when no images were provided). "NA" is NEVER correct just because
-data looks fine — that is "PASS".
-
-——— IMPORTANT — USE PRE-COMPUTED DIFFS ———
-The comparison data includes a "Precomputed_Diffs" section with Python-calculated results.
-These diffs are reliable starting points — you MUST confirm or override them using the
-rules listed further below. They reduce your workload: you are confirming, not re-discovering.
-
-  Precomputed_Diffs.scheduling:
-    • diff_minutes = absolute difference between JIRA local clock and API local clock
-    • within_40min_tolerance = True → pre_verdict PASS, False → pre_verdict FAIL
-    • Apply SCHEDULING RULE below; override only if a special exception applies (e.g. ALDI Portugal).
-
-  Precomputed_Diffs.copy_text:
-    • similarity_ratio = 0.0–1.0 (≥0.92 = nearly identical, ≥0.75 = similar, <0.75 = divergent)
-    • pre_verdict: PASS if ≥0.75, FAIL if <0.75 — confirm using intent and the COPY RULES below.
-    • A low ratio can be PASS if explained by template variables, placeholder substitution, etc.
-
-  Precomputed_Diffs.tags:
-    • missing_include / extra_include / missing_exclude / extra_exclude are Python set diffs.
-    • pre_verdict PASS means zero deviations detected. Confirm using TAG RULES below.
-    • Note: the tag parser is basic — use the rules to adjudicate ambiguous cases.
-
-  Precomputed_Diffs.cta_urls:
-    • image_urls_ignored = count of CDN/storage image URLs already stripped out.
-    • missing_from_api / extra_in_api are CTA-only URL diffs.
-    • pre_verdict PASS means CTA URLs match after filtering. Apply CTA RULES below.
-
-  Precomputed_Diffs.carousel:
-    • jira_slide_count = number of slides detected in JIRA (from parsed_carousel list or Slide N: labels).
-    • dma_card_count   = number of non-empty cards in the DMA template.
-    • count_match = True/False (or absent if pre_verdict=NA — not a carousel sendout).
-    • pre_verdict FAIL means JIRA and DMA have DIFFERENT numbers of carousel cards.
-      ❌ A card count mismatch is an IMMEDIATE FAIL for CHECK 2 (copy) — do not look further.
-    • pre_verdict NA means no carousel was detected or JIRA has no countable slides — evaluate normally.
-    • pre_verdict PASS means counts match — proceed to verify card CONTENT.
-
-CHECK 1 — SCHEDULING: Compare JIRA date/time to DMA Date_Time. Apply SCHEDULING RULE.
-CHECK 2 — COPY: Compare DMA template body to JIRA description. Apply TEXT/COPY RULES.
-CHECK 3 — FOOTER: Compare DMA footer to JIRA footer spec. Apply FOOTER RULE.
-CHECK 4 — CTA BUTTONS & LINKS: Check DMA button names and URLs against JIRA. Apply CTA RULES.
-CHECK 5 — TAGS / AUDIENCE FILTERS: Compare DMA include/exclude tags to G-Sheet intent. Apply TAG RULES.
+CHECK 1 — SCHEDULING:  Use Precomputed_Diffs.scheduling. Accept pre_verdict. Override only for ALDI Portugal (18/19h rule).
+CHECK 2 — COPY:        Use Precomputed_Diffs.copy_text + carousel. Accept pre_verdict unless comments show approved text change.
+CHECK 3 — FOOTER:      Use Precomputed_Diffs.footer. Accept pre_verdict directly — empty JIRA footer = always PASS.
+CHECK 4 — CTA:         Use Precomputed_Diffs.cta_button (button text) + cta_urls (links). Accept both pre_verdicts unless override rule applies.
+CHECK 5 — TAGS:        Use Precomputed_Diffs.tags. Accept pre_verdict. The tag diff is exact Python set math.
+CHECK 6 — IMAGES:      Evaluate visually if images are attached. Otherwise "NA".
   Tags check ALWAYS has a verdict — never "NA" even if G-Sheet tags are empty.
-  (empty G-Sheet tags = no include filter required → PASS if DMA has no unexpected extra filters)
-CHECK 6 — IMAGES / CAROUSEL: If images were provided, compare visually. If no images → "NA".
 
 overall = "PASS" only if every check is "PASS" or "NA". If ANY check is "FAIL" → overall = "FAIL".
+N/A rules: use "NA" ONLY when the check genuinely cannot be evaluated (no images = CHECK 6 NA).
 ══════════════════════════════════════════════════════════
 
 REQUIRED CHECKS & RULES (apply inside the protocol steps above):
@@ -681,6 +649,53 @@ def _compute_carousel_diff(
     }
 
 
+def _compute_footer_verdict(jira_footer: str, dma_footer: str) -> dict:
+    """
+    Deterministic footer comparison.
+    Rule: JIRA empty footer → always PASS (DMA default is fine).
+          JIRA non-empty footer → exact string match required.
+    """
+    jira_clean = str(jira_footer or "").strip()
+    dma_clean  = str(dma_footer  or "").strip()
+    if not jira_clean:
+        return {
+            "pre_verdict": "PASS",
+            "note": "JIRA has no footer — DMA default footer is acceptable (RULE: empty JIRA footer = always PASS)",
+        }
+    match = jira_clean == dma_clean
+    return {
+        "pre_verdict": "PASS" if match else "FAIL",
+        "jira_footer": jira_clean[:150],
+        "dma_footer":  dma_clean[:150],
+        "note": "✅ Footer matches exactly" if match else f"❌ Footer mismatch",
+    }
+
+
+def _compute_cta_button_verdict(jira_btn: str, tmpl_buttons: list[str]) -> dict:
+    """
+    Deterministic CTA button text comparison.
+    tmpl_buttons contains strings like "Zum Angebot (URL)"; extract text before " (".
+    """
+    from utils import clean_button_text
+    jira_clean = clean_button_text(str(jira_btn or "")).strip().lower()
+    if not jira_clean:
+        return {"pre_verdict": "NA", "note": "No CTA button specified in JIRA"}
+    # Extract text portion from "Text (TYPE)" format
+    raw_texts  = [(b.rsplit(" (", 1)[0].strip() if " (" in b else b.strip()) for b in tmpl_buttons]
+    clean_api  = [clean_button_text(b).strip().lower() for b in raw_texts]
+    match = jira_clean in clean_api
+    return {
+        "pre_verdict": "PASS" if match else "FAIL",
+        "jira_button": jira_btn,
+        "dma_buttons": raw_texts[:6],
+        "note": (
+            f"✅ Button '{jira_btn}' found in DMA template"
+            if match else
+            f"❌ Button '{jira_btn}' NOT in DMA buttons: {raw_texts[:6]}"
+        ),
+    }
+
+
 def _get_client_mandatory_filters(client_name: str, api_date: str = "") -> str:
     """
     Derive mandatory system filters for a client from CLIENT_CONFIGS.
@@ -866,25 +881,57 @@ def build_comparison_data(
         expected_excl = _norm_tags(str(jira.get("gsheet_exclude_tags", "")))
 
     # ── Pre-compute diffs so AI confirms results rather than discovering them ──
-    _jira_url_list = extract_urls(jira_all_text)
-    _sched_diff    = _compute_scheduling_diff(
+    _jira_url_list  = extract_urls(jira_all_text)
+    _sched_diff     = _compute_scheduling_diff(
         str(jira.get("date", "")),
         api_date or str(jira.get("date", "")),
     )
-    _text_diff     = _compute_text_similarity(
+    _text_diff      = _compute_text_similarity(
         str(jira.get("description", "")),
         tmpl_body,
     )
-    _tag_diff      = _compute_tag_diff(expected_incl, expected_excl, api_tag_str)
-    _url_diff      = _compute_url_diff(_jira_url_list, list(filter(None, api_urls)))
-    _carousel_diff = _compute_carousel_diff(
+    _tag_diff       = _compute_tag_diff(expected_incl, expected_excl, api_tag_str)
+    _url_diff       = _compute_url_diff(_jira_url_list, list(filter(None, api_urls)))
+    _carousel_diff  = _compute_carousel_diff(
         str(jira.get("description", "")),
         jira.get("parsed_carousel"),
         dma_carousel_texts,
     )
+    _footer_diff    = _compute_footer_verdict(
+        str(jira.get("footer_text", "")),
+        tmpl_footer,
+    )
+    _cta_btn_diff   = _compute_cta_button_verdict(
+        str(jira.get("cta_button", "")),
+        tmpl_buttons,
+    )
     _mandatory_filters = _get_client_mandatory_filters(client_name, api_date)
 
+    # ── Flat summary table — AI reads this FIRST before diving into raw data ──
+    def _pv(d: dict) -> str:
+        return d.get("pre_verdict", "NA")
+    _has_comments = bool(str(jira.get("comments", "")).strip())
+    _pvs = {
+        "⚡_scheduling":  f"{_pv(_sched_diff)}  |  {_sched_diff.get('note', '')}",
+        "⚡_copy_text":   f"{_pv(_text_diff)}  |  similarity={_text_diff.get('similarity_ratio','?')}  |  {_text_diff.get('assessment','')}",
+        "⚡_footer":      f"{_pv(_footer_diff)}  |  {_footer_diff.get('note', '')}",
+        "⚡_cta_button":  f"{_pv(_cta_btn_diff)}  |  {_cta_btn_diff.get('note', '')}",
+        "⚡_cta_urls":    f"{_pv(_url_diff)}  |  {_url_diff.get('note', '')}",
+        "⚡_tags":        f"{_pv(_tag_diff)}  |  {_tag_diff.get('note', '')}",
+        "⚡_carousel":    f"{_pv(_carousel_diff)}  |  {_carousel_diff.get('note', '')}",
+        "⚡_images":      "NA  |  Evaluate visually if images are attached below",
+        "INSTRUCTION": (
+            "START HERE. These are pre-computed verdicts. "
+            "For each check: ACCEPT the pre_verdict unless you have a SPECIFIC reason to override. "
+            "Valid override reasons: (1) Comment_Thread contains a client-approved change that "
+            "makes a FAIL acceptable, (2) A rule in the prompt explicitly marks something as PASS. "
+            "Do NOT override just because something 'looks ok' — trust the math."
+            + (" ⚠️ Comment_Thread is non-empty — check for client-requested changes that may override the original config." if _has_comments else "")
+        ),
+    }
+
     return {
+        "Pre_Verdict_Summary": _pvs,          # ← AI reads this first
         "JIRA_Intent": {
             "Date": str(jira.get("date", "")),
             "Timezone": str(jira.get("timezone", "")),
@@ -903,7 +950,7 @@ def build_comparison_data(
             "CRITICAL": "If Exclude_Tags is non-empty, DMA MUST have matching exclude filters. Missing/wrong excludes = ❌ FAIL." if expected_excl else "",
         },
         "DMA_API_Setup": {
-            "Date_Time": api_date or str(jira.get("date", "")),  # Raw API scheduled_date
+            "Date_Time": api_date or str(jira.get("date", "")),
             "Timezone": str(jira.get("timezone", "")),
             "Template_Body_Intro": tmpl_body,
             "Template_Carousel_Cards": dma_carousel_texts,
@@ -921,11 +968,13 @@ def build_comparison_data(
             ) if _mandatory_filters else "",
         },
         "Precomputed_Diffs": {
-            "scheduling": _sched_diff,
-            "copy_text":  _text_diff,
-            "tags":       _tag_diff,
-            "cta_urls":   _url_diff,
-            "carousel":   _carousel_diff,
+            "scheduling":  _sched_diff,
+            "copy_text":   _text_diff,
+            "footer":      _footer_diff,
+            "cta_button":  _cta_btn_diff,
+            "cta_urls":    _url_diff,
+            "tags":        _tag_diff,
+            "carousel":    _carousel_diff,
         },
     }
 
@@ -1174,18 +1223,54 @@ def _enforce_precomputed_verdicts(
                 actual=audit.tags.actual,
             )
 
-    if not updates:
-        return audit, overrides
+    # ── 4. Footer — deterministic string match ─────────────────────────────────
+    footer = diffs.get("footer", {})
+    if footer.get("pre_verdict") == "FAIL" and audit.footer.verdict == "PASS":
+        overrides.append(f"footer: AI said PASS but string diff found mismatch — forced FAIL")
+        updates["footer"] = CheckVerdict(
+            verdict="FAIL",
+            reason=(
+                f"Footer mismatch: JIRA='{footer.get('jira_footer','?')[:60]}' "
+                f"vs DMA='{footer.get('dma_footer','?')[:60]}'. "
+                f"[Deterministic override — AI verdict was PASS.]"
+            ),
+            expected=footer.get("jira_footer", audit.footer.expected)[:80],
+            actual=footer.get("dma_footer",   audit.footer.actual)[:80],
+        )
 
-    # Apply updates, then recompute overall
-    audit = audit.model_copy(update=updates)
+    # ── 5. CTA button text mismatch ────────────────────────────────────────────
+    cta_btn = diffs.get("cta_button", {})
+    if cta_btn.get("pre_verdict") == "FAIL" and audit.cta.verdict == "PASS":
+        overrides.append(
+            f"cta: AI said PASS but button text not found in DMA "
+            f"(JIRA='{cta_btn.get('jira_button','?')}', DMA={cta_btn.get('dma_buttons',[])}) — forced FAIL"
+        )
+        updates["cta"] = CheckVerdict(
+            verdict="FAIL",
+            reason=(
+                f"CTA button '{cta_btn.get('jira_button','?')}' not found in DMA template buttons. "
+                f"[Deterministic override — AI verdict was PASS.]"
+            ),
+            expected=str(cta_btn.get("jira_button", audit.cta.expected))[:80],
+            actual=str(cta_btn.get("dma_buttons", [audit.cta.actual]))[:80],
+        )
+
+    # Apply updates, then always recompute overall for consistency
+    if updates:
+        audit = audit.model_copy(update=updates)
+
+    # ── 6. Overall consistency guard (always runs, even without updates) ───────
     all_verdicts = [
         audit.scheduling.verdict, audit.copy.verdict, audit.footer.verdict,
         audit.cta.verdict, audit.tags.verdict, audit.images.verdict,
     ]
-    new_overall = "FAIL" if any(v == "FAIL" for v in all_verdicts) else "PASS"
-    if new_overall != audit.overall:
-        audit = audit.model_copy(update={"overall": new_overall})
+    correct_overall = "FAIL" if any(v == "FAIL" for v in all_verdicts) else "PASS"
+    if audit.overall != correct_overall:
+        if not updates:   # log only if we didn't already update something
+            overrides.append(
+                f"overall: AI said {audit.overall} but checks are {all_verdicts} — corrected to {correct_overall}"
+            )
+        audit = audit.model_copy(update={"overall": correct_overall})
 
     return audit, overrides
 
