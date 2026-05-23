@@ -3,11 +3,13 @@ ai_audit.py — Gemini-powered deep audit logic.
 Isolated from Streamlit so it can be called from tests or CLI.
 """
 
+import copy
 import difflib
 import io
 import json
 import logging
 import re as _re
+import time
 from datetime import datetime as _dt
 from typing import Literal
 
@@ -734,7 +736,7 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "") -> str:
     return ", ".join(parts) if parts else ""
 
 
-def _build_report_from_structured(audit: AuditOutput) -> str:
+def _build_report_from_structured(audit: "AuditOutput", overrides: list[str] | None = None) -> str:
     """Generate a human-readable markdown report from structured AuditOutput."""
     EMOJI = {"PASS": "✅", "FAIL": "❌", "NA": "🔕"}
     NAMES = {
@@ -781,6 +783,15 @@ def _build_report_from_structured(audit: AuditOutput) -> str:
     lines.append("")
     lines.append(f"**Overall: {ov_e} {audit.overall}**")
     lines.append(f"**Confidence: {audit.confidence}%** — {audit.confidence_reason}")
+
+    # Show any deterministic overrides applied
+    if overrides:
+        lines.append("")
+        lines.append("### ⚠️ DETERMINISTIC OVERRIDES")
+        lines.append("*The following AI verdicts were overridden by pre-computed checks:*")
+        for ov in overrides:
+            lines.append(f"- {ov}")
+
     return "\n".join(lines)
 
 
@@ -1013,6 +1024,172 @@ def _extract_json(raw_text: str) -> str:
     return raw_text.strip()
 
 
+# ── Reliability helpers ────────────────────────────────────────────────────────
+
+def _generate_with_retry(client, model_name: str, contents, config, max_retries: int = 3) -> str:
+    """
+    Call Gemini with exponential backoff on 429 / 503 / RESOURCE_EXHAUSTED errors.
+    Waits 4 s, then 8 s before the final attempt. Raises on non-retryable errors
+    or after exhausting retries.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(
+                model=model_name, contents=contents, config=config
+            ).text
+        except Exception as exc:
+            err = str(exc)
+            retryable = (
+                "429" in err
+                or "RESOURCE_EXHAUSTED" in err.upper()
+                or "503" in err
+                or "UNAVAILABLE" in err.upper()
+                or "overload" in err.lower()
+                or "high demand" in err.lower()
+            )
+            if retryable and attempt < max_retries - 1:
+                wait = 4 * (2 ** attempt)   # 4 s, then 8 s
+                logger.warning(
+                    "Gemini rate-limit/overload (attempt %d/%d) — retrying in %ds: %s",
+                    attempt + 1, max_retries, wait, exc,
+                )
+                time.sleep(wait)
+                last_exc = exc
+                continue
+            raise
+    raise last_exc  # type: ignore[misc]
+
+
+def _trim_comparison_data(data: dict) -> dict:
+    """
+    Cap large string fields in comparison_data before sending to Gemini.
+    Prevents the prompt from growing too large and causing JSON truncation.
+    """
+    d = copy.deepcopy(data)
+
+    jira = d.get("JIRA_Intent", {})
+    # Description: keep full carousel structure but cap at 4000 chars
+    if isinstance(jira.get("Text_Description"), str) and len(jira["Text_Description"]) > 4000:
+        jira["Text_Description"] = jira["Text_Description"][:4000] + "\n[...trimmed]"
+    # Comment thread: keep newest comments (tail) — they are most likely to override original
+    if isinstance(jira.get("Comment_Thread"), str) and len(jira["Comment_Thread"]) > 2000:
+        thread = jira["Comment_Thread"]
+        jira["Comment_Thread"] = "[...older comments trimmed...]\n" + thread[-2000:]
+
+    dma = d.get("DMA_API_Setup", {})
+    if isinstance(dma.get("Template_Body_Intro"), str) and len(dma["Template_Body_Intro"]) > 1200:
+        dma["Template_Body_Intro"] = dma["Template_Body_Intro"][:1200] + "[...trimmed]"
+    if isinstance(dma.get("Template_Carousel_Cards"), list):
+        dma["Template_Carousel_Cards"] = [
+            (c[:500] + "[...trimmed]") if isinstance(c, str) and len(c) > 500 else c
+            for c in dma["Template_Carousel_Cards"]
+        ]
+
+    return d
+
+
+def _enforce_precomputed_verdicts(
+    audit: "AuditOutput", comparison_data: dict
+) -> tuple["AuditOutput", list[str]]:
+    """
+    Override AI PASS verdicts when deterministic pre-computed data clearly shows FAIL.
+
+    Only enforces on objectively measurable checks:
+      - scheduling: diff_minutes is exact math — >40 min is always FAIL
+      - carousel:   card count mismatch is structural — wrong count is always FAIL
+      - tags:       missing/unexpected exclude tags violate a strict rule
+
+    We deliberately do NOT override copy, footer, or CTA — those require
+    interpretation that the AI is better at than simple set comparisons.
+    """
+    diffs   = comparison_data.get("Precomputed_Diffs", {})
+    updates: dict = {}
+    overrides: list[str] = []
+
+    # ── 1. Scheduling ──────────────────────────────────────────────────────────
+    sched    = diffs.get("scheduling", {})
+    diff_min = sched.get("diff_minutes")
+    if (
+        sched.get("pre_verdict") == "FAIL"
+        and diff_min is not None
+        and float(diff_min) > 40
+        and audit.scheduling.verdict == "PASS"
+    ):
+        overrides.append(
+            f"scheduling: AI said PASS but diff={diff_min}min > 40 min tolerance "
+            f"({sched.get('jira_local_clock')} vs {sched.get('api_local_clock')}) — forced FAIL"
+        )
+        updates["scheduling"] = CheckVerdict(
+            verdict="FAIL",
+            reason=(
+                f"Schedule diff is {diff_min} min, exceeding 40-min tolerance. "
+                f"[Deterministic override — AI verdict was PASS.]"
+            ),
+            expected=audit.scheduling.expected or str(sched.get("jira_local_clock", "")),
+            actual=audit.scheduling.actual or str(sched.get("api_local_clock", "")),
+        )
+
+    # ── 2. Carousel card count mismatch ────────────────────────────────────────
+    carousel = diffs.get("carousel", {})
+    if (
+        carousel.get("pre_verdict") == "FAIL"
+        and carousel.get("count_match") is False        # explicit False, not None/absent
+        and audit.copy.verdict == "PASS"
+    ):
+        jn = carousel.get("jira_slide_count", "?")
+        dn = carousel.get("dma_card_count", "?")
+        overrides.append(
+            f"copy: AI said PASS but carousel count mismatch JIRA={jn} vs DMA={dn} — forced FAIL"
+        )
+        updates["copy"] = CheckVerdict(
+            verdict="FAIL",
+            reason=(
+                f"Carousel card count mismatch: JIRA has {jn} slide(s) but DMA has {dn} card(s). "
+                f"[Deterministic override — AI verdict was PASS.]"
+            ),
+            expected=f"{jn} carousel cards",
+            actual=f"{dn} carousel cards",
+        )
+
+    # ── 3. Tag exclude/include mismatches ──────────────────────────────────────
+    tags = diffs.get("tags", {})
+    if tags.get("pre_verdict") == "FAIL" and audit.tags.verdict == "PASS":
+        missing_exc = tags.get("missing_exclude", [])
+        extra_exc   = tags.get("extra_exclude",   [])
+        missing_inc = tags.get("missing_include", [])
+        issues: list[str] = []
+        if missing_exc: issues.append(f"missing exclude tags: {missing_exc}")
+        if extra_exc:   issues.append(f"unexpected exclude tags: {extra_exc}")
+        if missing_inc: issues.append(f"missing include tags: {missing_inc}")
+        if issues:
+            overrides.append(f"tags: AI said PASS but deterministic diff found: {'; '.join(issues)} — forced FAIL")
+            updates["tags"] = CheckVerdict(
+                verdict="FAIL",
+                reason=(
+                    f"Tag diff: {'; '.join(issues)}. "
+                    f"[Deterministic override — AI verdict was PASS.]"
+                ),
+                expected=audit.tags.expected,
+                actual=audit.tags.actual,
+            )
+
+    if not updates:
+        return audit, overrides
+
+    # Apply updates, then recompute overall
+    audit = audit.model_copy(update=updates)
+    all_verdicts = [
+        audit.scheduling.verdict, audit.copy.verdict, audit.footer.verdict,
+        audit.cta.verdict, audit.tags.verdict, audit.images.verdict,
+    ]
+    new_overall = "FAIL" if any(v == "FAIL" for v in all_verdicts) else "PASS"
+    if new_overall != audit.overall:
+        audit = audit.model_copy(update={"overall": new_overall})
+
+    return audit, overrides
+
+
 def run_ai_audit(
     api_key: str,
     model_name: str,
@@ -1030,9 +1207,12 @@ def run_ai_audit(
     from ai_examples import format_examples_for_prompt
     client = genai.Client(api_key=api_key)
 
+    # Trim large fields before serialising to JSON — prevents 65k-char truncation
+    trimmed_data = _trim_comparison_data(comparison_data)
+
     prompt = _AUDIT_PROMPT_TEMPLATE.format(
         client_name=client_name,
-        comparison_json=json.dumps(comparison_data, indent=2),
+        comparison_json=json.dumps(trimmed_data, indent=2),
         examples_block=format_examples_for_prompt(examples or []),
     )
 
@@ -1119,11 +1299,8 @@ def run_ai_audit(
             non_latin = sum(1 for c in text if ord(c) > 0x036F)
             return non_latin > 20  # more than 20 non-Latin chars = likely wrong language
 
-        raw_text = client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=_config,
-        ).text
+        # Use retry-aware wrapper (handles 429 / 503 with exponential backoff)
+        raw_text = _generate_with_retry(client, model_name, contents, _config)
 
         # If response is in wrong language, retry once with reinforced instruction prepended
         if _has_non_english(raw_text):
@@ -1135,12 +1312,9 @@ def run_ai_audit(
                 "Do NOT use Japanese, Chinese, German, French, Italian, Korean, Arabic, or any other language. "
                 "ENGLISH ONLY. Produce the full JSON audit now, entirely in English:"
             )
-            _retry_contents = [_lang_fix] + list(contents)
-            raw_text = client.models.generate_content(
-                model=model_name,
-                contents=_retry_contents,
-                config=_config,
-            ).text
+            raw_text = _generate_with_retry(
+                client, model_name, [_lang_fix] + list(contents), _config
+            )
 
         # ── Sanitise Gemini output before parsing ──────────────────────────────
         # Strip control characters Gemini occasionally embeds in string values
@@ -1161,17 +1335,23 @@ def run_ai_audit(
                 "You MUST be extremely brief: reason ≤ 15 words, expected ≤ 10 words, "
                 "actual ≤ 10 words. Produce the complete valid JSON now:"
             )
-            _retry2 = list(contents) + [_brevity_fix]
-            raw_text = client.models.generate_content(
-                model=model_name,
-                contents=_retry2,
-                config=_config,
-            ).text or ""
+            raw_text = _generate_with_retry(
+                client, model_name, list(contents) + [_brevity_fix], _config
+            ) or ""
             clean_text = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', raw_text)
 
         # ── Structured output: parse directly into AuditOutput Pydantic model ──
         audit = AuditOutput.model_validate_json(clean_text)
-        report = _build_report_from_structured(audit)
+
+        # ── Deterministic override: AI cannot override hard math ───────────────
+        audit, overrides = _enforce_precomputed_verdicts(audit, comparison_data)
+        if overrides:
+            logger.warning(
+                "Deterministic override(s) applied for %s: %s",
+                client_name, " | ".join(overrides),
+            )
+
+        report = _build_report_from_structured(audit, overrides)
         if _is_audit_error(report):
             return {
                 "audit_report": report,
@@ -1189,6 +1369,7 @@ def run_ai_audit(
             "confidence_reason": audit.confidence_reason,
             "jira_extracted_urls": [],
             "api_extracted_urls": [],
+            "overrides": overrides,     # list of deterministic overrides applied
         }
     except Exception as exc:
         from pydantic import ValidationError

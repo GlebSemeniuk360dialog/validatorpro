@@ -475,6 +475,7 @@ function BulkResultPanel({ results, mode, onBack }) {
   const failed  = results.filter(r=>r.status==='failed').length;
   const skipped = results.filter(r=>r.status==='skipped').length;
   const errors  = results.filter(r=>r.status==='error').length;
+  const reviews = results.filter(r=>r.status==='review').length;
   const avgConf = mode==='ai' ? (() => {
     const cs = results.filter(r=>r.confidence>=0).map(r=>r.confidence);
     return cs.length ? Math.round(cs.reduce((a,b)=>a+b,0)/cs.length) : null;
@@ -485,6 +486,7 @@ function BulkResultPanel({ results, mode, onBack }) {
     failed:  { bg:t.danger.soft, fg:t.danger.base,  bd:t.danger.ring, icon:'❌' },
     skipped: { bg:t.warn.soft,   fg:t.warn.base,    bd:t.warn.ring,   icon:'⏭' },
     error:   { bg:t.danger.soft, fg:t.danger.base,  bd:t.danger.ring, icon:'⚠️' },
+    review:  { bg:t.warn.soft,   fg:t.warn.base,    bd:t.warn.ring,   icon:'👀' },
   }[s] || { bg:t.bg.surface3, fg:t.fg[3], bd:t.border.base, icon:'—' });
 
   const confColor = c => c >= 80 ? t.ok.base : c >= 60 ? t.warn.base : t.danger.base;
@@ -506,6 +508,7 @@ function BulkResultPanel({ results, mode, onBack }) {
           <div style={{ marginLeft:'auto', display:'flex', gap:20 }}>
             <Readout label="Passed"  value={<span>{passed}</span>}  valueKind="ok" />
             <Readout label="Failed"  value={<span>{failed}</span>}  valueKind={failed>0?'danger':undefined} />
+            {reviews>0 && <Readout label="Manual Review" value={<span>{reviews}</span>} valueKind="warn" />}
             <Readout label="Skipped" value={<span>{skipped}</span>} valueKind={skipped>0?'warn':undefined} />
             {errors>0 && <Readout label="Errors" value={<span>{errors}</span>} valueKind="danger" />}
             {avgConf!=null && <Readout label="Avg Confidence" value={<span style={{color:confColor(avgConf)}}>{avgConf}%</span>} />}
@@ -530,7 +533,8 @@ function BulkResultPanel({ results, mode, onBack }) {
           // Build inline summary text
           const inlineSummary = (() => {
             if (r.status === 'skipped') return 'No sendout ID found';
-            if (r.error_msg) return r.error_msg.slice(0, 60) + (r.error_msg.length > 60 ? '…' : '');
+            if (r.status === 'review') return `Low confidence (${r.confidence}%) — manual review required`;
+            if (r.error_msg && r.status !== 'review') return r.error_msg.slice(0, 60) + (r.error_msg.length > 60 ? '…' : '');
             if (overall) return overall;
             if (failedNames.length > 0) return `Failed: ${failedNames.slice(0,3).join(', ')}`;
             if (r.issues_found > 0) return `${r.issues_found} issue(s) found`;
@@ -587,8 +591,19 @@ function BulkResultPanel({ results, mode, onBack }) {
                     </div>
                   )}
 
+                  {/* Manual review warning */}
+                  {r.status==='review' && (
+                    <div style={{ padding:'12px 16px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12, display:'flex', gap:10, alignItems:'flex-start' }}>
+                      <span style={{ fontSize:16, flexShrink:0 }}>👀</span>
+                      <div>
+                        <div style={{ fontWeight:600, marginBottom:3 }}>Manual Review Required — NOT auto-approved</div>
+                        <div style={{ color:t.fg[2] }}>{r.error_msg}</div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Error / skip messages */}
-                  {r.error_msg && <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:12 }}>⚠️ {r.error_msg}</div>}
+                  {r.error_msg && r.status!=='review' && <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:12 }}>⚠️ {r.error_msg}</div>}
                   {r.status==='skipped' && <div style={{ padding:'10px 14px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12 }}>No matching sendout ID found in DMA or G-Sheet.</div>}
 
                   {/* Regular check rows */}

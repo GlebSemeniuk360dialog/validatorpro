@@ -46,13 +46,18 @@ logger = logging.getLogger(__name__)
 
 RATE_LIMIT_DELAY = 3  # seconds between Gemini calls
 
+# Minimum AI confidence to auto-approve a sendout.
+# Results below this threshold are marked "review" and NOT written to JIRA —
+# a human must inspect them before approving.
+CONFIDENCE_THRESHOLD = 70
+
 
 @dataclass
 class BulkTicketResult:
     ticket_key: str
     client: str
     sendout_id: str
-    status: str = "pending"        # pending | running | passed | failed | skipped | error
+    status: str = "pending"        # pending | running | passed | failed | skipped | error | review
     mode: str = "ai"               # ai | regular
     issues_found: int = 0
     report: str = ""
@@ -66,6 +71,8 @@ class BulkTicketResult:
     gsheet_row: dict = field(default_factory=dict)  # matched G-Sheet row for display
     confidence: int = -1           # AI confidence score 0-100 (-1 = not set)
     confidence_reason: str = ""    # AI explanation of confidence
+    structured: dict = field(default_factory=dict)  # per-check structured verdicts
+    overrides: list = field(default_factory=list)   # deterministic overrides applied
 
 
 def _detect_client(issue: dict) -> str:
@@ -1105,12 +1112,34 @@ def _validate_single_ticket_ai(
                 sum(1 for k in _CHK if isinstance(_s.get(k), dict) and _s[k].get("verdict") == "FAIL")
                 if _s else report.count("❌")
             )
-            result.confidence   = int(audit.get("confidence", -1))
+            result.confidence        = int(audit.get("confidence", -1))
             result.confidence_reason = str(audit.get("confidence_reason", ""))
-            result.status = "failed" if result.issues_found > 0 else "passed"
+            result.structured        = _s
+            result.overrides         = audit.get("overrides", [])
 
-            jira_status = "Rejected" if result.issues_found > 0 else "Approved"
-            write_ai_status_to_jira(jira_server, jira_email, jira_token, ticket_key, jira_status)
+            if result.issues_found > 0:
+                # Issues found — reject regardless of confidence
+                result.status = "failed"
+                write_ai_status_to_jira(jira_server, jira_email, jira_token, ticket_key, "Rejected")
+
+            elif result.confidence >= 0 and result.confidence < CONFIDENCE_THRESHOLD:
+                # Passed but AI is not confident enough — require human review
+                result.status = "review"
+                result.error_msg = (
+                    f"AI passed all checks but confidence is only {result.confidence}% "
+                    f"(threshold: {CONFIDENCE_THRESHOLD}%). "
+                    f"Manual review required before approving. Reason: {result.confidence_reason}"
+                )
+                logger.warning(
+                    "%s: AI PASS with low confidence %d%% — NOT writing to JIRA, marked for review",
+                    ticket_key, result.confidence,
+                )
+                # Do NOT write to JIRA — leave for human decision
+
+            else:
+                # Passed with sufficient confidence — auto-approve
+                result.status = "passed"
+                write_ai_status_to_jira(jira_server, jira_email, jira_token, ticket_key, "Approved")
 
     except Exception as exc:
         logger.error("Bulk validation error for %s: %s", ticket_key, exc)
