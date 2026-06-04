@@ -51,6 +51,15 @@ RATE_LIMIT_DELAY = 3  # seconds between Gemini calls
 # a human must inspect them before approving.
 CONFIDENCE_THRESHOLD = 70
 
+# Minimum score for _find_sendout_id to accept a fuzzy match among MULTIPLE
+# same-date DMA tasks. Scoring = (#shared words len>3)*10 + string_similarity(0..1),
+# so a single shared keyword already scores >=10; with zero shared words the score
+# is just the raw similarity (0..1). A floor of 0.45 therefore only rejects matches
+# that have NO shared keyword AND low string similarity — i.e. genuinely unrelated
+# candidates. In that case we skip (surface to a human) rather than risk validating
+# the WRONG campaign. Single-candidate and client-specific matches are unaffected.
+MIN_SENDOUT_MATCH_SCORE = 0.45
+
 
 @dataclass
 class BulkTicketResult:
@@ -234,10 +243,28 @@ def _find_sendout_id(ticket_key: str, client: str, gsheet_data: list[dict],
                 return word_hits * 10 + sim
 
             best = max(date_matches, key=_score)
-            return str(best.get("id") or best.get("task_id", ""))
+            best_score = _score(best)
+            # Confidence floor: if even the best candidate has no shared keyword and
+            # low similarity, there is no real signal which same-date sendout is the
+            # right one — refuse to guess (would otherwise risk validating the WRONG
+            # campaign). The ticket then surfaces as "skipped" for a human to resolve.
+            if best_score >= MIN_SENDOUT_MATCH_SCORE:
+                return str(best.get("id") or best.get("task_id", ""))
+            logger.warning(
+                "_find_sendout_id: ambiguous match for %s — best score %.2f among %d "
+                "same-date candidates; skipping rather than guessing the wrong sendout",
+                ticket_key, best_score, len(date_matches),
+            )
+            return ""
 
-        # Step 4: No summary — return first match
-        return str(date_matches[0].get("id") or date_matches[0].get("task_id", ""))
+        # Step 4: multiple same-date candidates but no JIRA summary to disambiguate —
+        # no basis to choose, so skip rather than blindly returning the first.
+        logger.warning(
+            "_find_sendout_id: %s has %d same-date candidates but no JIRA summary to "
+            "disambiguate; skipping rather than guessing the wrong sendout",
+            ticket_key, len(date_matches),
+        )
+        return ""
     except Exception:
         pass
     return ""
