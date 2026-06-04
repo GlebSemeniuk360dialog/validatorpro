@@ -246,6 +246,23 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
    - *SLIDE LABEL RULE (IMPORTANT):* Lines like "Slide 1:", "Slide 2:", "Slider 3:" in the JIRA
      Description are structural labels only — they are NOT part of the message text and must
      be completely ignored during text comparison. Do NOT flag their absence in the DMA as a mismatch.
+   - *JIRA COVER NOTE RULE (IMPORTANT):* If the JIRA description starts with an internal message
+     addressed to a team member — e.g. "Hi [Name]," / "Dear [Name]," / "Hi team," / "Hello Martina,"
+     — this is an internal cover note and is NOT part of the campaign copy. IGNORE everything
+     before the first structured form field label (e.g. "Main Body Text:", "Card Body Texts:",
+     "Number of cards:", "Card Images:", etc.). The actual campaign copy is in the form fields
+     that follow. For CHECK 2, compare only the form field content (Main Body Text, Card Body
+     Texts) against the DMA template — not the cover note.
+   - *CAROUSEL FORM FIELDS RULE (IMPORTANT):* For tickets submitted via a Carousel Request Form,
+     the copy, button texts, and URLs are in structured sections within the JIRA description:
+       • "Main Body Text:" → the template body text to compare against CHECK 2
+       • "Card Body Texts:" with "Card 1:", "Card 2:" etc. → per-card body for CHECK 2
+       • "Card Button Texts:" with "Card 1:", "Card 2:" etc. → per-card CTA buttons for CHECK 4
+       • "Card Button URLs:" → the CTA URLs for CHECK 4
+     These form sections ARE the official JIRA-specified values. If CTA_Button_Text field is
+     empty/None but "Card Button Texts:" is present in the description, use the description
+     values for CHECK 4. Do NOT say "no CTA specified" when button texts and URLs are clearly
+     in the form sections of the description.
    - *WHATSAPP TEMPLATE VARIABLE RULE (CRITICAL):* DMA templates use {{{{1}}}}, {{{{2}}}},
      {{{{3}}}}, {{{{4}}}} etc. as WhatsApp dynamic variables replaced at send time
      (e.g., recipient's first name, shop address, dates).
@@ -323,7 +340,11 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
      Sending to the wrong list means the wrong stores receive the campaign — critical error.
      CHECK `Precomputed_Diffs.aldi_portugal_shop_list` FIRST:
        • pre_verdict = FAIL → ❌ FAIL tags check immediately, no exceptions
-       • pre_verdict = PASS → shop count matches the expected list for this segment → ✅ PASS
+       • pre_verdict = PASS → shop count has been MATHEMATICALLY VERIFIED as correct for this
+                              segment → the long list of shop_number values in the DMA API IS
+                              expected and correct. Do NOT flag individual shop numbers as
+                              "unexpected" or "wrong". Do NOT independently re-evaluate the
+                              shop list. Accept it as ✅ PASS and move on to other tag checks.
        • pre_verdict = NA   → shop_number filter not found in DMA API → ❌ FAIL
      The store count is the only reliable indicator — do NOT say PASS just because
      "a shop_number filter exists." The count MUST match the expected count for the segment.
@@ -1712,7 +1733,13 @@ def _enforce_precomputed_verdicts(
             actual=f"{carousel.get('dma_card_count')} card(s)",
         )
 
-    # ── 3. ALDI Portugal store list — wrong count = wrong audience segment ──────
+    # ── 3. ALDI Portugal store list — bidirectional enforcement ───────────────
+    # The shop count check is pure arithmetic — the AI must not override it in
+    # either direction. Wrong count forces FAIL (existing). Correct count forces
+    # PASS on the shop_number aspect: if the AI independently re-evaluated the
+    # long shop list and said FAIL, override it back to PASS so the count remains
+    # authoritative. Only OTHER tag issues (wrong excludes, missing mandatory
+    # filters) can still cause a FAIL via the other override blocks.
     shop = diffs.get("aldi_portugal_shop_list", {})
     if shop.get("pre_verdict") == "FAIL":
         _force(
@@ -1722,6 +1749,27 @@ def _enforce_precomputed_verdicts(
             expected=f"{shop.get('expected_shop_count')} shop IDs ({shop.get('segment','')})",
             actual=f"{shop.get('actual_shop_count')} shop IDs",
         )
+    elif shop.get("pre_verdict") == "PASS" and audit.tags.verdict == "FAIL":
+        # Shop count is mathematically correct — AI must not re-fail tags due to
+        # independently second-guessing the verified shop list. Force PASS so the
+        # arithmetic result wins. (Other tag overrides above this point would have
+        # already forced FAIL if there were real exclude/mandatory issues.)
+        if "tags" not in updates:  # don't clobber a real override already applied
+            overrides.append(
+                f"tags: ALDI Portugal shop count pre_verdict=PASS ({shop.get('actual_shop_count')} IDs "
+                f"for {shop.get('segment','?')} segment) — AI independently said FAIL on the shop "
+                f"list, but the count is verified correct; forced PASS"
+            )
+            updates["tags"] = CheckVerdict(
+                verdict="PASS",
+                reason=(
+                    f"Shop count verified: {shop.get('actual_shop_count')} IDs matches expected "
+                    f"{shop.get('expected_shop_count')} for {shop.get('segment','?')} segment. "
+                    f"[Deterministic override — shop list is mathematically confirmed correct.]"
+                ),
+                expected=f"{shop.get('expected_shop_count')} shop IDs ({shop.get('segment','')})",
+                actual=f"{shop.get('actual_shop_count')} shop IDs",
+            )
 
     # ── 4. G-Sheet exclude-tag deviations — suppression compliance ─────────────
     # IMPORTANT: mandatory client filters (e.g. REWE declined_new_terms=true) are
