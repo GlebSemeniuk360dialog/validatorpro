@@ -963,9 +963,11 @@ def _fetch_and_enrich(
             if val:
                 j_data[key] = val
 
-    j_data["parsed_carousel"] = pick_carousel_parser(
-        str(j_data.get("description", "")), client
-    )
+    # Only run regex parser if the Forms API didn't already populate parsed_carousel
+    if not j_data.get("parsed_carousel"):
+        j_data["parsed_carousel"] = pick_carousel_parser(
+            str(j_data.get("description", "")), client
+        )
 
     # Ensure timezone is set — use JIRA field if available, otherwise client config
     if not j_data.get("timezone"):

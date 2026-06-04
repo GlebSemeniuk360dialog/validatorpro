@@ -619,7 +619,10 @@ def _fetch_core_data(client: str, ticket_key: str, sendout_id: str,
         except Exception:
             pass
 
-    j_data["parsed_carousel"] = pick_carousel_parser(str(j_data.get("description", "")), client)
+    # Only run regex parser if the Forms API didn't already populate parsed_carousel
+    # (fetch_ticket_data sets it directly from structured form answers when available)
+    if not j_data.get("parsed_carousel"):
+        j_data["parsed_carousel"] = pick_carousel_parser(str(j_data.get("description", "")), client)
 
     return j_data, a_data, t_data, leaflet_data
 
