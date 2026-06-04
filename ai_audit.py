@@ -1619,21 +1619,9 @@ def check_audit_preconditions(
     blockers: list[dict] = []
 
     desc = str(jira.get("description", "") or "").strip()
-    copy_sheet = str(jira.get("copy_sheet_url", "") or "").strip()
 
-    # 1. Copy lives in Google Sheets, not JIRA — cannot verify copy
-    if copy_sheet and not desc:
-        blockers.append({
-            "code": "copy_in_sheet",
-            "message": (
-                f"Campaign copy is in a Google Sheet ({copy_sheet[:80]}...), not in this JIRA ticket. "
-                "Copy check cannot be performed automatically — review the sheet and verify manually."
-            ),
-            "severity": "block",
-        })
-
-    # 2. JIRA description is only a URL (smart link / Google Sheet / etc.)
-    elif desc and _re.match(r'^https?://\S+$|\[.*?\]\(https?://\S+\)', desc):
+    # 1. JIRA description is only a URL (smart link / Google Sheet / etc.)
+    if desc and _re.match(r'^https?://\S+$|\[.*?\]\(https?://\S+\)', desc):
         blockers.append({
             "code": "desc_url_only",
             "message": (

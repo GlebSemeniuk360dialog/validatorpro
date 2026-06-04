@@ -48,7 +48,6 @@ JIRA_FIELD_IDS: dict[str, str] = {
     "footer_text":        "customfield_12670",
     "additional_comments":"customfield_12693",
     "description":        "description",
-    "copy_sheet_url":     "customfield_15869",   # Google Sheet link (ALDI Italy etc.)
     "request_type":       "customfield_12664",
     # Explicit WABA vs RCS selector — set by the Kaufland reporter in the ticket form
     "waba_or_rcs":        "customfield_16693",
