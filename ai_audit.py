@@ -1098,7 +1098,8 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "") -> str:
 
 
 def _compute_mandatory_filters_present(
-    client_name: str, api_date: str, api_tag_str: str
+    client_name: str, api_date: str, api_tag_str: str,
+    dma_carousel_texts: list | None = None,
 ) -> dict:
     """
     Deterministic check that every MANDATORY system filter for this client is
@@ -1124,6 +1125,8 @@ def _compute_mandatory_filters_present(
                 "note": "No mandatory filters defined for this client"}
 
     client_lower = client_name.lower()
+    _is_carousel = bool(dma_carousel_texts)  # non-empty list = carousel sendout
+
     if "kaufland" in client_lower:
         from datetime import datetime as _dt3
         try:
@@ -1132,6 +1135,9 @@ def _compute_mandatory_filters_present(
             is_sun = False
         cf = filters_cfg.get("Sunday" if is_sun else "Wednesday",
                              filters_cfg.get("Standard", []))
+    elif "aldi italy" in client_lower:
+        # Carousel sendouts don't use leaflet_tag — matches the rule in check_tags
+        cf = filters_cfg.get("Carousel" if _is_carousel else "Standard", [])
     else:
         cf = filters_cfg.get("Standard", [])
 
@@ -1362,7 +1368,9 @@ def build_comparison_data(
         tmpl_buttons,
     )
     _mandatory_filters = _get_client_mandatory_filters(client_name, api_date)
-    _mandatory_present = _compute_mandatory_filters_present(client_name, api_date, api_tag_str)
+    _mandatory_present = _compute_mandatory_filters_present(
+        client_name, api_date, api_tag_str, dma_carousel_texts=dma_carousel_texts
+    )
 
     # ALDI Portugal: dedicated shop count check (Regular vs Northern store list)
     _aldi_pt_shop_diff = None
