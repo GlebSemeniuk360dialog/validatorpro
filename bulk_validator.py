@@ -17,7 +17,8 @@ def _strip_slide_labels(text: str) -> str:
         return text[:m.start()].strip()
     return text.strip()
 
-from ai_audit import build_comparison_data, run_ai_audit, _is_audit_error, apply_data_quality_cap
+from ai_audit import (build_comparison_data, run_ai_audit, _is_audit_error,
+                      apply_data_quality_cap, strip_cover_note, check_audit_preconditions)
 from api_client import (
     fetch_account_leaflets,
     fetch_api_data,
@@ -1157,9 +1158,25 @@ def _validate_single_ticket_ai(
             if _seg and _seg.lower() not in result.sendout_name.lower():
                 result.sendout_name = f"{result.sendout_name} [{_seg}]"
 
+        # Strip cover note before building comparison payload
+        from ai_audit import strip_cover_note as _strip_cn
+        if j_data.get("description"):
+            j_data["description"] = _strip_cn(j_data["description"])
+
         comparison_data, _dma_urls, dma_bytes = _build_audit_payload(
             j_data, a_data, t_data, leaflet_data, client
         )
+
+        # ── Pre-audit data quality gate ───────────────────────────────────────
+        from ai_audit import check_audit_preconditions as _pre_check
+        _blockers = _pre_check(j_data, a_data, client, comparison_data)
+        _hard_blocks = [b for b in _blockers if b["severity"] == "block"]
+        if _hard_blocks:
+            _block_msg = " | ".join(b["message"] for b in _hard_blocks)
+            logger.warning("%s: pre-audit gate blocked — %s", ticket_key, _block_msg)
+            result.status    = "skipped"
+            result.error_msg = f"⛔ Cannot audit: {_block_msg}"
+            return result
 
         # Download JIRA images — exactly as many as the template has cards
         card_count  = _detect_card_count(a_data, t_data)

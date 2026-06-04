@@ -1088,6 +1088,11 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
             f"Card 1: leaflet_type=special, offset_days=1 | Card 2: leaflet_type=regular, offset_days=4"
         )
 
+    # Strip cover note from description before building comparison data
+    from ai_audit import strip_cover_note as _strip_cover_note
+    if jira_for_comparison.get("description"):
+        jira_for_comparison["description"] = _strip_cover_note(jira_for_comparison["description"])
+
     comparison_data = build_comparison_data(
         jira=jira_for_comparison,
         tmpl_body=tmpl_body,
@@ -1099,6 +1104,25 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         client_name=req.client,
         api_date=str(a_data.get("scheduled_date", "")),
     )
+
+    # ── Pre-audit data quality gate ───────────────────────────────────────────
+    from ai_audit import check_audit_preconditions as _pre_check
+    _blockers = _pre_check(j_data, a_data, req.client, comparison_data)
+    _hard_blocks = [b for b in _blockers if b["severity"] == "block"]
+    if _hard_blocks:
+        _block_msg = " | ".join(b["message"] for b in _hard_blocks)
+        logger.warning("Pre-audit gate blocked %s: %s", req.ticket_key, _block_msg)
+        return {
+            "html":       "",
+            "ai_result":  f"⛔ Cannot run AI audit: {_block_msg}",
+            "issues":     0,
+            "confidence": -1,
+            "confidence_reason": "Blocked by pre-audit data quality gate",
+            "ticket_key": req.ticket_key,
+            "client":     req.client,
+            "blocked":    True,
+            "block_reasons": [b["message"] for b in _hard_blocks],
+        }
 
     # Download DMA images so Gemini can visually compare them (same URLs shown in Visuals tab)
     import urllib.request as _ur_img

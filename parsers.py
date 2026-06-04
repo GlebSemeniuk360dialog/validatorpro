@@ -105,9 +105,10 @@ def parse_jira_carousel_form(description: str) -> dict | None:
         raw = re.sub(r"(?i)May include placeholders.*?Maximum - \d+ characters", "", raw).strip()
         intro = clean_jira_markdown(raw)
 
-    def _extract_card_sections(section_name: str) -> list[str]:
+    def _extract_card_sections(section_name: str, stop_after: str = "") -> list[str]:
+        stop_pat = stop_after or "Card Button URLs"
         m = re.search(
-            rf"(?i){re.escape(section_name)}:?\*?(.*?)(?:Card Button Texts|Card Button URLs|$)",
+            rf"(?i){re.escape(section_name)}:?\*?(.*?)(?:{stop_pat}|$)",
             description,
             re.DOTALL,
         )
@@ -120,17 +121,31 @@ def parse_jira_carousel_form(description: str) -> dict | None:
         )
         return [clean_jira_markdown(x.strip().rstrip(";").strip()) for x in matches]
 
-    bodies = _extract_card_sections("Card Body Texts")
-    btns = _extract_card_sections("Card Button Texts")
+    bodies = _extract_card_sections("Card Body Texts", stop_after="Card Button Texts")
+    btns   = _extract_card_sections("Card Button Texts", stop_after="Card Button URLs")
+    # Extract per-card URLs from "Card Button URLs" section
+    urls: list[str] = []
+    urls_m = re.search(r"(?i)Card Button URLs:?\*?(.*?)$", description, re.DOTALL)
+    if urls_m:
+        raw_urls = re.findall(
+            r"(?i)Card\s*\d+\s*:\s*(https?://\S+)",
+            urls_m.group(1),
+        )
+        urls = [u.rstrip(".,;)") for u in raw_urls]
 
     if not bodies and not btns:
         return None
 
+    n = max(len(bodies), len(btns), len(urls))
     cards = [
-        {"body": bodies[i] if i < len(bodies) else "", "btn": btns[i] if i < len(btns) else ""}
-        for i in range(max(len(bodies), len(btns)))
+        {
+            "body": bodies[i] if i < len(bodies) else "",
+            "btn":  btns[i]   if i < len(btns)   else "",
+            "url":  urls[i]   if i < len(urls)    else "",
+        }
+        for i in range(n)
     ]
-    return {"intro": intro, "cards": cards}
+    return {"intro": intro, "cards": cards, "urls": urls}
 
 
 def parse_penny_at_carousel(description: str) -> dict | None:

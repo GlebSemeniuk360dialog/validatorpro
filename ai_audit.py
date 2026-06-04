@@ -1564,6 +1564,125 @@ def _extract_json(raw_text: str) -> str:
     return raw_text.strip()
 
 
+# ── Cover-note stripper ───────────────────────────────────────────────────────
+
+_COVER_NOTE_RE = _re.compile(
+    r'^(?:Hi|Hello|Dear|Hallo|Ciao|Bonjour|Hola)\s+\w[\w\s,]+[,\n]',
+    _re.IGNORECASE,
+)
+_FORM_FIELD_LABELS = (
+    "Main Body Text", "Card Body Texts", "Card Button Texts",
+    "Number of cards", "Card Images", "Slide 1", "Slide 2", "Card 1",
+)
+
+def strip_cover_note(description: str) -> str:
+    """
+    Remove an internal cover note from the start of a JIRA description.
+    A cover note is text addressed to a team member ("Hi Martina, ...",
+    "Hello Gleb, ...") that precedes the actual campaign content.
+    Returns the description with the cover note stripped, or unchanged if
+    no cover note is detected.
+    """
+    if not description:
+        return description
+    if not _COVER_NOTE_RE.match(description.strip()):
+        return description
+    # Find where the first form field label or content block starts
+    for label in _FORM_FIELD_LABELS:
+        idx = description.find(label)
+        if idx > 0:
+            return description[idx:].strip()
+    # No known label found — strip just the first paragraph (the greeting)
+    parts = _re.split(r'\n{2,}', description.strip(), maxsplit=1)
+    if len(parts) == 2 and len(parts[0]) < 400:
+        return parts[1].strip()
+    return description
+
+
+# ── Pre-audit data quality gate ───────────────────────────────────────────────
+
+def check_audit_preconditions(
+    jira: dict,
+    a_data: dict,
+    client: str,
+    comparison_data: dict | None = None,
+) -> list[dict]:
+    """
+    Check whether the inputs are sufficient for a reliable AI audit.
+    Returns a list of blocker dicts: {"code": str, "message": str, "severity": "block"|"warn"}.
+    Empty list = inputs are sufficient, proceed with the audit.
+
+    Blockers (severity="block") prevent the AI call entirely — running on these
+    inputs produces a speculative result that should not be trusted or written to JIRA.
+    Warnings (severity="warn") are noted but do not block the audit.
+    """
+    blockers: list[dict] = []
+
+    desc = str(jira.get("description", "") or "").strip()
+    copy_sheet = str(jira.get("copy_sheet_url", "") or "").strip()
+
+    # 1. Copy lives in Google Sheets, not JIRA — cannot verify copy
+    if copy_sheet and not desc:
+        blockers.append({
+            "code": "copy_in_sheet",
+            "message": (
+                f"Campaign copy is in a Google Sheet ({copy_sheet[:80]}...), not in this JIRA ticket. "
+                "Copy check cannot be performed automatically — review the sheet and verify manually."
+            ),
+            "severity": "block",
+        })
+
+    # 2. JIRA description is only a URL (smart link / Google Sheet / etc.)
+    elif desc and _re.match(r'^https?://\S+$|\[.*?\]\(https?://\S+\)', desc):
+        blockers.append({
+            "code": "desc_url_only",
+            "message": (
+                "JIRA description contains only a URL — no campaign copy text to verify. "
+                "Add the actual copy to the JIRA ticket before running the AI audit."
+            ),
+            "severity": "block",
+        })
+
+    # 3. Client not in config — audience checks are vacuously empty
+    from config import CLIENT_CONFIGS
+    if client not in CLIENT_CONFIGS:
+        blockers.append({
+            "code": "unknown_client",
+            "message": (
+                f"Client '{client}' is not in the validator config. "
+                "Account ID and audience filter checks cannot be performed. "
+                "Add this client to the config before auditing."
+            ),
+            "severity": "block",
+        })
+
+    # 4. No DMA template body — copy/footer checks are speculative
+    if comparison_data:
+        dma = comparison_data.get("DMA_API_Setup", {}) or {}
+        if not dma.get("Template_Body_Intro") and not dma.get("Template_Carousel_Cards"):
+            blockers.append({
+                "code": "no_template_body",
+                "message": "DMA template body not found — copy and footer checks will be speculative.",
+                "severity": "warn",
+            })
+
+    # 5. wids filter present but not expected — must confirm before audit
+    all_tags = _re.findall(r'\[Include\]\s*wids', str(a_data.get("filters", "")), _re.I)
+    gsheet_tags = str(jira.get("gsheet_tags", "") or "")
+    if all_tags and "wids" not in gsheet_tags.lower():
+        # Already handled as deterministic override but surface early too
+        blockers.append({
+            "code": "unexpected_wids",
+            "message": (
+                "DMA payload contains a wids filter restricting the sendout to specific contacts, "
+                "but no wids tag is in the G-Sheet. Confirm the intended audience before auditing."
+            ),
+            "severity": "warn",  # override handles the FAIL; this is an early warning
+        })
+
+    return blockers
+
+
 # ── Reliability helpers ────────────────────────────────────────────────────────
 
 def _thinking_config_for(model_name: str, gemini3_level: str = "low"):
