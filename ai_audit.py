@@ -1691,6 +1691,38 @@ def _enforce_precomputed_verdicts(
     return audit, overrides
 
 
+def apply_data_quality_cap(confidence, confidence_reason, comparison_data, log_key: str = ""):
+    """
+    Cap AI confidence when key inputs were absent, so a PASS built on missing data
+    cannot report high confidence. Shared by the single (/api/ai-audit) and bulk
+    paths so the two stay consistent. Returns (confidence, confidence_reason).
+
+      no DMA template body / cards -> copy & footer checks were speculative -> cap 55
+      no JIRA description          -> copy check unverifiable                -> cap 65
+
+    Does NOT change any approve/reject decision — only the confidence number/reason.
+    """
+    try:
+        conf = int(confidence)
+    except (TypeError, ValueError):
+        return confidence, confidence_reason
+    cd   = comparison_data if isinstance(comparison_data, dict) else {}
+    dma  = cd.get("DMA_API_Setup", {}) or {}
+    jira = cd.get("JIRA_Intent", {}) or {}
+    has_template_body = bool(dma.get("Template_Body_Intro") or dma.get("Template_Carousel_Cards"))
+    has_jira_desc     = bool(str(jira.get("Text_Description", "")).strip())
+    reason = str(confidence_reason or "")
+    if not has_template_body and conf > 55:
+        if log_key:
+            logger.warning("%s: confidence capped %d→55%% — no DMA template body", log_key, conf)
+        return 55, "[Auto-capped: no DMA template body — copy check was speculative] " + reason
+    if not has_jira_desc and conf > 65:
+        if log_key:
+            logger.warning("%s: confidence capped %d→65%% — no JIRA description", log_key, conf)
+        return 65, "[Auto-capped: no JIRA description — copy check unverifiable] " + reason
+    return conf, confidence_reason
+
+
 def run_ai_audit(
     api_key: str,
     model_name: str,

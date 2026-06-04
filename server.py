@@ -1135,6 +1135,19 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
             "confidence":   None,
         }
 
+    # Apply the same data-quality confidence cap as the bulk path so the recorded
+    # and displayed confidence is honest when key inputs (template body / JIRA
+    # description) were absent. Does NOT change the approve decision below — that
+    # keys on `issues`, so a clean pass still auto-approves (single check is
+    # human-supervised); only the confidence number/reason is corrected.
+    from ai_audit import apply_data_quality_cap as _apply_dq_cap
+    _capped_conf, _capped_reason = _apply_dq_cap(
+        result.get("confidence", -1), result.get("confidence_reason", ""),
+        comparison_data, log_key=req.ticket_key,
+    )
+    result["confidence"] = _capped_conf
+    result["confidence_reason"] = _capped_reason
+
     ai_result_text = result.get("audit_report", "Error extracting report")
     ai_urls = {
         "jira": result.get("jira_extracted_urls", []),
