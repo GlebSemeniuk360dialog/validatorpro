@@ -129,10 +129,12 @@ N/A rules: use "NA" ONLY when the check genuinely cannot be evaluated (no images
 overridden by your judgement. If any of the following pre-verdicts is FAIL, the corresponding
 check WILL be forced to FAIL regardless of what you output, so you should also mark it FAIL:
   • Precomputed_Diffs.scheduling.pre_verdict = FAIL (diff > 40 min)  → CHECK 1 FAIL
+  • JIRA description is only a URL/link (no copy text)               → CHECK 2 FAIL
   • Precomputed_Diffs.carousel.pre_verdict = FAIL (card count mismatch) → CHECK 2 FAIL
   • Precomputed_Diffs.aldi_portugal_shop_list.pre_verdict = FAIL (wrong store count) → CHECK 5 FAIL
   • Precomputed_Diffs.tags has any missing_exclude or extra_exclude → CHECK 5 FAIL (excludes are non-negotiable)
   • Precomputed_Diffs.mandatory_filters.pre_verdict = FAIL (required filter absent) → CHECK 5 FAIL
+  • wids filter in DMA payload but NOT in G-Sheet expected tags      → CHECK 5 FAIL (requires human confirmation)
 ══════════════════════════════════════════════════════════
 
 REQUIRED CHECKS & RULES (apply inside the protocol steps above):
@@ -157,6 +159,13 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
      An approval statement without the actual approved text in the ticket is meaningless for
      CHECK 2. Only comments that provide or clearly change the actual expected text content count
      as a copy override.
+   - *JIRA DESCRIPTION IS ONLY A URL/SMART LINK (ABSOLUTE):* If the JIRA description contains
+     only a URL (e.g. a Google Sheet link, Confluence link, Figma link, Slack archive link, or
+     any other external link), there is NO actual copy text in JIRA to compare against. In this
+     case CHECK 2 (copy) MUST be ❌ FAIL with reason "JIRA description contains only a link — no
+     copy text available to verify. The actual campaign copy must be added to the JIRA ticket."
+     Do NOT pass copy based on the DMA template content alone when JIRA provides no text to
+     compare it against. Do NOT infer or assume the copy is correct from external references.
 2. **Scheduling:** Check Date and Time.
    - *TAG EQUIVALENCE RULE:* `offset days=1` in the G-Sheet means `leaflet_tag=1` in
      the DMA API (`leaflet_filter.offset_days=1`). Treat these as identical notation —
@@ -272,8 +281,12 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
        • JIRA `CTA_Button_Text` is empty / None → buttons are described per card in the description
      For carousel CTA: look at the DMA carousel cards in `Template_Carousel_Cards`.
      If each card has a button that matches what JIRA described per card → ✅ PASS.
-     If JIRA specifies no buttons at all and DMA carousel cards have standard buttons
-     (e.g. "Zum Prospekt") → ✅ PASS (standard carousel buttons are expected).
+     If JIRA specifies no buttons at all and DMA carousel cards have standard/generic
+     leaflet buttons (e.g. "Zum Prospekt", "Ver Prospeto", "Ver Oferta") → ✅ PASS.
+     If JIRA specifies no buttons but DMA has custom/non-standard button text that
+     cannot be verified from the JIRA description → ⚠️ flag in reason as "button text
+     unverified — JIRA has no button specified". Do NOT auto-PASS unrecognised button
+     text when JIRA description provides no copy context to confirm it.
    - Verify that URLs found in `JIRA_All_URLs` exist in `API_URLs_Configured`.
    - *IMAGE URL IGNORE RULE (ABSOLUTE):* The DMA API response contains image hosting URLs
      from CDN / storage services. These are NEVER CTA button URLs. You MUST completely
@@ -1354,6 +1367,20 @@ def build_comparison_data(
         "⚡_images":      "NA  |  Evaluate visually if images are attached below",
         **({"⚡_aldi_pt_shop_list": f"{_pv(_aldi_pt_shop_diff)}  |  {_aldi_pt_shop_diff.get('note', '')}"} if _aldi_pt_shop_diff else {}),
         **({"⚡_mandatory_filters": f"{_pv(_mandatory_present)}  |  {_mandatory_present.get('note', '')}"} if _mandatory_present.get("pre_verdict") != "NA" else {}),
+        # Wids warning — always shown when wids is in the payload
+        **({"⚠️_WIDS_FILTER": (
+            f"CRITICAL — DMA payload contains a wids filter restricting the sendout to specific contacts. "
+            f"API tags: {api_tag_str[:200] if 'wids' in api_tag_str.lower() else ''}. "
+            f"G-Sheet has {'a wids tag — verify counts match' if 'wids' in expected_incl.lower() else 'NO wids tag — THIS IS UNEXPECTED. CHECK 5 must be FAIL.'}."
+        )} if "wids" in api_tag_str.lower() else {}),
+        # URL-only JIRA description warning
+        **({"⚠️_JIRA_DESC_URL_ONLY": (
+            "CRITICAL — JIRA description contains only a URL/link with no copy text. "
+            "CHECK 2 (copy) MUST be FAIL. Cannot verify copy from a link alone."
+        )} if (
+            str(jira.get("description", "") or "").strip()
+            and _re.match(r'^https?://\S+$|\[.*?\]\(https?://\S+\)', str(jira.get("description","") or "").strip())
+        ) else {}),
         "INSTRUCTION": (
             "Quick reference — pre-computed comparisons to orient your analysis. "
             "These use simple string matching and may flag format differences as mismatches "
@@ -1651,7 +1678,30 @@ def _enforce_precomputed_verdicts(
             actual=str(sched.get("api_local_clock", "")),
         )
 
-    # ── 2. Carousel card count — exact counting, structural mismatch ───────────
+    # ── 2a. JIRA description is only a URL — copy is unverifiable ────────────────
+    # When JIRA description contains only a URL/smart link, there is no copy text
+    # to compare against. Force CHECK 2 FAIL so a human adds the actual copy to
+    # the ticket before the sendout is approved.
+    _jira_desc = str(
+        (comparison_data.get("JIRA_Intent") or {}).get("Text_Description", "") or ""
+    ).strip()
+    _desc_is_url_only = bool(
+        _jira_desc
+        and _re.match(
+            r'^https?://\S+$|^\[.*?\]\(https?://\S+\)$',
+            _jira_desc,
+        )
+    )
+    if _desc_is_url_only:
+        _force(
+            "copy", audit.copy,
+            "JIRA description contains only a URL/smart link — no copy text available "
+            "to verify. Add the actual campaign copy to the JIRA ticket.",
+            expected="actual copy text in JIRA",
+            actual=f"only a link: {_jira_desc[:80]}",
+        )
+
+    # ── 2b. Carousel card count — exact counting, structural mismatch ─────────
     carousel = diffs.get("carousel", {})
     if carousel.get("pre_verdict") == "FAIL":
         _force(
@@ -1716,6 +1766,32 @@ def _enforce_precomputed_verdicts(
             f"Mandatory filter(s) missing from DMA payload: {mand.get('missing')}",
             expected=f"mandatory: {mand.get('checked')}",
             actual=f"missing: {mand.get('missing')}",
+        )
+
+    # ── 6. Unexpected wids filter — critical audience restriction ──────────────
+    # A wids filter means ONLY those N specific contacts receive the sendout.
+    # If it is present in the DMA payload but NOT in the G-Sheet expected tags,
+    # the audience may be wrong in either direction:
+    #   • mass campaign accidentally restricted to a small contact list, OR
+    #   • targeted sendout missing its wids list (broadcast instead of targeted).
+    # Either scenario is a potential catastrophe, so force FAIL and require
+    # a human to confirm intentionality. The only exception: if the G-Sheet
+    # expected_include already contains a wids tag, the AI validated it normally.
+    _api_tags_all = diffs.get("tags", {})
+    _api_incl_strings = [t.lower() for t in (_api_tags_all.get("actual_include") or [])]
+    _exp_incl_strings = [t.lower() for t in (_api_tags_all.get("expected_include") or [])]
+    _wids_in_api      = any("wids" in s for s in _api_incl_strings)
+    _wids_expected    = any("wids" in s for s in _exp_incl_strings)
+    if _wids_in_api and not _wids_expected:
+        # Extract contact count from tag string for a descriptive message
+        _wids_tag = next((s for s in _api_incl_strings if "wids" in s), "wids")
+        _force(
+            "tags", audit.tags,
+            f"UNEXPECTED wids filter in DMA payload ({_wids_tag}) — "
+            f"this restricts the sendout to ONLY those specific contacts. "
+            f"Not present in G-Sheet expected tags. Human confirmation required.",
+            expected="no wids filter (G-Sheet has no wids tag)",
+            actual=_wids_tag,
         )
 
     # Apply updates, then always recompute overall for consistency
