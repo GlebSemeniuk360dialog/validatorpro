@@ -321,14 +321,18 @@ def fetch_all_servicedesk_issues(
 ) -> list[dict]:
     """
     Paginate through ALL pages of a service-desk queue and return every issue.
-    Used by the orphan scanner (the single-page variant only returns 50 issues).
+
+    The service desk queue endpoint only returns a limited set of fields — notably
+    it omits customfield_16693 ("WABA or RCS").  After the bulk fetch we enrich
+    any Kaufland tickets (identified by reporter email domain) with a single
+    per-issue REST call to backfill that field.
     """
     if not token:
         return []
     headers = {"Accept": "application/json"}
     auth = (email, token.strip())
 
-    # Resolve the numeric service-desk ID once
+    # ── Step 1: resolve service desk ID ──────────────────────────────────────
     try:
         sd_res = requests.get(
             f"{base_url}/rest/servicedeskapi/servicedesk",
@@ -347,6 +351,7 @@ def fetch_all_servicedesk_issues(
         logger.warning("fetch_all_servicedesk_issues: service desk for '%s' not found", project_key)
         return []
 
+    # ── Step 2: paginate through queue endpoint ───────────────────────────────
     all_issues: list[dict] = []
     start = 0
     page_size = 100
@@ -369,6 +374,34 @@ def fetch_all_servicedesk_issues(
             break
 
     logger.info("fetch_all_servicedesk_issues: fetched %d issues from queue %s", len(all_issues), queue_id)
+
+    # ── Step 3: enrich Kaufland issues with customfield_16693 (WABA or RCS) ──
+    # The queue endpoint omits this field; fetch it per-issue via the REST API.
+    _ENRICH_FIELDS = "customfield_16693,customfield_14287"
+    for issue in all_issues:
+        reporter_email = (
+            (issue.get("fields", {}).get("reporter") or {}).get("emailAddress") or ""
+        ).lower()
+        if "kaufland.de" not in reporter_email:
+            continue
+        issue_key = issue.get("key", "")
+        if not issue_key:
+            continue
+        try:
+            enrich_res = requests.get(
+                f"{base_url}/rest/api/2/issue/{issue_key}",
+                params={"fields": _ENRICH_FIELDS},
+                auth=auth, headers=headers, timeout=HTTP_TIMEOUT,
+            )
+            if enrich_res.status_code == 200:
+                enrich_fields = enrich_res.json().get("fields", {})
+                issue["fields"]["customfield_16693"] = enrich_fields.get("customfield_16693")
+                # Also backfill segment field if missing
+                if not issue["fields"].get("customfield_14287"):
+                    issue["fields"]["customfield_14287"] = enrich_fields.get("customfield_14287")
+        except Exception as exc:
+            logger.warning("fetch_all_servicedesk_issues: enrich %s failed: %s", issue_key, exc)
+
     return all_issues
 
 

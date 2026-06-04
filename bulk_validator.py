@@ -77,10 +77,32 @@ class BulkTicketResult:
 
 def _detect_client(issue: dict) -> str:
     """Best-effort client detection from a queue issue dict."""
-    summary = issue["fields"].get("summary", "")
-    desc    = issue["fields"].get("description") or ""
+    fields  = issue["fields"]
+    summary = fields.get("summary", "")
+    desc    = fields.get("description") or ""
     text    = f"{summary} {desc}".strip()
     text_lower = text.lower()
+
+    reporter_email = ((fields.get("reporter") or {}).get("emailAddress") or "").lower()
+
+    # Kaufland: use explicit "WABA or RCS" field (customfield_16693) — falls back to text
+    if "kaufland.de" in reporter_email:
+        _wr_raw = fields.get("customfield_16693")
+        if isinstance(_wr_raw, list) and _wr_raw:
+            _wr_val = (_wr_raw[0].get("value", "") if isinstance(_wr_raw[0], dict) else str(_wr_raw[0])).upper()
+        else:
+            _wr_val = str(_wr_raw or "").upper()
+        if "RCS" in _wr_val:
+            return "Kaufland RCS"
+        if "WABA" in _wr_val:
+            return "Kaufland WABA"
+        # Fallback for older tickets without the field
+        return "Kaufland RCS" if "rcs" in text_lower else "Kaufland WABA"
+
+    # ALDI Italy: detect by reporter email (ticket summaries are generic, e.g.
+    # "ALDI Carousel sendout 31.05" — no "Italy" in the text)
+    if "aldi.it" in reporter_email or "aldi-italy.it" in reporter_email:
+        return "ALDI Italy"
 
     # ALDI Sued: sonntag/reminder are special cases
     if any(kw in text_lower for kw in ("sonntag", "reminder")):
@@ -112,8 +134,9 @@ def _find_sendout_id(ticket_key: str, client: str, gsheet_data: list[dict],
         # Collect all active tasks matching the date
         date_matches = []
         for task in tasks:
-            if not task.get("is_active", True):
-                continue
+            # Do NOT skip on is_active=False — future pending tasks have
+            # is_active=False until they start executing; status filter in
+            # fetch_pending_sendouts (pending/scheduled/approved) is sufficient.
             try:
                 task_date = _dt.fromisoformat(
                     str(task.get("scheduled_date", ""))[:10]
@@ -347,18 +370,32 @@ def _build_audit_payload(
                 jira = dict(jira)
                 jira["description"] = f"[STATIC RCS TEMPLATE] Expected card texts:\n{expected_texts}"
 
-        # Kaufland WABA Sunday: inject expected static carousel card body text
+        # Kaufland WABA: inject expected static carousel card body text from config
         if client == "Kaufland WABA" and not jira.get("description"):
-            _WABA_BODY = (
-                "Hier findest du unseren aktuellen Prospekt mit den Angeboten vom {{1}} \u2013 {{2}} "
-                "f\u00fcr deine Filiale in {{3}} {{4}} \u2b07\ufe0f"
-            )
-            jira = dict(jira)
-            jira["description"] = (
-                f"[STATIC WABA CAROUSEL TEMPLATE] Both carousel cards use this body text:\n"
-                f"{_WABA_BODY}\n"
-                f"Card 1: leaflet_type=special, offset_days=1 | Card 2: leaflet_type=regular, offset_days=4"
-            )
+            _waba_cfg  = CLIENT_CONFIGS.get("Kaufland WABA", {})
+            _WABA_BODY = _waba_cfg.get("static_carousel_body", "")
+            _WABA_NOTE = _waba_cfg.get("static_carousel_note", "")
+            if _WABA_BODY:
+                jira = dict(jira)
+                jira["description"] = (
+                    f"[STATIC WABA CAROUSEL TEMPLATE] Both carousel cards use this body text:\n"
+                    f"{_WABA_BODY}"
+                    + (f"\n{_WABA_NOTE}" if _WABA_NOTE else "")
+                )
+
+    # Normalize template-variable URLs to their base paths instead of dropping them.
+    # e.g. https://www.rewe.de/angebote/{{1}}/ → https://www.rewe.de/angebote/
+    #      angebote/{shop_id}/?ecid=...         → kept as-is (single-brace, handled by _urls_equivalent)
+    from ai_audit import _tmpl_url_base as _tub
+    _api_urls_norm: list[str] = []
+    for _u in api_urls:
+        if "{{" in _u:
+            _base = _tub(_u)
+            if _base:
+                _api_urls_norm.append(_base)
+            # else: URL was entirely a variable — skip it
+        else:
+            _api_urls_norm.append(_u)
 
     comparison_data = build_comparison_data(
         jira=jira,
@@ -367,7 +404,7 @@ def _build_audit_payload(
         tmpl_buttons=tmpl_buttons,
         dma_carousel_texts=dma_carousel_texts,
         api_tag_str=", ".join(tag_parts),
-        api_urls=[u for u in api_urls if "{{" not in u],  # strip template placeholders
+        api_urls=_api_urls_norm,
         client_name=client,
         api_date=str(api.get("scheduled_date", "")),
     )
@@ -483,12 +520,20 @@ def _run_regular_check(
         checks.append({"label": label, "ok": ok, "detail": detail})
 
     # ── Account routing ──
-    expected_acc = CLIENT_CONFIGS.get(client, {}).get("account_id")
-    actual_acc   = a_data.get("account_id")
+    _cfg_entry     = CLIENT_CONFIGS.get(client, {})
+    expected_acc   = _cfg_entry.get("account_id")
+    accepted_accs  = _cfg_entry.get("accepted_account_ids")   # optional wider accept-list
+    actual_acc     = a_data.get("account_id")
     if expected_acc is not None:
-        acc_ok = int(expected_acc) == int(actual_acc) if actual_acc is not None else False
+        if actual_acc is None:
+            acc_ok = False
+        elif accepted_accs:
+            acc_ok = int(actual_acc) in [int(x) for x in accepted_accs]
+        else:
+            acc_ok = int(expected_acc) == int(actual_acc)
         _chk("Account routing", acc_ok,
-             f"Expected {expected_acc} → Got {actual_acc}")
+             f"Expected {expected_acc} → Got {actual_acc}"
+             + (f" (accepted: {accepted_accs})" if not acc_ok and accepted_accs else ""))
 
     # ── Text similarity ──
     # Use parsed carousel intro if available (avoids comparing slide structure)
@@ -955,6 +1000,11 @@ def _validate_single_ticket_regular(
         result.sendout_name = str(a_data.get("name") or a_data.get("campaign_name") or "")
         result.sendout_date = str(a_data.get("scheduled_date", ""))[:16]
         result.gsheet_row   = gsheet_row
+        # ALDI Portugal: append JIRA segment so the UI clearly shows Regular vs Northern
+        if client == "ALDI Portugal":
+            _seg = str(j_data.get("segment") or "").strip()
+            if _seg and _seg.lower() not in result.sendout_name.lower():
+                result.sendout_name = f"{result.sendout_name} [{_seg}]"
 
         checks, issues = _run_regular_check(j_data, a_data, t_data, leaflet_data, client)
 
@@ -1070,6 +1120,11 @@ def _validate_single_ticket_ai(
         result.sendout_name = str(a_data.get("name") or a_data.get("campaign_name") or "")
         result.sendout_date = str(a_data.get("scheduled_date", ""))[:16]
         result.gsheet_row   = gsheet_row
+        # ALDI Portugal: append JIRA segment so the UI clearly shows Regular vs Northern
+        if client == "ALDI Portugal":
+            _seg = str(j_data.get("segment") or "").strip()
+            if _seg and _seg.lower() not in result.sendout_name.lower():
+                result.sendout_name = f"{result.sendout_name} [{_seg}]"
 
         comparison_data, _dma_urls, dma_bytes = _build_audit_payload(
             j_data, a_data, t_data, leaflet_data, client

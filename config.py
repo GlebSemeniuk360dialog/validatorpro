@@ -49,6 +49,8 @@ JIRA_FIELD_IDS: dict[str, str] = {
     "additional_comments":"customfield_12693",
     "description":        "description",
     "request_type":       "customfield_12664",
+    # Explicit WABA vs RCS selector — set by the Kaufland reporter in the ticket form
+    "waba_or_rcs":        "customfield_16693",
 }
 
 JIRA_AI_STATUS_FIELD = "customfield_16417"
@@ -284,8 +286,20 @@ CLIENT_CONFIGS: dict[str, dict] = {
     },
     "Kaufland WABA": {
         "account_id": 190,
+        # Kaufland RCS and WABA share the same DMA org — sendouts fetched via account 162
+        # (RCS) still report account_id=190 in their detail response.  Both are valid.
+        "accepted_account_ids": [162, 190],
         "timezone_name": "Europe/Berlin",
         "mappings": {},
+        # Static carousel body used for ALL Kaufland WABA carousel sendouts.
+        # Both cards share the same body template; only leaflet filters differ.
+        "static_carousel_body": (
+            "Hier findest du unseren aktuellen Prospekt mit den Angeboten vom {{1}} – {{2}} "
+            "für deine Filiale in {{3}} {{4}} ⬇️"
+        ),
+        "static_carousel_note": (
+            "Card 1: leaflet_type=special, offset_days=1 | Card 2: leaflet_type=regular, offset_days=4"
+        ),
         "filters": {
             "Standard": [{"type": "tag", "name": "leaflet_type", "mode": "include", "value": "regular"}],
             "Sunday": [
@@ -298,6 +312,9 @@ CLIENT_CONFIGS: dict[str, dict] = {
     },
     "Kaufland RCS": {
         "account_id": 162,
+        # Sendout details always report account_id=190 (parent WABA org) even when
+        # the task was fetched from account 162 (RCS sub-account).  Both are valid.
+        "accepted_account_ids": [162, 190],
         "timezone_name": "Europe/Berlin",
         "mappings": {},
         "filters": {

@@ -1373,10 +1373,14 @@ def _build_tech_panel(jira: dict, api: dict, client: str) -> str:
     _client_cfg = CLIENT_CONFIGS.get(client, {})
 
     parts.append(_section("Account Routing"))
-    expected_acc = _client_cfg.get("account_id", "—")
-    actual_acc = api.get("account_id")
+    expected_acc  = _client_cfg.get("account_id", "—")
+    accepted_accs = _client_cfg.get("accepted_account_ids")   # optional wider accept-list
+    actual_acc    = api.get("account_id")
     try:
-        acc_ok = int(expected_acc) == int(actual_acc)
+        if accepted_accs and actual_acc is not None:
+            acc_ok = int(actual_acc) in [int(x) for x in accepted_accs]
+        else:
+            acc_ok = int(expected_acc) == int(actual_acc)
     except (TypeError, ValueError):
         acc_ok = str(expected_acc) == str(actual_acc)
     parts.append(_check(

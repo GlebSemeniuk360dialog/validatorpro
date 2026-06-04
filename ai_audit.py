@@ -71,29 +71,56 @@ DATA TO AUDIT (JSON):
 {comparison_json}
 
 ══════════════════════════════════════════════════════════
-AUDIT PROTOCOL — TWO-STEP CONFIRMATION PROCESS
+AUDIT PROTOCOL — INDEPENDENT ANALYSIS
 ══════════════════════════════════════════════════════════
-STEP 1 — READ Pre_Verdict_Summary FIRST (top of the JSON).
-  It contains Python-computed verdicts for all checks. Your default is to ACCEPT them.
-  You may OVERRIDE a pre_verdict ONLY if you have a specific, articulable reason:
-    • A Comment_Thread entry shows the client approved a change (makes a FAIL acceptable)
-    • A prompt rule below explicitly marks a pattern as acceptable (template variables, short URLs, etc.)
-  Do NOT override "just because it looks fine" — the pre-computed math is reliable.
-  Do NOT override scheduling or tag diffs — those are exact arithmetic and set comparisons.
+The JSON contains a Pre_Verdict_Summary with pre-computed comparisons.
+Use it as a quick reference to orient yourself — NOT as verdicts to rubber-stamp.
+Pre-computed diffs use simple string/set matching and can miss:
+  • Format differences ("62" vs "shop_number=62" — same value, different notation)
+  • Semantic equivalences (template variables, short URLs, relative paths)
+  • Context from Comment_Thread (client-approved changes)
+Your job is to determine whether the INTENT matches, not whether raw strings are identical.
 
-STEP 2 — FOR EACH OF THE SIX CHECKS, produce a JSON field:
+FOR EACH OF THE SIX CHECKS, produce a JSON field:
   verdict:  "PASS", "FAIL", or "NA" (exact string — no emoji, no extra text)
-  reason:   ONE sentence stating what the pre_verdict was and whether you confirmed or overrode it
+  reason:   One or two sentences explaining your conclusion based on the actual data
   expected: brief exact value from JIRA / G-Sheet (≤80 chars)
   actual:   brief exact value from DMA API / Template (≤80 chars)
 
-CHECK 1 — SCHEDULING:  Use Precomputed_Diffs.scheduling. Accept pre_verdict. Override only for ALDI Portugal (18/19h rule).
-CHECK 2 — COPY:        Use Precomputed_Diffs.copy_text + carousel. Accept pre_verdict unless comments show approved text change.
-CHECK 3 — FOOTER:      Use Precomputed_Diffs.footer. Accept pre_verdict directly — empty JIRA footer = always PASS.
-CHECK 4 — CTA:         Use Precomputed_Diffs.cta_button (button text) + cta_urls (links). Accept both pre_verdicts unless override rule applies.
-CHECK 5 — TAGS:        Use Precomputed_Diffs.tags. Accept pre_verdict. The tag diff is exact Python set math.
-CHECK 6 — IMAGES:      Evaluate visually if images are attached. Otherwise "NA".
+CHECK 1 — SCHEDULING:
+  Compute the time difference between JIRA date and DMA date using the local clock rule.
+  Precomputed_Diffs.scheduling gives you the diff_minutes as a starting point — verify it.
+  Apply 40-minute tolerance. ALDI Portugal exception: 18:xx or 19:xx → PASS.
+
+CHECK 2 — COPY:
+  Read JIRA description and DMA template body. Do they convey the same content?
+  Precomputed_Diffs.copy_text gives a similarity score as a hint — low scores warrant
+  closer inspection, but the AI must assess intent, not just string similarity.
+  Check carousel card count via Precomputed_Diffs.carousel — count mismatch = FAIL.
+
+CHECK 3 — FOOTER:
+  If JIRA footer is empty/None → ALWAYS ✅ PASS, no matter what DMA footer says.
+  DMA default footers (e.g. "Um das kostenlose Abo zu beenden, sende STOP") are
+  system defaults and are NEVER an error when JIRA has no footer specified.
+  Only check footer content if JIRA explicitly specifies footer text.
+
+CHECK 4 — CTA:
+  Check button text: does the JIRA-specified button appear in the DMA template?
+  For CAROUSEL templates: buttons live on individual cards, NOT at template level.
+  Template_Buttons may be empty — check each card in Template_Carousel_Cards for buttons.
+  Check URLs: are JIRA-specified URLs present in the DMA config? Apply URL rules below
+  (relative URLs, template variables like {{shop_id}}, short URLs = not mismatches).
+  Use Precomputed_Diffs.cta_button and cta_urls as context.
+
+CHECK 5 — TAGS:
+  Compare G_Sheet_Intent.Include_Tags and Exclude_Tags against DMA_API_Setup.API_Tags_And_Filters.
+  Precomputed_Diffs.tags is a starting point — but verify manually because format
+  differences (e.g. "62" in G-Sheet vs "shop_number=62" in DMA API) are the SAME value.
+  Apply: mandatory filter rules, ALDI Portugal shop list rule, all tag rules below.
   Tags check ALWAYS has a verdict — never "NA" even if G-Sheet tags are empty.
+
+CHECK 6 — IMAGES:
+  Evaluate visually if images are attached. Otherwise "NA".
 
 overall = "PASS" only if every check is "PASS" or "NA". If ANY check is "FAIL" → overall = "FAIL".
 N/A rules: use "NA" ONLY when the check genuinely cannot be evaluated (no images = CHECK 6 NA).
@@ -113,16 +140,24 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
                `offset days=3` = `leaflet_tag=3` → ✅ PASS.
      The pre-computed tag diff already normalizes these — if `missing_include` or
      `extra_include` lists a leaflet_tag=X mismatch, the value truly does not match.
-   - *URL PLACEHOLDER RULE:* `https://rewe.de/{{1}}/angebote/` is the same URL as
-     `https://rewe.de/angebote/{{shop_number}}/` — {{{{1}}}} and {{shop_number}} are both
-     dynamic store ID placeholders. Query parameters like `?ecid=...` do not affect
-     URL identity. Also, a relative URL like `angebote/{{shop_id}}/?ecid=...` in the
-     DMA API is the same as `https://rewe.de/angebote/` — the domain is implied.
-     Never flag placeholder/param/relative-vs-absolute differences as URL mismatches.
-   - *TEMPLATE VARIABLE RULE:* Any URL containing `{{1}}`, `{{shop_number}}`, `{{leaflet_url}}`,
-     `{{leaflet_url_path}}` or any `{{...}}` pattern is a dynamic template variable, NOT a real URL.
-     NEVER flag `https://aldi.co/{{1}}` or any similar `{{...}}`-containing URL as unexpected —
-     these are required template placeholders and should be completely ignored in URL checks.
+   - *URL TEMPLATE VARIABLE RULE (ABSOLUTE — READ THIS FIRST):*
+     DMA URLs often contain template variables: {{{{1}}}}, {{{{shop_id}}}}, {{{{shop_number}}}},
+     {{{{leaflet_url}}}}, {{{{leaflet_url_path}}}}, or similar {{{{...}}}} patterns.
+     When comparing such a URL against a JIRA URL, you MUST:
+       1. Strip everything from the first template variable placeholder onwards.
+       2. Strip any query parameters (?ecid=..., ?utm=..., etc.) — they do NOT affect identity.
+       3. Compare ONLY the base domain + base path.
+     Examples:
+       • `angebote/{{{{shop_id}}}}/?ecid=tracking` → base = `angebote/`
+         → matches `https://www.rewe.de/angebote/` ✅ (domain implied, same base path)
+       • `https://rewe.de/angebote/{{{{1}}}}/` → base = `https://rewe.de/angebote/`
+         → matches `https://www.rewe.de/angebote/` ✅
+       • `https://aldi.co/{{{{1}}}}` → base = `https://aldi.co/`
+         → matches any aldi.co JIRA URL ✅
+     NEVER flag a template-variable URL as missing or unexpected. The base path match is sufficient.
+   - *DUPLICATE JIRA URLS RULE:* If JIRA lists the same URL repeated multiple times
+     (e.g., `https://www.rewe.de/angebote/` once per carousel card), treat them as ONE
+     unique URL for comparison. The DMA having a single base URL matching all of them = ✅ PASS.
    - *SHORT URL RULE:* Short URLs (aldi.co, shorturl.at, bit.ly, tinyurl.com, etc.) in the API
      that are not explicitly listed in JIRA should NOT be flagged as unexpected — they
      are used as leaflet URL placeholders and are equivalent to the JIRA URL.
@@ -176,17 +211,43 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
    - *SLIDE LABEL RULE (IMPORTANT):* Lines like "Slide 1:", "Slide 2:", "Slider 3:" in the JIRA
      Description are structural labels only — they are NOT part of the message text and must
      be completely ignored during text comparison. Do NOT flag their absence in the DMA as a mismatch.
+   - *WHATSAPP TEMPLATE VARIABLE RULE (CRITICAL):* DMA templates use {{{{1}}}}, {{{{2}}}},
+     {{{{3}}}}, {{{{4}}}} etc. as WhatsApp dynamic variables replaced at send time
+     (e.g., recipient's first name, shop address, dates).
+     JIRA intent text uses placeholder values like "x", "NAME", "Vorname", "Hans",
+     "XY-Straße", or any literal stand-in text at those same positions.
+     "Hallo x," in JIRA vs "Hallo {{{{1}}}}," in DMA → ✅ PASS — they are equivalent.
+     NEVER flag a {{{{N}}}} variable vs any JIRA stand-in text as a copy mismatch.
+     This applies to ALL WhatsApp template variables regardless of position.
+   - *EMOJI SHORTCODE RULE:* JIRA tickets use emoji shortcodes (:coin:, :fire:, :star:,
+     :shopping_cart:, etc.) while DMA templates contain the actual Unicode emoji (🪙, 🔥,
+     ⭐, 🛒). These are exactly the same symbol — different notation only.
+     NEVER flag an emoji shortcode vs actual emoji as a copy mismatch.
    - *NAHKAUF PLACEHOLDER RULE:* In Nahkauf templates, `XY-Straße, XY-Hausnr.`
      in JIRA is replaced by `{{1}}, {{2}}.` in the DMA template (with a dot after
      `{{2}}`). The trailing dot is part of the template syntax. Do NOT flag this
      as a mismatch — `{{1}}, {{2}}.` and `XY-Straße, XY-Hausnr.` are equivalent.
    - Ignore internal instructions like "Send this on Monday".
      Ensure text intended for the Footer hasn't mistakenly been put in the Body.
-   - *FOOTER RULE:* If JIRA has no footer text → always ✅ PASS even if DMA has a
-     footer (it is a default). Only ❌ FAIL if JIRA specifies a footer but it is
-     absent from the DMA template.
+   - *FOOTER RULE (ABSOLUTE — NO EXCEPTIONS):*
+     If JIRA footer is empty, None, or not specified → CHECK 3 is ALWAYS ✅ PASS.
+     It does NOT matter what the DMA template footer contains.
+     Standard footers like "Um das kostenlose Abo zu beenden, sende STOP" are
+     system defaults — they are ALWAYS acceptable when JIRA has no footer specified.
+     NEVER flag a DMA default footer as an error when JIRA has no footer.
+     The ONLY way CHECK 3 = ❌ FAIL: JIRA explicitly specifies a footer AND that
+     text is missing or wrong in the DMA template.
 4. **CTA Buttons & Links:**
    - Do the JIRA and DMA button names match?
+   - *CAROUSEL BUTTON RULE (ABSOLUTE):* For carousel sendouts, buttons are on individual
+     cards, NOT at the template level. ALL of the following are expected and NOT a FAIL:
+       • `Template_Buttons` is empty → normal for carousels
+       • `Precomputed_Diffs.cta_button.pre_verdict = NA` → no standalone JIRA button field
+       • JIRA `CTA_Button_Text` is empty / None → buttons are described per card in the description
+     For carousel CTA: look at the DMA carousel cards in `Template_Carousel_Cards`.
+     If each card has a button that matches what JIRA described per card → ✅ PASS.
+     If JIRA specifies no buttons at all and DMA carousel cards have standard buttons
+     (e.g. "Zum Prospekt") → ✅ PASS (standard carousel buttons are expected).
    - Verify that URLs found in `JIRA_All_URLs` exist in `API_URLs_Configured`.
    - *IMAGE URL IGNORE RULE (ABSOLUTE):* The DMA API response contains image hosting URLs
      from CDN / storage services. These are NEVER CTA button URLs. You MUST completely
@@ -218,10 +279,15 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
      → ❌ FAIL: wrong tag excluded AND required tag missing.
    - *G-SHEET INCLUDE TAGS RULE:* Similarly, if `G_Sheet_Intent.Include_Tags` is
      non-empty, verify all include tags exist in the DMA API configuration.
-   - *ALDI PORTUGAL RULE:* For 'ALDI Portugal Regular' the DMA API MUST include
-     a shop_number include filter with the Regular shop list. For 'ALDI Portugal
-     Northern' it MUST include the Northern shop list. If the wrong shop numbers
-     are configured or shop_number filter is missing, flag as ❌ FAIL.
+   - *ALDI PORTUGAL SHOP LIST RULE (ABSOLUTE — NEVER OVERRIDE):*
+     For ALDI Portugal, Regular and Northern are COMPLETELY DIFFERENT store lists.
+     Sending to the wrong list means the wrong stores receive the campaign — critical error.
+     CHECK `Precomputed_Diffs.aldi_portugal_shop_list` FIRST:
+       • pre_verdict = FAIL → ❌ FAIL tags check immediately, no exceptions
+       • pre_verdict = PASS → shop count matches the expected list for this segment → ✅ PASS
+       • pre_verdict = NA   → shop_number filter not found in DMA API → ❌ FAIL
+     The store count is the only reliable indicator — do NOT say PASS just because
+     "a shop_number filter exists." The count MUST match the expected count for the segment.
    - *MANDATORY FILTER RULE:* Some clients have mandatory system filters that are
      ALWAYS present in the DMA API regardless of what JIRA/G-Sheet specifies.
      These are listed in `Client_Context.Mandatory_Filters` in the comparison data.
@@ -238,6 +304,13 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
      is NOT required and its absence is NOT an error. Do NOT flag missing leaflet_tag
      for ALDI Italy carousel sendouts. Only regular (non-carousel) ALDI Italy sendouts
      require leaflet_tag=1.
+   - *KAUFLAND PERMANENT STORE EXCLUSION RULE (ABSOLUTE):*
+     Both Kaufland RCS and Kaufland WABA have a permanent DMA-managed `exclude_shop_number`
+     filter (a list of closed/special stores). This filter is ALWAYS present in EVERY
+     Kaufland sendout — it is a DMA system configuration, NOT something from JIRA or G-Sheet.
+     It is listed in `Client_Context.Mandatory_Filters` as "exclude_shop_number (permanent DMA-managed...)".
+     ✅ ALWAYS treat this filter as PASS — NEVER flag it as unexpected or as an audience mismatch.
+     Do NOT look for it in G-Sheet Exclude_Tags — it will not be there, and that is correct.
    - *SPECIAL RULE FOR 'KAUFLAND WABA' SUNDAY SENDOUT:* If the client is Kaufland WABA
      and the JIRA description is empty, this is expected — the carousel card body text
      is always the static leaflet template:
@@ -325,14 +398,17 @@ def _canonical_tag(tag: str) -> str:
 
     Equivalences handled:
       "offset days=X"                → "leaflet_tag=X"
+      "offset days X"                → "leaflet_tag=X"   ← G-Sheet space-separated format
       "offset_days=X"                → "leaflet_tag=X"
+      "offset_days X"                → "leaflet_tag=X"
       "leaflet_filter.offset_days=X" → "leaflet_tag=X"
 
     IMPORTANT: the numeric value X must match — offset_days=1 ≠ leaflet_tag=3.
     Different values = different leaflet week → mismatch should be flagged.
     """
     t = tag.strip()
-    m = _re.match(r'^(?:leaflet_filter\.)?offset[\s_]days\s*=\s*(\d+)$', t, _re.I)
+    # Match both "offset_days=1" (equals) and "offset days 1" (space-separated)
+    m = _re.match(r'^(?:leaflet_filter\.)?offset[\s_]days\s*[=\s]\s*(\d+)$', t, _re.I)
     if m:
         return f"leaflet_tag={m.group(1)}"
     return t
@@ -353,10 +429,14 @@ def _is_image_url(url: str) -> bool:
     return False
 
 
-def _compute_scheduling_diff(jira_date_str: str, api_date_str: str) -> dict:
+def _compute_scheduling_diff(jira_date_str: str, api_date_str: str,
+                              client_name: str = "") -> dict:
     """
     Compare JIRA and DMA dates as LOCAL clock readings (ignore timezone labels).
     The DMA API stores local time labeled as Z — so we strip tz and compare directly.
+
+    ALDI Portugal exception: sendouts always fire at 18:xx or 19:xx local — any DMA
+    time in that window is PASS regardless of what JIRA states.
     """
     def _parse_local(s: str):
         s = str(s or "").strip()
@@ -385,6 +465,35 @@ def _compute_scheduling_diff(jira_date_str: str, api_date_str: str) -> dict:
             "pre_verdict": "NA",
             "note": "Could not parse one or both dates — AI must evaluate manually",
         }
+
+    # ALDI Portugal: any sendout time at 18:xx or 19:xx is acceptable — the two
+    # segments (Regular and Northern) send at slightly different times within that window.
+    if "aldi portugal" in client_name.lower() and api_dt is not None:
+        api_hour = api_dt.hour
+        if api_hour in (18, 19):
+            return {
+                "jira_local_clock":       jira_dt.strftime("%Y-%m-%d %H:%M"),
+                "api_local_clock":        api_dt.strftime("%Y-%m-%d %H:%M"),
+                "diff_minutes":           0,
+                "within_40min_tolerance": True,
+                "pre_verdict":            "PASS",
+                "note": (
+                    f"✅ ALDI Portugal — DMA at {api_hour:02d}:xx is within the accepted "
+                    f"18:xx–19:xx sendout window (Regular at ~19:00, Northern at ~19:10)"
+                ),
+            }
+        else:
+            return {
+                "jira_local_clock":       jira_dt.strftime("%Y-%m-%d %H:%M"),
+                "api_local_clock":        api_dt.strftime("%Y-%m-%d %H:%M"),
+                "diff_minutes":           999,
+                "within_40min_tolerance": False,
+                "pre_verdict":            "FAIL",
+                "note": (
+                    f"❌ ALDI Portugal — DMA at {api_hour:02d}:xx is outside the accepted "
+                    f"18:xx–19:xx window"
+                ),
+            }
 
     diff_min = round(abs((api_dt - jira_dt).total_seconds()) / 60, 1)
     within   = diff_min <= 40
@@ -530,9 +639,102 @@ def _is_short_url(url: str) -> bool:
     return d in _SHORT_URL_DOMAINS
 
 
+def _tmpl_url_base(url: str) -> str:
+    """
+    Strip template variable placeholders and query/hash params from a URL,
+    returning the invariant base prefix suitable for matching.
+
+    Examples:
+      angebote/{shop_id}/?ecid=tracking  →  angebote/
+      https://rewe.de/angebote/{{1}}/    →  https://rewe.de/angebote/
+      https://aldi.co/{{1}}              →  https://aldi.co/
+      https://example.com/page           →  https://example.com/page   (no change)
+    """
+    # Strip query params and anchors
+    base = url.split('?')[0].split('#')[0]
+    # Find first template variable ({{...}} before {...})
+    idx_double = base.find('{{')
+    idx_single = base.find('{')
+    idx = idx_double if idx_double >= 0 else idx_single
+    if idx > 0:
+        base = base[:idx].rstrip('/')
+    elif idx == 0:
+        return ""  # URL starts with a variable — no usable base
+    return base
+
+
+def _urls_equivalent(jira_url: str, api_url: str) -> bool:
+    """
+    Return True if jira_url and api_url refer to the same destination.
+
+    Handles:
+    • Exact match
+    • Template variable URLs: strip var part, compare base path only
+    • Relative API URLs: compare path component against JIRA URL path
+    • Query params: ignored on both sides
+    """
+    from urllib.parse import urlparse
+
+    if jira_url == api_url:
+        return True
+
+    # Normalize both: strip query params
+    j_clean = jira_url.split('?')[0].rstrip('/')
+    a_clean = api_url.split('?')[0].rstrip('/')
+    if j_clean == a_clean:
+        return True
+
+    # If either URL contains a template variable, reduce to base path
+    has_tmpl = '{' in api_url or '{' in jira_url
+    if has_tmpl:
+        j_base = _tmpl_url_base(jira_url).rstrip('/')
+        a_base = _tmpl_url_base(api_url).rstrip('/')
+
+        if not a_base:
+            return False  # API URL is entirely a variable
+
+        # Extract path components for comparison (handles relative vs absolute)
+        def _path(u: str) -> str:
+            if u.startswith('http'):
+                return urlparse(u).path.strip('/')
+            return u.strip('/')
+
+        j_path = _path(j_base)
+        a_path = _path(a_base)
+
+        # If the entire API path was a template variable, a_path is empty.
+        # In that case match on domain alone (e.g. aldi.co/{{1}} matches aldi.co/abc).
+        if not a_path:
+            if j_base.startswith('http') and a_base.startswith('http'):
+                j_dom = urlparse(j_base).netloc.lower().lstrip('www.')
+                a_dom = urlparse(a_base).netloc.lower().lstrip('www.')
+                return j_dom == a_dom or j_dom in a_dom or a_dom in j_dom
+            return False
+
+        if not j_path:
+            return False
+
+        # Path match: exact, or one is a prefix of the other (handles /angebote/ vs angebote/)
+        if j_path == a_path:
+            return True
+        # One path is a prefix — the base URL covers the JIRA URL or vice-versa
+        if j_path.startswith(a_path) or a_path.startswith(j_path):
+            # Check domains don't conflict when both are absolute
+            if j_base.startswith('http') and a_base.startswith('http'):
+                j_domain = urlparse(j_base).netloc.lower().lstrip('www.')
+                a_domain = urlparse(a_base).netloc.lower().lstrip('www.')
+                return j_domain == a_domain or j_domain in a_domain or a_domain in j_domain
+            return True  # one is relative — path match is sufficient
+
+    return False
+
+
 def _compute_url_diff(jira_urls: list, api_urls: list) -> dict:
     """
     Filter image CDN URLs and compute CTA-only URL diff.
+
+    Template variable URLs ({{1}}, {shop_id}, etc.) are compared by their base
+    path prefix before the first variable placeholder.
 
     SAME-DOMAIN SHORT URL RULE:
     If all JIRA CTA URLs are present in the API, any additional API URLs from
@@ -544,12 +746,15 @@ def _compute_url_diff(jira_urls: list, api_urls: list) -> dict:
     api_cta  = [u for u in api_urls  if not _is_image_url(u)]
     img_cnt  = len([u for u in api_urls if _is_image_url(u)])
 
-    missing = [u for u in jira_cta if u not in api_cta]
-    extra   = [u for u in api_cta  if u not in jira_cta]
+    # Deduplicate JIRA URLs — same URL repeated for each carousel card counts as one
+    jira_unique = list(dict.fromkeys(jira_cta))
+
+    missing = [u for u in jira_unique if not any(_urls_equivalent(u, a) for a in api_cta)]
+    extra   = [u for u in api_cta    if not any(_urls_equivalent(j, u) for j in jira_unique)]
 
     # Filter "extra" URLs that are same-domain short URLs when the JIRA URL
     # from that domain is already present (different code, same service).
-    jira_domains = {_url_domain(u) for u in jira_cta}
+    jira_domains = {_url_domain(u) for u in jira_unique}
     extra_real = [
         u for u in extra
         if not (_is_short_url(u) and _url_domain(u) in jira_domains)
@@ -562,7 +767,7 @@ def _compute_url_diff(jira_urls: list, api_urls: list) -> dict:
     if ok:
         note_parts.append("✅ CTA URLs match")
     else:
-        if missing:   note_parts.append(f"missing from API: {missing}")
+        if missing:    note_parts.append(f"missing from API: {missing}")
         if extra_real: note_parts.append(f"unexpected in API: {extra_real}")
     if same_domain_ignored:
         note_parts.append(
@@ -570,7 +775,7 @@ def _compute_url_diff(jira_urls: list, api_urls: list) -> dict:
         )
 
     return {
-        "jira_cta_urls":           jira_cta,
+        "jira_cta_urls":           jira_unique,
         "api_cta_urls":            api_cta,
         "image_urls_ignored":      img_cnt,
         "missing_from_api":        missing,
@@ -581,9 +786,64 @@ def _compute_url_diff(jira_urls: list, api_urls: list) -> dict:
     }
 
 
+def _compute_aldi_portugal_shop_check(
+    segment: str,
+    expected_config_filters: list,
+    api_tag_str: str,
+) -> dict:
+    """
+    Verify ALDI Portugal shop_number filter has the correct store count for the segment.
+    Regular and Northern are completely different store lists — wrong count = wrong list.
+    """
+    shop_filter = next(
+        (f for f in expected_config_filters
+         if f.get("type") == "shop_number" or f.get("name") == "shop_number"),
+        None,
+    )
+    if not shop_filter:
+        return {
+            "segment": segment,
+            "pre_verdict": "NA",
+            "note": f"No shop_number filter defined in config for {segment} segment",
+        }
+
+    expected_count = len(shop_filter.get("values", []))
+
+    # Parse actual shop count from the api_tag_str produced by _build_audit_payload
+    # Format: "[Include] shop_number=[62 values]"
+    m = _re.search(r'shop_number=\[(\d+)\s*values?\]', api_tag_str, _re.I)
+    actual_count = int(m.group(1)) if m else None
+
+    if actual_count is None:
+        return {
+            "segment": segment,
+            "expected_shop_count": expected_count,
+            "actual_shop_count": "not found",
+            "pre_verdict": "FAIL",
+            "note": (
+                f"❌ shop_number filter NOT detected in DMA API tags — "
+                f"expected {expected_count} IDs for {segment} segment"
+            ),
+        }
+
+    match = (actual_count == expected_count)
+    return {
+        "segment": segment,
+        "expected_shop_count": expected_count,
+        "actual_shop_count": actual_count,
+        "pre_verdict": "PASS" if match else "FAIL",
+        "note": (
+            f"✅ Shop count matches: {expected_count} IDs for {segment} segment"
+            if match else
+            f"❌ WRONG STORE LIST: expected {expected_count} IDs for {segment} segment "
+            f"but DMA has {actual_count} IDs — this is the wrong segment list"
+        ),
+    }
+
+
 def _compute_carousel_diff(
     jira_desc: str,
-    parsed_carousel: list | None,
+    parsed_carousel,
     dma_carousel_texts: list,
 ) -> dict:
     """
@@ -748,6 +1008,14 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "") -> str:
         elif name:
             parts.append(f"{name} ({mode})")
 
+    # Kaufland RCS/WABA: always has a permanent DMA-managed store exclusion list
+    # (exclude_shop_number) for closed / special stores — must never be flagged.
+    if "kaufland" in client_lower:
+        parts.append(
+            "exclude_shop_number (permanent DMA-managed list of closed/special stores — "
+            "always present, NEVER flag as unexpected)"
+        )
+
     return ", ".join(parts) if parts else ""
 
 
@@ -853,6 +1121,7 @@ def build_comparison_data(
             is_northern = any(kw in jira_segment for kw in ("northern", "norte", "north"))
             if not is_northern:
                 is_northern = any(kw in api_tag_str.lower() for kw in ("northern", "norte", "north"))
+            _aldi_pt_segment = "Northern" if is_northern else "Regular"
             if is_northern:
                 _cf = _all_cf.get("Northern", _all_cf.get("Standard", []))
             else:
@@ -864,18 +1133,29 @@ def build_comparison_data(
         for f in _cf:
             if f.get("mode") == "exclude":
                 continue
-            ftype = f.get("type", "")
-            name  = f.get("name") or ftype or ""
-            val   = f.get("value", "")
-            od    = f.get("offset_days")
+            ftype  = f.get("type", "")
+            name   = f.get("name") or ftype or ""
+            val    = f.get("value", "")
+            od     = f.get("offset_days")
+            values = f.get("values", [])
             if ftype == "leaflet_tag" and od is not None:
                 _filter_parts.append(f"leaflet_tag={od}")
+            elif ftype == "shop_number" or name == "shop_number":
+                # Include count so AI can verify correct segment list
+                _seg_label = locals().get("_aldi_pt_segment", "")
+                _seg_suffix = f" — {_seg_label} segment" if _seg_label else ""
+                _filter_parts.append(
+                    f"shop_number ({len(values)} IDs expected{_seg_suffix})" if values
+                    else "shop_number"
+                )
             elif name and val:
                 _filter_parts.append(f"{name}={val}")
             elif name:
                 _filter_parts.append(name)
         expected_incl = ", ".join(_filter_parts) if _filter_parts else "(from config)"
-        expected_excl = ""
+        # G-Sheet exclude tags are still valid for Kaufland/ALDI Portugal —
+        # only include tags are skipped (those come from config instead).
+        expected_excl = _norm_tags(str(jira.get("gsheet_exclude_tags", "")))
     else:
         expected_incl = _norm_tags(str(jira.get("gsheet_tags", "")))
         expected_excl = _norm_tags(str(jira.get("gsheet_exclude_tags", "")))
@@ -885,6 +1165,7 @@ def build_comparison_data(
     _sched_diff     = _compute_scheduling_diff(
         str(jira.get("date", "")),
         api_date or str(jira.get("date", "")),
+        client_name=client_name,
     )
     _text_diff      = _compute_text_similarity(
         str(jira.get("description", "")),
@@ -907,6 +1188,15 @@ def build_comparison_data(
     )
     _mandatory_filters = _get_client_mandatory_filters(client_name, api_date)
 
+    # ALDI Portugal: dedicated shop count check (Regular vs Northern store list)
+    _aldi_pt_shop_diff = None
+    if "aldi portugal" in _client_lower:
+        _aldi_pt_shop_diff = _compute_aldi_portugal_shop_check(
+            segment=locals().get("_aldi_pt_segment", "Regular"),
+            expected_config_filters=locals().get("_cf", []),
+            api_tag_str=api_tag_str,
+        )
+
     # ── Flat summary table — AI reads this FIRST before diving into raw data ──
     def _pv(d: dict) -> str:
         return d.get("pre_verdict", "NA")
@@ -920,12 +1210,12 @@ def build_comparison_data(
         "⚡_tags":        f"{_pv(_tag_diff)}  |  {_tag_diff.get('note', '')}",
         "⚡_carousel":    f"{_pv(_carousel_diff)}  |  {_carousel_diff.get('note', '')}",
         "⚡_images":      "NA  |  Evaluate visually if images are attached below",
+        **({"⚡_aldi_pt_shop_list": f"{_pv(_aldi_pt_shop_diff)}  |  {_aldi_pt_shop_diff.get('note', '')}"} if _aldi_pt_shop_diff else {}),
         "INSTRUCTION": (
-            "START HERE. These are pre-computed verdicts. "
-            "For each check: ACCEPT the pre_verdict unless you have a SPECIFIC reason to override. "
-            "Valid override reasons: (1) Comment_Thread contains a client-approved change that "
-            "makes a FAIL acceptable, (2) A rule in the prompt explicitly marks something as PASS. "
-            "Do NOT override just because something 'looks ok' — trust the math."
+            "Quick reference — pre-computed comparisons to orient your analysis. "
+            "These use simple string matching and may flag format differences as mismatches "
+            "(e.g. '62' vs 'shop_number=62' is the SAME value). "
+            "Use these as a starting point, then verify with the full data and prompt rules."
             + (" ⚠️ Comment_Thread is non-empty — check for client-requested changes that may override the original config." if _has_comments else "")
         ),
     }
@@ -961,6 +1251,13 @@ def build_comparison_data(
         },
         "Client_Context": {
             "Mandatory_Filters": _mandatory_filters or "none defined for this client",
+            "Channel_Type": (
+                # Expose the explicit WABA-or-RCS JIRA field so the AI knows which
+                # channel it is analysing (WABA template body/footer/buttons vs RCS cards)
+                ", ".join(jira["waba_or_rcs"])
+                if isinstance(jira.get("waba_or_rcs"), list) and jira.get("waba_or_rcs")
+                else str(jira.get("waba_or_rcs") or "")
+            ),
             "Note": (
                 "These filters are ALWAYS present in the DMA API for this client "
                 "regardless of JIRA/G-Sheet content. Do NOT flag them as unexpected. "
@@ -975,6 +1272,7 @@ def build_comparison_data(
             "cta_urls":    _url_diff,
             "tags":        _tag_diff,
             "carousel":    _carousel_diff,
+            **( {"aldi_portugal_shop_list": _aldi_pt_shop_diff} if _aldi_pt_shop_diff else {} ),
         },
     }
 
@@ -1142,21 +1440,18 @@ def _enforce_precomputed_verdicts(
     audit: "AuditOutput", comparison_data: dict
 ) -> tuple["AuditOutput", list[str]]:
     """
-    Override AI PASS verdicts when deterministic pre-computed data clearly shows FAIL.
+    Safety net: override AI PASS only when pure arithmetic makes a FAIL undeniable.
 
-    Only enforces on objectively measurable checks:
-      - scheduling: diff_minutes is exact math — >40 min is always FAIL
-      - carousel:   card count mismatch is structural — wrong count is always FAIL
-      - tags:       missing/unexpected exclude tags violate a strict rule
-
-    We deliberately do NOT override copy, footer, or CTA — those require
-    interpretation that the AI is better at than simple set comparisons.
+    Scheduling is the only check enforced here because its tolerance rule is exact
+    math (diff_minutes > 40) with zero ambiguity.  All other checks — tags, copy,
+    footer, CTA — involve format differences, semantic equivalences, or comment
+    context that the AI evaluates better than a string/set comparison.
     """
     diffs   = comparison_data.get("Precomputed_Diffs", {})
     updates: dict = {}
     overrides: list[str] = []
 
-    # ── 1. Scheduling ──────────────────────────────────────────────────────────
+    # ── 1. Scheduling — pure arithmetic safety net ─────────────────────────────
     sched    = diffs.get("scheduling", {})
     diff_min = sched.get("diff_minutes")
     if (
@@ -1177,82 +1472,6 @@ def _enforce_precomputed_verdicts(
             ),
             expected=audit.scheduling.expected or str(sched.get("jira_local_clock", "")),
             actual=audit.scheduling.actual or str(sched.get("api_local_clock", "")),
-        )
-
-    # ── 2. Carousel card count mismatch ────────────────────────────────────────
-    carousel = diffs.get("carousel", {})
-    if (
-        carousel.get("pre_verdict") == "FAIL"
-        and carousel.get("count_match") is False        # explicit False, not None/absent
-        and audit.copy.verdict == "PASS"
-    ):
-        jn = carousel.get("jira_slide_count", "?")
-        dn = carousel.get("dma_card_count", "?")
-        overrides.append(
-            f"copy: AI said PASS but carousel count mismatch JIRA={jn} vs DMA={dn} — forced FAIL"
-        )
-        updates["copy"] = CheckVerdict(
-            verdict="FAIL",
-            reason=(
-                f"Carousel card count mismatch: JIRA has {jn} slide(s) but DMA has {dn} card(s). "
-                f"[Deterministic override — AI verdict was PASS.]"
-            ),
-            expected=f"{jn} carousel cards",
-            actual=f"{dn} carousel cards",
-        )
-
-    # ── 3. Tag exclude/include mismatches ──────────────────────────────────────
-    tags = diffs.get("tags", {})
-    if tags.get("pre_verdict") == "FAIL" and audit.tags.verdict == "PASS":
-        missing_exc = tags.get("missing_exclude", [])
-        extra_exc   = tags.get("extra_exclude",   [])
-        missing_inc = tags.get("missing_include", [])
-        issues: list[str] = []
-        if missing_exc: issues.append(f"missing exclude tags: {missing_exc}")
-        if extra_exc:   issues.append(f"unexpected exclude tags: {extra_exc}")
-        if missing_inc: issues.append(f"missing include tags: {missing_inc}")
-        if issues:
-            overrides.append(f"tags: AI said PASS but deterministic diff found: {'; '.join(issues)} — forced FAIL")
-            updates["tags"] = CheckVerdict(
-                verdict="FAIL",
-                reason=(
-                    f"Tag diff: {'; '.join(issues)}. "
-                    f"[Deterministic override — AI verdict was PASS.]"
-                ),
-                expected=audit.tags.expected,
-                actual=audit.tags.actual,
-            )
-
-    # ── 4. Footer — deterministic string match ─────────────────────────────────
-    footer = diffs.get("footer", {})
-    if footer.get("pre_verdict") == "FAIL" and audit.footer.verdict == "PASS":
-        overrides.append(f"footer: AI said PASS but string diff found mismatch — forced FAIL")
-        updates["footer"] = CheckVerdict(
-            verdict="FAIL",
-            reason=(
-                f"Footer mismatch: JIRA='{footer.get('jira_footer','?')[:60]}' "
-                f"vs DMA='{footer.get('dma_footer','?')[:60]}'. "
-                f"[Deterministic override — AI verdict was PASS.]"
-            ),
-            expected=footer.get("jira_footer", audit.footer.expected)[:80],
-            actual=footer.get("dma_footer",   audit.footer.actual)[:80],
-        )
-
-    # ── 5. CTA button text mismatch ────────────────────────────────────────────
-    cta_btn = diffs.get("cta_button", {})
-    if cta_btn.get("pre_verdict") == "FAIL" and audit.cta.verdict == "PASS":
-        overrides.append(
-            f"cta: AI said PASS but button text not found in DMA "
-            f"(JIRA='{cta_btn.get('jira_button','?')}', DMA={cta_btn.get('dma_buttons',[])}) — forced FAIL"
-        )
-        updates["cta"] = CheckVerdict(
-            verdict="FAIL",
-            reason=(
-                f"CTA button '{cta_btn.get('jira_button','?')}' not found in DMA template buttons. "
-                f"[Deterministic override — AI verdict was PASS.]"
-            ),
-            expected=str(cta_btn.get("jira_button", audit.cta.expected))[:80],
-            actual=str(cta_btn.get("dma_buttons", [audit.cta.actual]))[:80],
         )
 
     # Apply updates, then always recompute overall for consistency
@@ -1307,9 +1526,7 @@ def run_ai_audit(
         contents.append("\n--- JIRA REQUESTED IMAGES (newest revision per card slot, sorted by slide number) ---")
         # In bulk mode images are pre-filtered: newest attachment per card slot surfaces first.
         # Sort by slide number extracted from filename so image01 -> Slide 1, etc.
-        import re as _re
         def _slide_num_ai(name: str) -> int:
-            import re as _re
             stem = _re.sub(r"\.[a-z0-9]+$", "", name.lower())
             m = _re.search(r"(?<![a-z])(?:slide|card|pic|img|carousel)[-_\s]*0*(\d+)", stem)
             if m:
@@ -1366,16 +1583,15 @@ def run_ai_audit(
                 "a verdict ('PASS', 'FAIL', or 'NA'), a reason, expected value, and actual value. "
                 "Never merge checks. Never skip a check. "
                 "An empty or missing check field = invalid audit that will be rejected. "
-                "ABSOLUTE RULE 3: BE CONCISE. "
-                "reason: maximum 2 sentences. "
-                "expected: maximum 80 characters — key value only, no prose. "
-                "actual: maximum 80 characters — key value only, no prose. "
-                "confidence_reason: maximum 1 sentence. "
-                "Total JSON output MUST stay under 3000 characters."
+                "ABSOLUTE RULE 3: BE FOCUSED. "
+                "reason: 1-3 sentences — state what you found and why it passes or fails. "
+                "expected: key value from JIRA / G-Sheet (≤100 chars). "
+                "actual: key value from DMA API (≤100 chars). "
+                "confidence_reason: 1 sentence."
             ),
             response_mime_type="application/json",
             response_schema=AuditOutput,
-            max_output_tokens=2048,
+            max_output_tokens=4096,
             **({} if _thinking_cfg is None else {"thinking_config": _thinking_cfg}),
         )
 

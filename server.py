@@ -285,6 +285,17 @@ def _ticket_client(issue: dict) -> str:
     if "aldi.it" in reporter_email or "aldi-italy.it" in reporter_email:
         return "ALDI Italy"
     if "kaufland.de" in reporter_email:
+        # Prefer the explicit "WABA or RCS" JIRA field (customfield_16693) over text sniffing
+        _wr_raw = fields.get("customfield_16693")
+        if isinstance(_wr_raw, list) and _wr_raw:
+            _wr_val = (_wr_raw[0].get("value", "") if isinstance(_wr_raw[0], dict) else str(_wr_raw[0])).upper()
+        else:
+            _wr_val = str(_wr_raw or "").upper()
+        if "RCS" in _wr_val:
+            return "Kaufland RCS"
+        if "WABA" in _wr_val:
+            return "Kaufland WABA"
+        # Fallback: text-based detection for older tickets without the field
         return "Kaufland RCS" if "rcs" in text.lower() else "Kaufland WABA"
     if "penny.at" in reporter_email:
         return "PENNY Austria"
@@ -341,6 +352,7 @@ def _require_admin(authorization: Optional[str]) -> dict:
 
 
 def _cached_queue() -> list[dict]:
+    """Return raw JIRA issue dicts (for bulk_validator which reads issue['fields'])."""
     global _queue_cache, _queue_fetched_at
     if not _queue_cache or (time.time() - _queue_fetched_at) > 120:
         try:
@@ -349,6 +361,53 @@ def _cached_queue() -> list[dict]:
         except Exception as exc:
             logger.warning("Queue cache refresh failed: %s", exc)
     return _queue_cache
+
+
+def _normalize_issue(issue: dict) -> dict:
+    """
+    Convert a raw JIRA issue dict (with 'fields' sub-dict) into a flat dict
+    with 'key', 'summary', 'client', 'date', 'status' — as used by preflight,
+    auto-audit, and dashboard.  Safe to call on already-normalized dicts too.
+    """
+    if "fields" not in issue:
+        # Already normalized
+        return issue
+    fields = issue.get("fields", {})
+    client = _ticket_client(issue)
+    summary = fields.get("summary", "")
+    # ALDI Portugal: append segment to summary for task matching
+    if client == "ALDI Portugal":
+        seg_raw = fields.get("customfield_14287")
+        if isinstance(seg_raw, dict):
+            seg = seg_raw.get("value") or seg_raw.get("name") or ""
+        elif seg_raw is not None:
+            seg = str(seg_raw)
+        else:
+            seg = ""
+        if seg and seg.lower() not in summary.lower():
+            summary = f"{summary} {seg}".strip()
+    _ai_raw = fields.get("customfield_16417")
+    if isinstance(_ai_raw, list) and _ai_raw:
+        _ai_status = (_ai_raw[0].get("value") if isinstance(_ai_raw[0], dict) else str(_ai_raw[0]))
+    else:
+        _ai_status = None
+    if not _ai_status:
+        _db = _al.get_audit_for_ticket(issue["key"])
+        if _db:
+            _ai_status = _db.get("overall")
+    return {
+        "key":       issue["key"],
+        "summary":   summary,
+        "client":    client,
+        "date":      str(fields.get("customfield_12665", ""))[:10],
+        "status":    fields.get("status", {}).get("name", ""),
+        "ai_status": _ai_status,
+    }
+
+
+def _normalized_queue() -> list[dict]:
+    """Return queue as flat normalized dicts (for preflight/auto-audit/dashboard)."""
+    return [_normalize_issue(i) for i in _cached_queue()]
 
 
 def _gsheet() -> list[dict]:
@@ -691,12 +750,24 @@ async def get_queue(authorization: Optional[str] = Header(None)):
                 seg = ""
             if seg and seg.lower() not in summary.lower():
                 summary = f"{summary} {seg}".strip()
+        # AI audit status — from JIRA field first, then our internal DB as fallback
+        _ai_jira_raw = fields.get("customfield_16417")
+        if isinstance(_ai_jira_raw, list) and _ai_jira_raw:
+            _ai_status = (_ai_jira_raw[0].get("value") if isinstance(_ai_jira_raw[0], dict) else str(_ai_jira_raw[0]))
+        else:
+            _ai_status = None
+        if not _ai_status:
+            _db_audit = _al.get_audit_for_ticket(issue["key"])
+            if _db_audit:
+                _ai_status = _db_audit.get("overall")  # "PASS" or "FAIL"
+
         rows.append({
-            "key":     issue["key"],
-            "summary": summary,
-            "client":  client,
-            "date":    str(fields.get("customfield_12665", ""))[:10],
-            "status":  fields.get("status", {}).get("name", ""),
+            "key":       issue["key"],
+            "summary":   summary,
+            "client":    client,
+            "date":      str(fields.get("customfield_12665", ""))[:10],
+            "status":    fields.get("status", {}).get("name", ""),
+            "ai_status": _ai_status,   # "Approved", "Rejected", "PASS", "FAIL", or None
         })
     rows.sort(key=lambda r: r["date"] or "0000", reverse=True)
     return rows
@@ -717,9 +788,8 @@ async def get_sendouts(client: str, authorization: Optional[str] = Header(None))
         raise HTTPException(status_code=502, detail=f"DMA fetch failed: {exc}")
     result = []
     for t in tasks:
-        # Only skip tasks explicitly marked inactive — treat None/missing as active
-        if t.get("is_active") is False:
-            continue
+        # is_active=False on a pending task just means it hasn't started yet —
+        # do NOT skip. Status filter in fetch_pending_sendouts is sufficient.
         task_id = str(t.get("id") or t.get("task_id") or t.get("sendout_id") or "")
         if not task_id:
             continue
@@ -806,8 +876,9 @@ async def ticket_enrich(req: EnrichRequest, authorization: Optional[str] = Heade
 
                 date_matches = []
                 for task in tasks:
-                    if task.get("is_active") is False:
-                        continue
+                    # Do NOT skip on is_active=False — future pending tasks have
+                    # is_active=False until they start executing; status filter
+                    # in fetch_pending_sendouts (pending/scheduled/approved) is sufficient.
                     raw_d = str(task.get("scheduled_date") or task.get("date") or "")
                     try:
                         if _dti.fromisoformat(raw_d[:10]).date() == jira_date:
@@ -1174,7 +1245,7 @@ async def dashboard(authorization: Optional[str] = Header(None)):
 
         # ── Queue health (live from cache) ────────────────────────────────────
         from datetime import datetime as _dti, timedelta as _tdi
-        queue = _cached_queue()
+        queue = _normalized_queue()   # flat dicts with "date" key
         today = _dti.utcnow().date()
         due_24h = due_48h = 0
         for t in queue:
@@ -1596,17 +1667,21 @@ async def bulk_validate(req: BulkRequest, authorization: Optional[str] = Header(
     key_set = set(req.ticket_keys)
     issues = [i for i in _cached_queue() if i["key"] in key_set]
     if not issues:
-        raise HTTPException(status_code=404, detail="None of the requested tickets found in JIRA queue")
+        raise HTTPException(status_code=404, detail="None of the requested tickets found in the JIRA queue — try refreshing the queue first")
 
-    results: list[BulkTicketResult] = run_bulk_regular_check(
-        tickets=issues,
-        gsheet_data=_gsheet(),
-        jira_server=JIRA_SERVER,
-        jira_email=JIRA_EMAIL,
-        jira_token=JIRA_TOKEN,
-        api_token=API_TOKEN,
-        on_progress=lambda r, i, t: None,
-    )
+    try:
+        results: list[BulkTicketResult] = run_bulk_regular_check(
+            tickets=issues,
+            gsheet_data=_gsheet(),
+            jira_server=JIRA_SERVER,
+            jira_email=JIRA_EMAIL,
+            jira_token=JIRA_TOKEN,
+            api_token=API_TOKEN,
+            on_progress=lambda r, i, t: None,
+        )
+    except Exception as exc:
+        logger.error("bulk_validate failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Bulk validation failed: {_friendly_exc(exc)}")
 
     session = _sessions.get((authorization or "").split(" ", 1)[-1], {})
     bulk_user = session.get("name", "")
@@ -1631,20 +1706,24 @@ async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(
     key_set = set(req.ticket_keys)
     issues = [i for i in _cached_queue() if i["key"] in key_set]
     if not issues:
-        raise HTTPException(status_code=404, detail="None of the requested tickets found in JIRA queue")
+        raise HTTPException(status_code=404, detail="None of the requested tickets found in the JIRA queue — try refreshing the queue first")
 
-    results: list[BulkTicketResult] = run_bulk_validation(
-        tickets=issues,
-        gsheet_data=_gsheet(),
-        jira_server=JIRA_SERVER,
-        jira_email=JIRA_EMAIL,
-        jira_token=JIRA_TOKEN,
-        api_token=API_TOKEN,
-        gemini_key=GEMINI_KEY,
-        gemini_model=GEMINI_BULK_MODEL,
-        on_progress=lambda r, i, t: None,
-        examples_lib=_examples_lib,
-    )
+    try:
+        results: list[BulkTicketResult] = run_bulk_validation(
+            tickets=issues,
+            gsheet_data=_gsheet(),
+            jira_server=JIRA_SERVER,
+            jira_email=JIRA_EMAIL,
+            jira_token=JIRA_TOKEN,
+            api_token=API_TOKEN,
+            gemini_key=GEMINI_KEY,
+            gemini_model=GEMINI_BULK_MODEL,
+            on_progress=lambda r, i, t: None,
+            examples_lib=_examples_lib,
+        )
+    except Exception as exc:
+        logger.error("bulk_ai_audit failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Bulk AI audit failed: {_friendly_exc(exc)}")
 
     session = _sessions.get((authorization or "").split(" ", 1)[-1], {})
     user_name = session.get("name", "Validator Pro")
@@ -1798,8 +1877,6 @@ def _orphan_scan_sync(days_ahead: int, days_back: int) -> dict:
             tasks = fetch_pending_sendouts(API_TOKEN, acc_id,
                                            days_ahead=days_ahead, days_back=days_back)
             for task in tasks:
-                if task.get("is_active") is False:
-                    continue
                 task["_client"] = client
                 all_sendouts.append(task)
         except Exception as exc:
@@ -2019,8 +2096,7 @@ def _enrich_for_scheduler(
 
             date_matches = [
                 t for t in tasks
-                if t.get("is_active") is not False
-                and _safe_date_str_match(str(t.get("scheduled_date") or "")[:10], jira_dt)
+                if _safe_date_str_match(str(t.get("scheduled_date") or "")[:10], jira_dt)
             ]
 
             if date_matches:
@@ -2157,23 +2233,25 @@ async def _job_preflight_alert() -> None:
 
     loop = _asyncio.get_event_loop()
     try:
-        queue = await loop.run_in_executor(None, _cached_queue)
+        queue = await loop.run_in_executor(None, _normalized_queue)
     except Exception as exc:
         logger.warning("SCHEDULER preflight: queue fetch failed: %s", exc)
         return
 
     today = _dt.utcnow().date()
+    logger.info("SCHEDULER preflight: %d tickets in queue, today=%s", len(queue), today)
     upcoming: list[dict] = []
     for t in queue:
         raw = (t.get("date") or "")[:10]
         if not raw:
             continue
         delta = _safe_date_delta(raw, today)
+        logger.debug("SCHEDULER preflight: ticket=%s date=%s delta=%d", t.get("key"), raw, delta)
         if 0 <= delta <= 2:
             upcoming.append({**t, "_delta": delta})
 
     if not upcoming:
-        logger.info("SCHEDULER: preflight — no tickets due in 48h, skipping")
+        logger.info("SCHEDULER: preflight — no tickets due in 48h, skipping (queue had %d tickets, today=%s)", len(queue), today)
         return
 
     upcoming.sort(key=lambda x: x["date"])
@@ -2289,10 +2367,16 @@ async def _job_auto_audit() -> None:
     """
     Daily 09:00 UTC — find JIRA tickets going live in ≤24h that haven't been
     AI-audited yet, run a full audit for each, post results to Slack.
+
+    Uses the same _validate_single_ticket_ai pipeline as the bulk UI:
+    _fetch_and_enrich → _build_audit_payload → run_ai_audit → BulkTicketResult.
+    This means all improvements (URL diff, ALDI Portugal shop check, structured
+    output, proper tag normalization) apply to auto-audit too.
     """
     import asyncio as _asyncio
     import urllib.parse as _up
     from datetime import datetime as _dt
+    from bulk_validator import _validate_single_ticket_ai as _bv_ai
 
     logger.info("SCHEDULER: running auto-audit job")
     if not GEMINI_KEY:
@@ -2304,29 +2388,41 @@ async def _job_auto_audit() -> None:
 
     loop = _asyncio.get_event_loop()
     try:
-        queue = await loop.run_in_executor(None, _cached_queue)
+        # Use raw queue — _validate_single_ticket_ai expects issue["fields"] structure
+        raw_queue = await loop.run_in_executor(None, _cached_queue)
     except Exception as exc:
         logger.warning("SCHEDULER auto-audit: queue fetch failed: %s", exc)
         return
 
-    today    = _dt.utcnow().date()
+    today = _dt.utcnow().date()
+    # Normalize each raw issue to get its date, then filter to today/tomorrow
     imminent = [
-        t for t in queue
-        if _safe_date_delta((t.get("date") or "")[:10], today) in (0, 1)
+        issue for issue in raw_queue
+        if _safe_date_delta((_normalize_issue(issue).get("date") or "")[:10], today) in (0, 1)
     ]
 
     if not imminent:
         logger.info("SCHEDULER: auto-audit — no imminent tickets, skipping")
         return
 
+    logger.info("SCHEDULER auto-audit: %d imminent ticket(s) found", len(imminent))
+
+    # Build set of already-audited keys — in-memory AND DB-backed
+    already_audited_keys: set[str] = {v.get("ticket_key") for v in _audited_sendouts.values()}
+    for _iss in imminent:
+        _tk = _iss.get("key", "")
+        if _tk and _al.get_audit_for_ticket(_tk):
+            already_audited_keys.add(_tk)
+
+    gsheet_data   = _gsheet()
     audited_count = 0
     skipped_count = 0
-    already_audited_keys = {v.get("ticket_key") for v in _audited_sendouts.values()}
 
-    for t in imminent[:5]:   # cap at 5 to stay within Gemini rate limits
-        ticket_key = t["key"]
-        client     = t.get("client", "")
-        jira_date  = t.get("date", "")
+    for issue in imminent[:5]:   # cap at 5 to respect Gemini rate limits
+        norm       = _normalize_issue(issue)
+        ticket_key = norm["key"]
+        client     = norm.get("client", "")
+        jira_date  = norm.get("date", "")
 
         if ticket_key in already_audited_keys:
             skipped_count += 1
@@ -2336,54 +2432,47 @@ async def _job_auto_audit() -> None:
         logger.info("SCHEDULER auto-audit: processing %s (%s) for %s", ticket_key, client, jira_date)
 
         try:
-            enrich = await loop.run_in_executor(
-                None, _enrich_for_scheduler, client, ticket_key, jira_date, t.get("summary", "")
-            )
-        except Exception as exc:
-            logger.warning("SCHEDULER auto-audit: enrich failed for %s: %s", ticket_key, exc)
-            continue
-
-        sendout_id = enrich.get("sendout_id", "")
-        if not sendout_id:
-            logger.info("SCHEDULER auto-audit: no sendout_id for %s, skipping", ticket_key)
-            continue
-        if sendout_id in _audited_sendouts:
-            skipped_count += 1
-            continue
-
-        try:
-            audit = await loop.run_in_executor(
-                None, _run_audit_sync, client, ticket_key, sendout_id,
-                enrich.get("leaflet_url", ""),
-                enrich.get("gsheet_tags", ""),
-                enrich.get("gsheet_exclude_tags", ""),
+            result = await loop.run_in_executor(
+                None, _bv_ai,
+                # Positional args matching _validate_single_ticket_ai signature:
+                # (issue, gsheet_data, jira_server, jira_email, jira_token,
+                #  api_token, gemini_key, gemini_model, examples_lib=None)
+                issue, gsheet_data,
+                JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN,
+                API_TOKEN, GEMINI_KEY, GEMINI_BULK_MODEL,
+                _examples_lib.select_for_audit(client),
             )
         except Exception as exc:
             logger.warning("SCHEDULER auto-audit: audit failed for %s: %s", ticket_key, exc)
             continue
 
-        issues     = audit.get("issues", -1)
-        confidence = audit.get("confidence", -1)
-        ai_text    = audit.get("ai_result", "")
-
-        if issues < 0:
-            logger.info("SCHEDULER auto-audit: %s returned error/overload, skipping record", ticket_key)
+        if result.status == "error":
+            logger.warning("SCHEDULER auto-audit: %s errored — %s", ticket_key, result.error_msg)
+            continue
+        if result.status == "skipped":
+            logger.info("SCHEDULER auto-audit: %s skipped — %s", ticket_key, result.error_msg)
+            skipped_count += 1
             continue
 
-        # Record so we don't re-audit (and preflight job can show status)
-        _audited_sendouts[sendout_id] = {
-            "ticket_key": ticket_key,
-            "client":     client,
-            "issues":     issues,
-            "confidence": confidence,
-            "ts":         _dt.utcnow().isoformat(),
-        }
+        issues     = result.issues_found or 0
+        confidence = result.confidence          # from BulkTicketResult
+        sendout_id = result.sendout_id or ""
+
+        # Record so we don't re-audit and preflight can show AI status
+        if sendout_id:
+            _audited_sendouts[sendout_id] = {
+                "ticket_key": ticket_key,
+                "client":     client,
+                "issues":     issues,
+                "confidence": confidence,
+                "ts":         _dt.utcnow().isoformat(),
+            }
         _al.record_audit(
             ticket_key=ticket_key,
             client=client,
             sendout_id=sendout_id,
             overall="FAIL" if issues > 0 else "PASS",
-            structured=audit.get("structured"),
+            structured=result.structured or None,
             confidence=confidence,
             triggered_by="auto",
         )
@@ -2395,8 +2484,9 @@ async def _job_auto_audit() -> None:
         jira_link = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket_key}"
 
         if issues > 0:
-            failed_checks = _extract_failed_checks(ai_text)
-            checks_text   = "\n".join(f"• {c}" for c in failed_checks[:8])
+            # Use structured check labels (richer than regex-parsed text)
+            failed_labels = [c["label"] for c in (result.checks or []) if not c.get("ok")]
+            checks_text   = "\n".join(f"• {lbl}" for lbl in failed_labels[:8])
             _send_slack_block(
                 header=f"🤖 Auto-Audit: ❌ {ticket_key} FAILED — {client}",
                 sections=[
