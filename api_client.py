@@ -498,6 +498,116 @@ def write_ai_status_to_jira(
         return False
 
 
+def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str) -> str | None:
+    """
+    Fetch form answers for a JIRA issue via the Atlassian Forms REST API.
+    Returns the form content as a structured text string (same format as
+    parse_jira_carousel_form expects), or None if no form / fetch fails.
+
+    Requires the X-ExperimentalApi: opt-in header.
+    API: GET https://api.atlassian.com/jira/forms/cloud/{cloudId}/issue/{issueKey}/form
+    """
+    try:
+        # Get cloud ID (cached after first call)
+        cloud_resp = requests.get(
+            f"{server.rstrip('/')}/_edge/tenant_info",
+            timeout=HTTP_TIMEOUT,
+        )
+        cloud_id = cloud_resp.json().get("cloudId", "") if cloud_resp.ok else ""
+        if not cloud_id:
+            logger.warning("fetch_jira_form_answers: could not get cloudId for %s", issue_key)
+            return None
+
+        hdrs = {
+            "Accept": "application/json",
+            "X-ExperimentalApi": "opt-in",
+        }
+        auth = (email, token)
+
+        # 1. List forms on this issue
+        forms_resp = requests.get(
+            f"https://api.atlassian.com/jira/forms/cloud/{cloud_id}/issue/{issue_key}/form",
+            auth=auth, headers=hdrs, timeout=HTTP_TIMEOUT,
+        )
+        if not forms_resp.ok:
+            logger.debug("fetch_jira_form_answers: no forms on %s (HTTP %s)", issue_key, forms_resp.status_code)
+            return None
+
+        forms = forms_resp.json()
+        if not forms:
+            return None
+
+        # Use the first submitted form (there's typically only one)
+        form = next((f for f in forms if f.get("submitted")), forms[0])
+        form_id = form.get("id", "")
+        if not form_id:
+            return None
+
+        # 2. Get simplified answers
+        ans_resp = requests.get(
+            f"https://api.atlassian.com/jira/forms/cloud/{cloud_id}/issue/{issue_key}/form/{form_id}/format/answers",
+            auth=auth, headers=hdrs, timeout=HTTP_TIMEOUT,
+        )
+        if not ans_resp.ok:
+            logger.warning("fetch_jira_form_answers: answers fetch failed for %s form %s (HTTP %s)",
+                           issue_key, form_id, ans_resp.status_code)
+            return None
+
+        answers = ans_resp.json()  # list of {label, answer}
+        if not answers:
+            return None
+
+        # Build a normalised dict with the same shape as parse_jira_carousel_form
+        # so callers can set data["parsed_carousel"] directly — no regex needed.
+        def _get(label_kws: list[str]) -> str:
+            for item in answers:
+                lbl = item.get("label", "").lower()
+                if any(kw in lbl for kw in label_kws):
+                    return str(item.get("answer", "")).strip()
+            return ""
+
+        intro = _get(["main body text", "body text", "intro", "message"])
+
+        # Parse per-card sections from "Card N: text" format
+        def _parse_cards(raw: str) -> list[str]:
+            import re as _re
+            if not raw:
+                return []
+            parts = _re.split(r'Card\s*\d+\s*:', raw)
+            return [p.strip() for p in parts if p.strip()]
+
+        bodies_raw = _get(["card body texts", "card bodies", "card text"])
+        btns_raw   = _get(["card button texts", "button texts", "button text", "cta text"])
+        urls_raw   = _get(["card button urls", "button urls", "card urls"])
+
+        bodies = _parse_cards(bodies_raw)
+        btns   = _parse_cards(btns_raw)
+        # URLs may be on one line (space-separated "Card 1: url Card 2: url") — split properly
+        urls   = _parse_cards(urls_raw)
+
+        n = max(len(bodies), len(btns), len(urls))
+        if n == 0:
+            return None
+
+        cards = [
+            {
+                "body": bodies[i] if i < len(bodies) else "",
+                "btn":  btns[i]   if i < len(btns)   else "",
+                "url":  urls[i]   if i < len(urls)    else "",
+            }
+            for i in range(n)
+        ]
+
+        result = {"intro": intro, "cards": cards, "urls": [c["url"] for c in cards if c["url"]]}
+        logger.info("fetch_jira_form_answers: parsed form for %s — intro=%d chars, %d cards",
+                    issue_key, len(intro), len(cards))
+        return result
+
+    except Exception as exc:
+        logger.warning("fetch_jira_form_answers: failed for %s: %s", issue_key, exc)
+        return None
+
+
 def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch_images: bool = True, max_images: int = 10) -> dict | None:
     """
     Return a normalised dict of JIRA ticket data including attachments.
@@ -527,18 +637,26 @@ def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch
             if v is not None and str(v).strip() not in ("", "None", "[]", "{}"):
                 logger.info("  %s = %r", k, str(v)[:120])
 
-    # If description is empty, try to reconstruct from carousel form fields
+    # If description is empty, try to reconstruct from various sources
     if not data.get("description"):
-        # Build from additional_comments
-        if data.get("additional_comments"):
+        # Priority 1: Atlassian Forms API (ProForma / JSM native forms)
+        # Returns a parsed dict {intro, cards, urls} — set parsed_carousel directly,
+        # no regex needed. Also set description to the intro so copy checks have text.
+        form_data = fetch_jira_form_answers(server, email, token, issue.key)
+        if form_data and isinstance(form_data, dict):
+            data["parsed_carousel"] = form_data
+            data["description"] = form_data.get("intro", "")
+            logger.info("fetch_ticket_data: carousel form data from Forms API for %s", ticket_id)
+        # Priority 2: additional_comments field (cover note — least reliable)
+        elif data.get("additional_comments"):
             data["description"] = str(data["additional_comments"])
         else:
-            # Try raw description field
+            # Priority 3: raw description field
             raw_desc = raw_fields.get("description")
             if raw_desc:
                 data["description"] = str(raw_desc)
             else:
-                # Scan all string-valued raw fields for carousel form content keywords
+                # Priority 4: scan all string fields for carousel keywords
                 carousel_keys = []
                 for k, v in raw_fields.items():
                     if isinstance(v, str) and any(
