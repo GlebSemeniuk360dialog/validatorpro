@@ -1647,9 +1647,29 @@ def _enforce_precomputed_verdicts(
         )
 
     # ── 4. G-Sheet exclude-tag deviations — suppression compliance ─────────────
+    # IMPORTANT: mandatory client filters (e.g. REWE declined_new_terms=true) are
+    # system-level excludes that are ALWAYS present in the DMA payload and are
+    # intentionally absent from the G-Sheet. Strip those from extra_exclude before
+    # deciding whether a deviation is a real error — otherwise mandatory filters
+    # that are correctly applied get falsely flagged as unexpected.
     tagd = diffs.get("tags", {})
     _missing_exc = tagd.get("missing_exclude") or []
-    _extra_exc   = tagd.get("extra_exclude") or []
+    _extra_exc_raw = tagd.get("extra_exclude") or []
+
+    # Build a set of tokens from the mandatory-filters string so we can filter them out
+    _mand_str = str((comparison_data.get("Client_Context") or {}).get("Mandatory_Filters", "")).lower()
+    def _is_mandatory(tag: str) -> bool:
+        """Return True if this extra-exclude tag is a known mandatory client filter."""
+        t = tag.lower().strip()
+        # Direct substring match against the mandatory-filters description
+        if t in _mand_str:
+            return True
+        # Also match just the key name (e.g. "declined_new_terms" for "declined_new_terms=true")
+        key = t.split("=")[0].strip()
+        return bool(key) and key in _mand_str
+
+    _extra_exc = [t for t in _extra_exc_raw if not _is_mandatory(t)]
+
     if _missing_exc or _extra_exc:
         _parts = []
         if _missing_exc: _parts.append(f"missing exclude(s): {_missing_exc}")

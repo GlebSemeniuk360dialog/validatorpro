@@ -52,13 +52,13 @@ RATE_LIMIT_DELAY = 3  # seconds between Gemini calls
 CONFIDENCE_THRESHOLD = 70
 
 # Minimum score for _find_sendout_id to accept a fuzzy match among MULTIPLE
-# same-date DMA tasks. Scoring = (#shared words len>3)*10 + string_similarity(0..1),
-# so a single shared keyword already scores >=10; with zero shared words the score
-# is just the raw similarity (0..1). A floor of 0.45 therefore only rejects matches
-# that have NO shared keyword AND low string similarity — i.e. genuinely unrelated
-# candidates. In that case we skip (surface to a human) rather than risk validating
-# the WRONG campaign. Single-candidate and client-specific matches are unaffected.
-MIN_SENDOUT_MATCH_SCORE = 0.45
+# same-date DMA tasks. Scoring = (#shared words len>3)*10 + string_similarity(0..1).
+# Applied only in Step 3 (word-level scoring). Single-candidate and client-specific
+# paths (ALDI Sued, ALDI Portugal) return before reaching this.
+# Two thresholds: 3+ candidates needs a stronger signal; 2 candidates is less risky
+# so a lower floor applies (the weaker of two is still the best available choice).
+MIN_SENDOUT_MATCH_SCORE_MANY = 0.40   # 3+ same-date candidates
+MIN_SENDOUT_MATCH_SCORE_FEW  = 0.12   # 2 same-date candidates
 
 
 @dataclass
@@ -244,21 +244,25 @@ def _find_sendout_id(ticket_key: str, client: str, gsheet_data: list[dict],
 
             best = max(date_matches, key=_score)
             best_score = _score(best)
-            # Confidence floor: if even the best candidate has no shared keyword and
-            # low similarity, there is no real signal which same-date sendout is the
-            # right one — refuse to guess (would otherwise risk validating the WRONG
-            # campaign). The ticket then surfaces as "skipped" for a human to resolve.
-            if best_score >= MIN_SENDOUT_MATCH_SCORE:
+            n_candidates = len(date_matches)
+            # Apply a floor that scales with how many candidates there are.
+            # More candidates = more chance of a wrong pick = need a stronger signal.
+            floor = MIN_SENDOUT_MATCH_SCORE_MANY if n_candidates >= 3 else MIN_SENDOUT_MATCH_SCORE_FEW
+            if best_score >= floor:
                 return str(best.get("id") or best.get("task_id", ""))
             logger.warning(
-                "_find_sendout_id: ambiguous match for %s — best score %.2f among %d "
-                "same-date candidates; skipping rather than guessing the wrong sendout",
-                ticket_key, best_score, len(date_matches),
+                "_find_sendout_id: ambiguous match for %s — best score %.2f (floor %.2f) "
+                "among %d same-date candidates; skipping to avoid wrong sendout",
+                ticket_key, best_score, floor, n_candidates,
             )
             return ""
 
-        # Step 4: multiple same-date candidates but no JIRA summary to disambiguate —
-        # no basis to choose, so skip rather than blindly returning the first.
+        # Step 4: multiple same-date candidates but no JIRA summary to disambiguate.
+        # With only 2 candidates and no text at all, return the first (cannot do worse
+        # than before; without a summary there is no basis to prefer either). With 3+
+        # candidates and no summary there is too much ambiguity — skip.
+        if len(date_matches) <= 2:
+            return str(date_matches[0].get("id") or date_matches[0].get("task_id", ""))
         logger.warning(
             "_find_sendout_id: %s has %d same-date candidates but no JIRA summary to "
             "disambiguate; skipping rather than guessing the wrong sendout",
