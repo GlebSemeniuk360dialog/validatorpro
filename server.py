@@ -1468,17 +1468,27 @@ class ClientConfigUpdate(BaseModel):
     aliases:       list
     mappings:      Optional[dict] = None
 
+class ClientConfigCreate(BaseModel):
+    name:          str
+    account_id:    int  = 0
+    timezone_name: str  = "Europe/Berlin"
+    requires_jira: bool = True
+    filters:       dict = {}
+    aliases:       list = []
+    mappings:      Optional[dict] = None
+
 
 def _enrich_client_row(row: dict) -> dict:
-    """Merge read-only account_id from CLIENT_CONFIGS into a DB config row."""
+    """Merge account_id: prefer CLIENT_CONFIGS (hardcoded), fall back to DB value (custom clients)."""
     name = row.get("name", "")
-    row["account_id"] = CLIENT_CONFIGS.get(name, {}).get("account_id", "")
+    hardcoded = CLIENT_CONFIGS.get(name, {}).get("account_id")
+    row["account_id"] = hardcoded if hardcoded else row.get("account_id", 0)
     return row
 
 
 @app.get("/api/config/clients")
 async def config_list_clients(authorization: Optional[str] = Header(None)):
-    """Return all editable client configs (account_id is read-only, included for display)."""
+    """Return all editable client configs (account_id included for display)."""
     _get_session(authorization)
     return [_enrich_client_row(r) for r in _cfg.list_clients()]
 
@@ -1492,6 +1502,32 @@ async def config_get_client(name: str, authorization: Optional[str] = Header(Non
     return _enrich_client_row(row)
 
 
+@app.post("/api/config/clients")
+async def config_create_client(
+    body: ClientConfigCreate,
+    authorization: Optional[str] = Header(None),
+):
+    """Create a new custom client. Fails if a client with that name already exists."""
+    _get_session(authorization)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Client name cannot be empty")
+    if _cfg.get_client(name):
+        raise HTTPException(status_code=409, detail=f"Client '{name}' already exists")
+    saved = _cfg.upsert_client(
+        name=name,
+        account_id=body.account_id,
+        timezone_name=body.timezone_name,
+        requires_jira=body.requires_jira,
+        filters=body.filters or {},
+        aliases=body.aliases or [],
+        mappings=body.mappings,
+        is_custom=True,
+    )
+    _cfg.apply_to_memory(CLIENT_CONFIGS, CLIENT_ALIASES)
+    return _enrich_client_row(saved)
+
+
 @app.put("/api/config/clients/{name}")
 async def config_update_client(
     name: str,
@@ -1499,7 +1535,7 @@ async def config_update_client(
     authorization: Optional[str] = Header(None),
 ):
     _get_session(authorization)
-    if name not in CLIENT_CONFIGS:
+    if not _cfg.get_client(name):
         raise HTTPException(status_code=404, detail="Client not found")
     saved = _cfg.upsert_client(
         name=name,
@@ -1509,9 +1545,21 @@ async def config_update_client(
         aliases=body.aliases,
         mappings=body.mappings,
     )
-    # Hot-reload into memory immediately
     _cfg.apply_to_memory(CLIENT_CONFIGS, CLIENT_ALIASES)
-    return saved
+    return _enrich_client_row(saved)
+
+
+@app.delete("/api/config/clients/{name}")
+async def config_delete_client(name: str, authorization: Optional[str] = Header(None)):
+    """Delete a custom client (non-custom/hardcoded clients cannot be deleted)."""
+    _get_session(authorization)
+    ok = _cfg.delete_client(name)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Client not found or is a built-in client (cannot delete)")
+    # Remove from memory
+    CLIENT_CONFIGS.pop(name, None)
+    CLIENT_ALIASES.pop(name, None)
+    return {"ok": True, "deleted": name}
 
 
 @app.post("/api/config/reload")
