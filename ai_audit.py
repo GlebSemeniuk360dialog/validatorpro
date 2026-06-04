@@ -124,6 +124,15 @@ CHECK 6 — IMAGES:
 
 overall = "PASS" only if every check is "PASS" or "NA". If ANY check is "FAIL" → overall = "FAIL".
 N/A rules: use "NA" ONLY when the check genuinely cannot be evaluated (no images = CHECK 6 NA).
+
+⚠️ DETERMINISTICALLY ENFORCED PRE-VERDICTS — these are pure math/counting and CANNOT be
+overridden by your judgement. If any of the following pre-verdicts is FAIL, the corresponding
+check WILL be forced to FAIL regardless of what you output, so you should also mark it FAIL:
+  • Precomputed_Diffs.scheduling.pre_verdict = FAIL (diff > 40 min)  → CHECK 1 FAIL
+  • Precomputed_Diffs.carousel.pre_verdict = FAIL (card count mismatch) → CHECK 2 FAIL
+  • Precomputed_Diffs.aldi_portugal_shop_list.pre_verdict = FAIL (wrong store count) → CHECK 5 FAIL
+  • Precomputed_Diffs.tags has any missing_exclude or extra_exclude → CHECK 5 FAIL (excludes are non-negotiable)
+  • Precomputed_Diffs.mandatory_filters.pre_verdict = FAIL (required filter absent) → CHECK 5 FAIL
 ══════════════════════════════════════════════════════════
 
 REQUIRED CHECKS & RULES (apply inside the protocol steps above):
@@ -1019,6 +1028,103 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "") -> str:
     return ", ".join(parts) if parts else ""
 
 
+def _compute_mandatory_filters_present(
+    client_name: str, api_date: str, api_tag_str: str
+) -> dict:
+    """
+    Deterministic check that every MANDATORY system filter for this client is
+    actually present in the DMA API payload.
+
+    Mandatory filters (e.g. REWE `declined_new_terms=true` exclude, ALDI Süd
+    `leaflet_accepted=true`) are compliance/suppression filters that must ALWAYS
+    be on the sendout.  The prompt tells the AI not to *flag* them as unexpected —
+    but nothing verified they were actually present.  A dropped mandatory
+    suppression filter (e.g. opt-out list missing) is a fail-open hole this closes.
+
+    Returns {pre_verdict, missing:[...], checked:[...], note}.
+    pre_verdict = "NA"   → no mandatory filters defined for this client
+                  "PASS" → all mandatory filter tokens found in the API payload
+                  "FAIL" → one or more mandatory filters are missing
+    """
+    from config import CLIENT_CONFIGS
+
+    cfg = CLIENT_CONFIGS.get(client_name, {})
+    filters_cfg = cfg.get("filters", {})
+    if not filters_cfg:
+        return {"pre_verdict": "NA", "missing": [], "checked": [],
+                "note": "No mandatory filters defined for this client"}
+
+    client_lower = client_name.lower()
+    if "kaufland" in client_lower:
+        from datetime import datetime as _dt3
+        try:
+            is_sun = _dt3.fromisoformat(api_date.replace("Z", "+00:00")).weekday() == 6
+        except Exception:
+            is_sun = False
+        cf = filters_cfg.get("Sunday" if is_sun else "Wednesday",
+                             filters_cfg.get("Standard", []))
+    else:
+        cf = filters_cfg.get("Standard", [])
+
+    if not cf:
+        return {"pre_verdict": "NA", "missing": [], "checked": [],
+                "note": "No mandatory filters defined for this client/schedule"}
+
+    hay = str(api_tag_str or "").lower()
+    missing: list[str] = []
+    checked: list[str] = []
+
+    for f in cf:
+        ftype  = f.get("type", "")
+        name   = (f.get("name") or ftype or "").strip()
+        val    = str(f.get("value", "")).strip()
+        od     = f.get("offset_days")
+        values = f.get("values", [])
+
+        # Build the set of acceptable token spellings for this filter.
+        tokens: list[str] = []
+        label = name or ftype or "filter"
+        if ftype == "leaflet_tag" and od is not None:
+            tokens = [f"leaflet_tag={od}", f"offset_days={od}", f"offset days={od}"]
+            label = f"leaflet_tag={od}"
+        elif ftype == "shop_number" or name == "shop_number":
+            tokens = ["shop_number"]
+            label = "shop_number"
+        elif ftype == "locale" and val:
+            tokens = [f"locale={val}".lower()]
+            label = f"locale={val}"
+        elif name and val:
+            tokens = [f"{name}={val}".lower(), name.lower()]
+            label = f"{name}={val}"
+        elif name:
+            tokens = [name.lower()]
+            label = name
+        else:
+            continue
+
+        checked.append(label)
+        if not any(tok.lower() in hay for tok in tokens):
+            missing.append(label)
+
+    if missing:
+        return {
+            "pre_verdict": "FAIL",
+            "missing": missing,
+            "checked": checked,
+            "note": (
+                f"❌ MANDATORY filter(s) missing from DMA payload: {missing}. "
+                f"These are required for every {client_name} sendout — a missing "
+                f"suppression/compliance filter is a critical audience error."
+            ),
+        }
+    return {
+        "pre_verdict": "PASS",
+        "missing": [],
+        "checked": checked,
+        "note": f"✅ All mandatory filters present: {checked}",
+    }
+
+
 def _build_report_from_structured(audit: "AuditOutput", overrides: list[str] | None = None) -> str:
     """Generate a human-readable markdown report from structured AuditOutput."""
     EMOJI = {"PASS": "✅", "FAIL": "❌", "NA": "🔕"}
@@ -1187,6 +1293,7 @@ def build_comparison_data(
         tmpl_buttons,
     )
     _mandatory_filters = _get_client_mandatory_filters(client_name, api_date)
+    _mandatory_present = _compute_mandatory_filters_present(client_name, api_date, api_tag_str)
 
     # ALDI Portugal: dedicated shop count check (Regular vs Northern store list)
     _aldi_pt_shop_diff = None
@@ -1211,6 +1318,7 @@ def build_comparison_data(
         "⚡_carousel":    f"{_pv(_carousel_diff)}  |  {_carousel_diff.get('note', '')}",
         "⚡_images":      "NA  |  Evaluate visually if images are attached below",
         **({"⚡_aldi_pt_shop_list": f"{_pv(_aldi_pt_shop_diff)}  |  {_aldi_pt_shop_diff.get('note', '')}"} if _aldi_pt_shop_diff else {}),
+        **({"⚡_mandatory_filters": f"{_pv(_mandatory_present)}  |  {_mandatory_present.get('note', '')}"} if _mandatory_present.get("pre_verdict") != "NA" else {}),
         "INSTRUCTION": (
             "Quick reference — pre-computed comparisons to orient your analysis. "
             "These use simple string matching and may flag format differences as mismatches "
@@ -1272,6 +1380,7 @@ def build_comparison_data(
             "cta_urls":    _url_diff,
             "tags":        _tag_diff,
             "carousel":    _carousel_diff,
+            "mandatory_filters": _mandatory_present,
             **( {"aldi_portugal_shop_list": _aldi_pt_shop_diff} if _aldi_pt_shop_diff else {} ),
         },
     }
@@ -1440,16 +1549,35 @@ def _enforce_precomputed_verdicts(
     audit: "AuditOutput", comparison_data: dict
 ) -> tuple["AuditOutput", list[str]]:
     """
-    Safety net: override AI PASS only when pure arithmetic makes a FAIL undeniable.
+    Safety net: override AI PASS only when pure arithmetic / set-membership makes a
+    FAIL undeniable.
 
-    Scheduling is the only check enforced here because its tolerance rule is exact
-    math (diff_minutes > 40) with zero ambiguity.  All other checks — tags, copy,
-    footer, CTA — involve format differences, semantic equivalences, or comment
-    context that the AI evaluates better than a string/set comparison.
+    Enforced deterministically (the AI cannot override these):
+      • scheduling     — diff_minutes > 40 (exact math)
+      • carousel count — JIRA slide count != DMA card count (exact counting)
+      • ALDI PT stores — wrong shop-list count = wrong audience segment (exact counting)
+      • exclude tags   — G-Sheet excludes are "non-negotiable" per the prompt; a
+                         missing/extra exclude is a suppression error, not a format nuance
+      • mandatory      — a required compliance/suppression filter absent from the payload
+
+    INCLUDE tags, copy, footer and CTA are intentionally NOT enforced here — those
+    involve format differences, semantic equivalences (template vars, short URLs),
+    and comment-override context that the AI judges better than a string/set diff.
     """
     diffs   = comparison_data.get("Precomputed_Diffs", {})
     updates: dict = {}
     overrides: list[str] = []
+
+    def _force(check_name: str, attr, reason: str, expected: str = "", actual: str = ""):
+        """Force a check to FAIL only when the AI currently says PASS."""
+        if attr.verdict == "PASS":
+            overrides.append(f"{check_name}: {reason} — forced FAIL (AI said PASS)")
+            updates[check_name] = CheckVerdict(
+                verdict="FAIL",
+                reason=f"{reason} [Deterministic override — AI verdict was PASS.]",
+                expected=expected or attr.expected,
+                actual=actual or attr.actual,
+            )
 
     # ── 1. Scheduling — pure arithmetic safety net ─────────────────────────────
     sched    = diffs.get("scheduling", {})
@@ -1460,18 +1588,58 @@ def _enforce_precomputed_verdicts(
         and float(diff_min) > 40
         and audit.scheduling.verdict == "PASS"
     ):
-        overrides.append(
-            f"scheduling: AI said PASS but diff={diff_min}min > 40 min tolerance "
-            f"({sched.get('jira_local_clock')} vs {sched.get('api_local_clock')}) — forced FAIL"
+        _force(
+            "scheduling", audit.scheduling,
+            f"Schedule diff is {diff_min} min, exceeding 40-min tolerance",
+            expected=str(sched.get("jira_local_clock", "")),
+            actual=str(sched.get("api_local_clock", "")),
         )
-        updates["scheduling"] = CheckVerdict(
-            verdict="FAIL",
-            reason=(
-                f"Schedule diff is {diff_min} min, exceeding 40-min tolerance. "
-                f"[Deterministic override — AI verdict was PASS.]"
-            ),
-            expected=audit.scheduling.expected or str(sched.get("jira_local_clock", "")),
-            actual=audit.scheduling.actual or str(sched.get("api_local_clock", "")),
+
+    # ── 2. Carousel card count — exact counting, structural mismatch ───────────
+    carousel = diffs.get("carousel", {})
+    if carousel.get("pre_verdict") == "FAIL":
+        _force(
+            "copy", audit.copy,
+            f"Carousel card count mismatch: JIRA={carousel.get('jira_slide_count')} "
+            f"vs DMA={carousel.get('dma_card_count')}",
+            expected=f"{carousel.get('jira_slide_count')} slide(s)",
+            actual=f"{carousel.get('dma_card_count')} card(s)",
+        )
+
+    # ── 3. ALDI Portugal store list — wrong count = wrong audience segment ──────
+    shop = diffs.get("aldi_portugal_shop_list", {})
+    if shop.get("pre_verdict") == "FAIL":
+        _force(
+            "tags", audit.tags,
+            f"Wrong store list for {shop.get('segment','?')} segment: expected "
+            f"{shop.get('expected_shop_count')} shop IDs, DMA has {shop.get('actual_shop_count')}",
+            expected=f"{shop.get('expected_shop_count')} shop IDs ({shop.get('segment','')})",
+            actual=f"{shop.get('actual_shop_count')} shop IDs",
+        )
+
+    # ── 4. G-Sheet exclude-tag deviations — suppression compliance ─────────────
+    tagd = diffs.get("tags", {})
+    _missing_exc = tagd.get("missing_exclude") or []
+    _extra_exc   = tagd.get("extra_exclude") or []
+    if _missing_exc or _extra_exc:
+        _parts = []
+        if _missing_exc: _parts.append(f"missing exclude(s): {_missing_exc}")
+        if _extra_exc:   _parts.append(f"unexpected exclude(s): {_extra_exc}")
+        _force(
+            "tags", audit.tags,
+            "Exclude-tag deviation (G-Sheet excludes are non-negotiable) — " + "; ".join(_parts),
+            expected=str(tagd.get("expected_exclude", [])),
+            actual=str(tagd.get("actual_exclude", [])),
+        )
+
+    # ── 5. Mandatory filter missing from payload ───────────────────────────────
+    mand = diffs.get("mandatory_filters", {})
+    if mand.get("pre_verdict") == "FAIL":
+        _force(
+            "tags", audit.tags,
+            f"Mandatory filter(s) missing from DMA payload: {mand.get('missing')}",
+            expected=f"mandatory: {mand.get('checked')}",
+            actual=f"missing: {mand.get('missing')}",
         )
 
     # Apply updates, then always recompute overall for consistency
