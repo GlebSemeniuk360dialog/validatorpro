@@ -1446,10 +1446,11 @@ def run_orphan_triage(api_key: str, model_name: str, orphans: list[dict]) -> lis
         orphans_json=json.dumps(orphans, indent=2, ensure_ascii=False),
     )
     from google.genai import types as _gt2
+    _tc = _thinking_config_for(model_name, gemini3_level="low")
     _cfg = _gt2.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=OrphanTriageOutput,
-        thinking_config=_gt2.ThinkingConfig(thinking_budget=0),
+        **({} if _tc is None else {"thinking_config": _tc}),
     )
     raw = _client_ai.models.generate_content(
         model=model_name, contents=[prompt], config=_cfg
@@ -1481,6 +1482,26 @@ def _extract_json(raw_text: str) -> str:
 
 
 # ── Reliability helpers ────────────────────────────────────────────────────────
+
+def _thinking_config_for(model_name: str, gemini3_level: str = "low"):
+    """
+    Build the right ThinkingConfig for the model family.
+
+    Gemini 3+        : use thinking_level (minimal|low|medium|high). thinking_budget
+                       is deprecated on Gemini 3 and budget=0 cripples reasoning on a
+                       thinking-first model — the audit needs real reasoning, so we
+                       enable a thinking_level instead.
+    Gemini 2.5 Flash : budget=0 disables thinking for speed (legacy behaviour).
+    Other (2.5 Pro)  : None → model uses its default reasoning.
+    """
+    from google.genai import types as _t
+    ml = (model_name or "").lower()
+    if "gemini-3" in ml or "gemini-4" in ml:
+        return _t.ThinkingConfig(thinking_level=gemini3_level)
+    if "flash" in ml:
+        return _t.ThinkingConfig(thinking_budget=0)
+    return None
+
 
 def _generate_with_retry(client, model_name: str, contents, config, max_retries: int = 3) -> str:
     """
@@ -1734,10 +1755,9 @@ def run_ai_audit(
     raw_text = ""
     try:
         from google.genai import types as _genai_types
-        # For Flash models: disable extended thinking (thinking_budget=0) for max speed.
-        # For Pro models: let the model use its default reasoning.
-        _is_flash = "flash" in model_name.lower()
-        _thinking_cfg = _genai_types.ThinkingConfig(thinking_budget=0) if _is_flash else None
+        # Gemini 3+: enable real reasoning via thinking_level ("low" = balanced).
+        # Gemini 2.5 Flash: legacy thinking_budget=0 (speed). 2.5 Pro: default reasoning.
+        _thinking_cfg = _thinking_config_for(model_name, gemini3_level="low")
         _config = _genai_types.GenerateContentConfig(
             system_instruction=(
                 "You are a QA auditor for WhatsApp marketing campaigns. "
