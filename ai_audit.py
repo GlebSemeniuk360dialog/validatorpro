@@ -1034,7 +1034,96 @@ def _compute_cta_button_verdict(jira_btn: str, tmpl_buttons: list[str]) -> dict:
     }
 
 
-def _get_client_mandatory_filters(client_name: str, api_date: str = "") -> str:
+def _pick_filter_set(
+    filters_cfg: dict,
+    *,
+    api_date: str = "",
+    is_carousel: bool = False,
+    segment: str = "",
+) -> tuple[str, list]:
+    """
+    Select the best-matching filter set from a client's ``filters`` config dict.
+
+    Each entry value can be:
+    - ``list``  — plain rules with no conditions (used as explicit fallback).
+    - ``dict``  — must have ``"rules": [...]`` and optionally ``"when": {...}``
+                  with one or more condition keys:
+                    * ``"day_of_week"`` : "sunday" | "monday" | … | "saturday"
+                    * ``"is_carousel"`` : True | False
+                    * ``"segment"``     : str (case-insensitive substring of segment)
+
+    Selection algorithm:
+    1. Evaluate every dict-typed entry whose ``when`` conditions ALL match the
+       current context; score = number of conditions matched.
+    2. Return the highest-scoring match (most specific).  Ties → dict order wins.
+    3. If no conditional match, fall back to the plain-list entry named by
+       ``segment`` (if present), then ``"Standard"``, then the first plain list.
+
+    Returns ``(set_name, rules_list)``.
+    """
+    from datetime import datetime as _dtpfs
+    try:
+        dow = _dtpfs.fromisoformat(api_date.replace("Z", "+00:00")).strftime("%A").lower()
+    except Exception:
+        dow = ""
+
+    ctx: dict = {
+        "day_of_week": dow,
+        "is_carousel": is_carousel,
+        "segment": segment.lower(),
+    }
+
+    best_name: str = "Standard"
+    best_rules: list = []
+    best_score: int = -1
+
+    plain: dict[str, list] = {}  # plain-list fallbacks keyed by name
+
+    for name, val in filters_cfg.items():
+        if isinstance(val, list):
+            plain[name] = val
+            continue
+        if not isinstance(val, dict):
+            continue
+        rules = val.get("rules", [])
+        when: dict = val.get("when", {})
+        if not when:
+            # Dict with no conditions — treat as unconditional plain fallback
+            if best_score < 0:
+                best_name, best_rules = name, rules
+            continue
+        score = 0
+        matched = True
+        for k, v in when.items():
+            if k == "day_of_week":
+                if ctx["day_of_week"] != str(v).lower():
+                    matched = False; break
+            elif k == "is_carousel":
+                if bool(ctx["is_carousel"]) != bool(v):
+                    matched = False; break
+            elif k == "segment":
+                if str(v).lower() not in ctx["segment"]:
+                    matched = False; break
+            else:
+                matched = False; break  # unknown condition key → skip
+            score += 1
+        if matched and score > best_score:
+            best_score = score
+            best_name = name
+            best_rules = rules
+
+    if best_score >= 0:
+        return best_name, best_rules
+
+    # No conditional match — use plain-list fallbacks
+    for key in (segment, "Standard", next(iter(plain), "")):
+        if key and key in plain:
+            return key, plain[key]
+
+    return "Standard", []
+
+
+def _get_client_mandatory_filters(client_name: str, api_date: str = "", dma_carousel_texts=None) -> str:
     """
     Derive mandatory system filters for a client from CLIENT_CONFIGS.
     Returns a human-readable string for injection into the comparison data.
@@ -1050,18 +1139,12 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "") -> str:
     if not filters_cfg:
         return ""
 
-    # Determine the active schedule for this client
-    client_lower = client_name.lower()
-    if "kaufland" in client_lower:
-        from datetime import datetime as _dt2
-        try:
-            is_sun = _dt2.fromisoformat(api_date.replace("Z", "+00:00")).weekday() == 6
-        except Exception:
-            is_sun = False
-        schedule = "Sunday" if is_sun else "Wednesday"
-        cf = filters_cfg.get(schedule, filters_cfg.get("Standard", []))
-    else:
-        cf = filters_cfg.get("Standard", [])
+    _is_carousel = bool(dma_carousel_texts)
+    _set_name, cf = _pick_filter_set(
+        filters_cfg,
+        api_date=api_date,
+        is_carousel=_is_carousel,
+    )
 
     if not cf:
         return ""
@@ -1099,7 +1182,7 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "") -> str:
 
 def _compute_mandatory_filters_present(
     client_name: str, api_date: str, api_tag_str: str,
-    dma_carousel_texts: list | None = None,
+    dma_carousel_texts=None,
 ) -> dict:
     """
     Deterministic check that every MANDATORY system filter for this client is
@@ -1124,22 +1207,12 @@ def _compute_mandatory_filters_present(
         return {"pre_verdict": "NA", "missing": [], "checked": [],
                 "note": "No mandatory filters defined for this client"}
 
-    client_lower = client_name.lower()
     _is_carousel = bool(dma_carousel_texts)  # non-empty list = carousel sendout
-
-    if "kaufland" in client_lower:
-        from datetime import datetime as _dt3
-        try:
-            is_sun = _dt3.fromisoformat(api_date.replace("Z", "+00:00")).weekday() == 6
-        except Exception:
-            is_sun = False
-        cf = filters_cfg.get("Sunday" if is_sun else "Wednesday",
-                             filters_cfg.get("Standard", []))
-    elif "aldi italy" in client_lower:
-        # Carousel sendouts don't use leaflet_tag — matches the rule in check_tags
-        cf = filters_cfg.get("Carousel" if _is_carousel else "Standard", [])
-    else:
-        cf = filters_cfg.get("Standard", [])
+    _set_name, cf = _pick_filter_set(
+        filters_cfg,
+        api_date=api_date,
+        is_carousel=_is_carousel,
+    )
 
     if not cf:
         return {"pre_verdict": "NA", "missing": [], "checked": [],
@@ -1284,31 +1357,28 @@ def build_comparison_data(
     _client_lower = client_name.lower()
     _SKIP_GSHEET_TAGS = ("kaufland rcs", "kaufland waba", "aldi portugal")
     if any(s in _client_lower for s in _SKIP_GSHEET_TAGS):
-        # Build expected filter string from config
+        # Build expected filter string from config using _pick_filter_set
         _all_cf = CLIENT_CONFIGS.get(client_name, {}).get("filters", {})
-        if "kaufland" in _client_lower:
-            from datetime import datetime as _dt
-            try:
-                _is_sun = _dt.fromisoformat(api_date.replace("Z","+00:00")).weekday() == 6
-            except Exception:
-                _is_sun = False
-            if "rcs" in _client_lower or "waba" in _client_lower:
-                _cf = _all_cf.get("Sunday" if _is_sun else "Wednesday", _all_cf.get("Standard", []))
-            else:
-                _cf = _all_cf.get("Standard", [])
-        elif "aldi portugal" in _client_lower:
-            # Use JIRA segment field as primary, fallback to api_tag_str
+        _aldi_pt_segment = ""
+        if "aldi portugal" in _client_lower:
+            # Segment-based selection: detect Northern vs Regular from JIRA / tag string
             jira_segment = str(jira.get("segment", "") or "").lower()
             is_northern = any(kw in jira_segment for kw in ("northern", "norte", "north"))
             if not is_northern:
                 is_northern = any(kw in api_tag_str.lower() for kw in ("northern", "norte", "north"))
             _aldi_pt_segment = "Northern" if is_northern else "Regular"
-            if is_northern:
-                _cf = _all_cf.get("Northern", _all_cf.get("Standard", []))
-            else:
-                _cf = _all_cf.get("Regular", _all_cf.get("Standard", []))
+            _set_name_gs, _cf = _pick_filter_set(
+                _all_cf,
+                api_date=api_date,
+                is_carousel=bool(dma_carousel_texts),
+                segment=_aldi_pt_segment,
+            )
         else:
-            _cf = _all_cf.get("Standard", [])
+            _set_name_gs, _cf = _pick_filter_set(
+                _all_cf,
+                api_date=api_date,
+                is_carousel=bool(dma_carousel_texts),
+            )
 
         _filter_parts = []
         for f in _cf:
@@ -1323,7 +1393,7 @@ def build_comparison_data(
                 _filter_parts.append(f"leaflet_tag={od}")
             elif ftype == "shop_number" or name == "shop_number":
                 # Include count so AI can verify correct segment list
-                _seg_label = locals().get("_aldi_pt_segment", "")
+                _seg_label = _aldi_pt_segment
                 _seg_suffix = f" — {_seg_label} segment" if _seg_label else ""
                 _filter_parts.append(
                     f"shop_number ({len(values)} IDs expected{_seg_suffix})" if values
@@ -1367,7 +1437,7 @@ def build_comparison_data(
         str(jira.get("cta_button", "")),
         tmpl_buttons,
     )
-    _mandatory_filters = _get_client_mandatory_filters(client_name, api_date)
+    _mandatory_filters = _get_client_mandatory_filters(client_name, api_date, dma_carousel_texts=dma_carousel_texts)
     _mandatory_present = _compute_mandatory_filters_present(
         client_name, api_date, api_tag_str, dma_carousel_texts=dma_carousel_texts
     )
