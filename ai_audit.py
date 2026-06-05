@@ -1343,6 +1343,37 @@ def build_comparison_data(
     # For clients where G-Sheet tags are not reliable, derive expected tags from config
     from config import CLIENT_CONFIGS
     _client_lower = client_name.lower()
+    _cfg_client = CLIENT_CONFIGS.get(client_name, {})
+
+    # ── Per-client structural flags ───────────────────────────────────────────
+    # cta_in_template: CTA button/URL is embedded in the DMA template — JIRA
+    #   cta_link/cta_button fields are intentionally empty.  Mark both as NA.
+    _cta_in_template = _cfg_client.get("cta_in_template", False)
+    # cta_link_optional: CTA URL is in the template but button text may be in JIRA.
+    _cta_link_optional = _cfg_client.get("cta_link_optional", False)
+    # description_is_brief: JIRA description is an internal 360Dialog briefing to
+    #   the team, not the campaign copy.  Copy check should be NA.
+    _desc_is_brief = _cfg_client.get("description_is_brief", False)
+
+    # Also detect internal briefs dynamically from the description text itself
+    _raw_desc = str(jira.get("description", "") or "").strip()
+    if not _desc_is_brief and _raw_desc and _INTERNAL_BRIEF_RE.match(_raw_desc):
+        _desc_is_brief = True  # e.g. "Hi Alex, We have a new sendout..."
+
+    # ── ALDI Suisse: multi-language description — extract the correct locale ──
+    # Tickets contain DE/FR/IT sections in one description; pick the one matching
+    # the sendout locale tag so the copy check compares the right language version.
+    if "aldi suisse" in _client_lower or "aldi schweiz" in _client_lower:
+        _suisse_locale = ""
+        for _loc in ("de", "fr", "it"):
+            if f"locale={_loc}" in api_tag_str.lower():
+                _suisse_locale = _loc
+                break
+        if _suisse_locale and _raw_desc:
+            _extracted = extract_language_section(_raw_desc, _suisse_locale)
+            if _extracted != _raw_desc:
+                # Patch jira dict with the extracted section for downstream use
+                jira = {**jira, "description": _extracted}
     _SKIP_GSHEET_TAGS = ("kaufland rcs", "kaufland waba", "aldi portugal")
     if any(s in _client_lower for s in _SKIP_GSHEET_TAGS):
         # Build expected filter string from config using _pick_filter_set
@@ -1406,12 +1437,17 @@ def build_comparison_data(
         api_date or str(jira.get("date", "")),
         client_name=client_name,
     )
-    _text_diff      = _compute_text_similarity(
-        str(jira.get("description", "")),
-        tmpl_body,
+    _text_diff      = (
+        {"pre_verdict": "NA", "note": f"Description is an internal 360Dialog briefing for {client_name} — not campaign copy. Copy check skipped."}
+        if _desc_is_brief
+        else _compute_text_similarity(str(jira.get("description", "")), tmpl_body)
     )
     _tag_diff       = _compute_tag_diff(expected_incl, expected_excl, api_tag_str)
-    _url_diff       = _compute_url_diff(_jira_url_list, list(filter(None, api_urls)))
+    _url_diff       = (
+        {"pre_verdict": "NA", "note": f"CTA URL is embedded in the DMA template for {client_name} — JIRA cta_link field not required."}
+        if (_cta_in_template or _cta_link_optional)
+        else _compute_url_diff(_jira_url_list, list(filter(None, api_urls)))
+    )
     _carousel_diff  = _compute_carousel_diff(
         str(jira.get("description", "")),
         jira.get("parsed_carousel"),
@@ -1421,9 +1457,10 @@ def build_comparison_data(
         str(jira.get("footer_text", "")),
         tmpl_footer,
     )
-    _cta_btn_diff   = _compute_cta_button_verdict(
-        str(jira.get("cta_button", "")),
-        tmpl_buttons,
+    _cta_btn_diff   = (
+        {"pre_verdict": "NA", "note": f"CTA button is part of the DMA template for {client_name} — JIRA cta_button field not required."}
+        if _cta_in_template
+        else _compute_cta_button_verdict(str(jira.get("cta_button", "")), tmpl_buttons)
     )
     _mandatory_filters = _get_client_mandatory_filters(client_name, api_date, dma_carousel_texts=dma_carousel_texts)
     _mandatory_present = _compute_mandatory_filters_present(
@@ -1449,6 +1486,11 @@ def build_comparison_data(
         "⚡_footer":      f"{_pv(_footer_diff)}  |  {_footer_diff.get('note', '')}",
         "⚡_cta_button":  f"{_pv(_cta_btn_diff)}  |  {_cta_btn_diff.get('note', '')}",
         "⚡_cta_urls":    f"{_pv(_url_diff)}  |  {_url_diff.get('note', '')}",
+        **({"⚠️_DESCRIPTION_IS_BRIEF": (
+            f"The JIRA description for {client_name} is an internal 360Dialog briefing to the team, "
+            f"NOT the campaign copy. Do NOT compare it to the DMA template body. "
+            f"CHECK 2 (copy) must be NA — there is no verifiable copy in JIRA."
+        )} if _desc_is_brief else {}),
         "⚡_tags":        f"{_pv(_tag_diff)}  |  {_tag_diff.get('note', '')}",
         "⚡_carousel":    f"{_pv(_carousel_diff)}  |  {_carousel_diff.get('note', '')}",
         "⚡_images":      "NA  |  Evaluate visually if images are attached below",
@@ -1609,13 +1651,63 @@ def _extract_json(raw_text: str) -> str:
 # ── Cover-note stripper ───────────────────────────────────────────────────────
 
 _COVER_NOTE_RE = _re.compile(
-    r'^(?:Hi|Hello|Dear|Hallo|Ciao|Bonjour|Hola)\s+\w[\w\s,]+[,\n]',
+    # Informal greeting to a named person: "Hi Martina," / "Hello Gleb," / "Hallo Alex,"
+    r'^(?:Hi|Hello|Dear|Hallo|Ciao|Bonjour|Hola)\s+\w[\w\s,]+[,\n]'
+    # Formal German greeting with placeholder: "Hallo (Name Nachname),"
+    r'|^Hallo\s+\([^)]{3,40}\)\s*,'
+    # Greeting to the whole team: "Hello everyone," / "Hello all," / "Hallo zusammen,"
+    r'|^(?:Hi|Hello|Hallo)\s+(?:everyone|all|zusammen|team)\s*,',
+    _re.IGNORECASE,
+)
+
+# Pattern that strongly indicates the description is a 360Dialog internal briefing
+# to the team rather than campaign copy — "Hi Alex, We have a new special sendout..."
+_INTERNAL_BRIEF_RE = _re.compile(
+    r'^(?:Hi|Hello|Hallo)\s+(?:Alex|Gleb|Martina|everyone|all|zusammen|team)\b',
     _re.IGNORECASE,
 )
 _FORM_FIELD_LABELS = (
     "Main Body Text", "Card Body Texts", "Card Button Texts",
     "Number of cards", "Card Images", "Slide 1", "Slide 2", "Card 1",
 )
+
+def extract_language_section(description: str, locale: str) -> str:
+    """
+    For multi-language JIRA tickets (e.g. ALDI Suisse DE/FR/IT sections),
+    extract just the text block for the requested locale.
+
+    Recognises section headers like:
+      - "DE\n\n" / "FR\n\n" / "IT\n\n"  (plain uppercase locale prefix)
+      - "h1. {color:...}*DE*{color}" / JIRA wiki markup headings
+    Returns the matching section text, or the full description if no sections found.
+    """
+    if not description or not locale:
+        return description
+
+    locale_upper = locale.upper()
+
+    # Strip JIRA wiki-markup colour tags: {color:#bf2600}*DE*{color} → DE
+    clean = _re.sub(r'\{color[^}]*\}', '', description)
+    clean = _re.sub(r'h\d\.\s*', '', clean)  # strip h1. h2. etc.
+    clean = _re.sub(r'\*([^*]+)\*', r'\1', clean)  # **bold** → plain
+
+    # Split on bare locale headers (e.g. "DE\n\n" or "--DE--")
+    # Pattern: newline + locale code (2 chars) + newline(s) OR start of string
+    section_re = _re.compile(
+        r'(?:^|\n)\s*[-–—]*\s*(' + '|'.join(['DE','FR','IT','NL','EN']) + r')\s*[-–—]*\s*\n',
+        _re.IGNORECASE,
+    )
+    parts = section_re.split(clean)
+    # parts alternates: [pre_text, locale_code, section_body, locale_code, section_body, ...]
+    if len(parts) < 3:
+        return description  # no multi-language structure found
+
+    for i in range(1, len(parts) - 1, 2):
+        if parts[i].upper() == locale_upper:
+            return parts[i + 1].strip()
+
+    return description  # locale not found — return full
+
 
 def strip_cover_note(description: str) -> str:
     """

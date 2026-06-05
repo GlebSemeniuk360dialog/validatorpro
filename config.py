@@ -170,32 +170,43 @@ CLIENT_CONFIGS: dict[str, dict] = {
             "IT Test Sendout": [],
         },
     },
-    "Nahkauf": {
-        "account_id": 41,
-        "timezone_name": "Europe/Berlin",
-        "mappings": {},
-        "filters": {"Standard": [{"type": "leaflet_tag", "mode": "include", "offset_days": 1}]},
-    },
     "REWE": {
         "account_id": 5,
         "timezone_name": "Europe/Berlin",
         "mappings": {},
+        # Carousel sendout — CTA buttons are inside the carousel cards, not in JIRA fields.
+        # Description uses "Intro: …" brief format, not raw copy text.
+        "cta_in_template": True,
+        "description_is_brief": True,  # account manager brief, not campaign copy
         "filters": {"Standard": [{"type": "tag", "name": "declined_new_terms", "mode": "exclude", "value": "true"}]},
     },
     "Toom": {
         "account_id": 9,
         "timezone_name": "Europe/Berlin",
         "mappings": {},
+        # CTA URL is embedded in the DMA template; JIRA cta_link field is often empty.
+        "cta_link_optional": True,
         "filters": {"Standard": [
             {"type": "leaflet_tag", "mode": "include", "offset_days": 1},
         ]},
     },
-    "Netto":    {"account_id": 10, "timezone_name": "Europe/Berlin", "mappings": {}, "filters": {"Standard": []}},
+    "Netto": {
+        "account_id": 10,
+        "timezone_name": "Europe/Berlin",
+        "mappings": {},
+        # Netto tickets are written as internal briefings to 360Dialog ("Hi Alex, ...").
+        # No CTA fields — buttons are part of the carousel card templates.
+        "cta_in_template": True,
+        "description_is_brief": True,
+        "filters": {"Standard": []},
+    },
     "Hieber":             {"account_id": 15,  "timezone_name": "Europe/Berlin", "mappings": {}, "filters": {"Standard": []}},
     "Hofer": {
         "account_id": 20,
         "timezone_name": "Europe/Berlin",
         "mappings": {},
+        # CTA button + URL are embedded via leaflet_tag in the DMA template; JIRA fields always empty.
+        "cta_in_template": True,
         "filters": {"Standard": [
             {"type": "tag", "name": "leaflet_accepted", "mode": "include", "value": "true"},
             {"type": "leaflet_tag", "mode": "include", "offset_days": 1},
@@ -285,6 +296,16 @@ CLIENT_CONFIGS: dict[str, dict] = {
         "mappings": {},
         "filters": {"Standard": [{"type": "leaflet_tag", "mode": "include", "offset_days": 3}]},
     },
+    "Nahkauf": {
+        "account_id": 41,
+        "timezone_name": "Europe/Berlin",
+        "mappings": {},
+        # Carousel — CTA buttons are inside cards, not in JIRA fields.
+        # Same "Intro: Hallo x," brief format as REWE (same account manager).
+        "cta_in_template": True,
+        "description_is_brief": True,
+        "filters": {"Standard": [{"type": "leaflet_tag", "mode": "include", "offset_days": 1}]},
+    },
     "Kaufland WABA": {
         "account_id": 190,
         # Kaufland RCS and WABA share the same DMA org — sendouts fetched via account 162
@@ -292,6 +313,8 @@ CLIENT_CONFIGS: dict[str, dict] = {
         "accepted_account_ids": [162, 190],
         "timezone_name": "Europe/Berlin",
         "mappings": {},
+        # CTA buttons are embedded in the static carousel body; JIRA cta_link/button always empty.
+        "cta_in_template": True,
         # Static carousel body used for ALL Kaufland WABA carousel sendouts.
         # Both cards share the same body template; only leaflet filters differ.
         "static_carousel_body": (
