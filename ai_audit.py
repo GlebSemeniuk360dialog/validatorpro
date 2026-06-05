@@ -1574,6 +1574,15 @@ def build_comparison_data(
             "mandatory_filters": _mandatory_present,
             **( {"aldi_portugal_shop_list": _aldi_pt_shop_diff} if _aldi_pt_shop_diff else {} ),
         },
+        # ── Freestyle routing signal ──────────────────────────────────────────
+        # Set to True when the ticket is non-standard enough that the caller
+        # should switch to run_ai_audit_freestyle() with the pro model.
+        "_freestyle_recommended": _desc_is_brief,
+        "_freestyle_reason": (
+            f"{client_name} JIRA description is an internal 360Dialog briefing "
+            f"(addressed to a team member), not campaign copy. "
+            f"All JIRA fields have been passed to the freestyle audit."
+        ) if _desc_is_brief else "",
     }
 
 
@@ -2132,6 +2141,168 @@ def apply_data_quality_cap(confidence, confidence_reason, comparison_data, log_k
             logger.warning("%s: confidence capped %d→65%% — no JIRA description", log_key, conf)
         return 65, "[Auto-capped: no JIRA description — copy check unverifiable] " + reason
     return conf, confidence_reason
+
+
+_FREESTYLE_PROMPT = """\
+⚠️ LANGUAGE RULE — HIGHEST PRIORITY ⚠️
+YOU MUST WRITE YOUR ENTIRE RESPONSE IN ENGLISH ONLY.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FREESTYLE AUDIT — Non-Standard Ticket
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Client: {client_name}
+Reason this mode was triggered: {freestyle_reason}
+
+This JIRA ticket does not follow the standard submission format — key fields
+(description, CTA link, etc.) may be missing, contain internal notes, or use a
+non-standard structure such as a multi-section brief, multiple language blocks,
+or copy embedded in a comments thread.
+
+Your role: investigative QA auditor. Search all available JIRA data, find
+whatever campaign content exists, and compare it to the DMA sendout as thoroughly
+as possible.  Be explicit about what you found and where.
+
+━━━ ALL JIRA TICKET FIELDS ━━━
+{jira_fields_json}
+
+━━━ DMA SENDOUT CONFIGURATION ━━━
+{dma_config_json}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INVESTIGATION INSTRUCTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STEP 1 — FIND THE COPY.
+Search ALL JIRA fields for campaign message text. It may appear as:
+  • Plain copy in the description (even after an internal greeting like "Hi Gleb,")
+  • "Intro: Hallo x, ..." — the part after "Intro:" is the campaign copy
+  • Copy pasted in additional_comments or a comments thread entry
+  • Structured as "Card 1: ..., Card 2: ..." for carousel sendouts
+  • Multi-language sections (DE / FR / IT) — pick the section matching the sendout locale tag
+After stripping any internal greeting (e.g. "Hi Alex, here is the copy:"),
+identify the actual customer-facing text.
+
+STEP 2 — COMPARE.
+Compare what you found against the DMA template body and other configured elements.
+Minor formatting differences (bold, line breaks, placeholder names) are NOT failures.
+State which JIRA field you used as your source for each check.
+
+STEP 3 — MARK WHAT YOU CANNOT VERIFY.
+If a specific check cannot be performed due to genuinely missing data, set it to NA
+and explain exactly what you looked for and where.  Do NOT guess on empty inputs.
+
+STEP 4 — CONFIDENCE.
+Lower your confidence proportionally to the amount of data that was missing or
+inferred.  Missing description with copy found only in comments → max 70%.
+Missing copy entirely → max 50%.  Multiple fields missing → further reductions.
+
+STEP 5 — OUTPUT.
+Return valid structured JSON matching the AuditOutput schema exactly.
+Every field is required. reasoning must start with "🔍 FREESTYLE:" so the
+result is clearly identified as a non-standard audit in reports.
+"""
+
+
+def run_ai_audit_freestyle(
+    api_key: str,
+    model_name: str,
+    jira: dict,
+    dma_setup: dict,
+    client_name: str,
+    freestyle_reason: str = "",
+    jira_images=None,
+    dma_images=None,
+) -> dict:
+    """
+    Freestyle AI audit for non-standard tickets.
+
+    Instead of the structured pre-computed diff approach, dumps all available
+    JIRA fields and the full DMA payload to Gemini Pro and asks it to find,
+    compare, and reason about whatever content it can locate.
+
+    Returns the same dict shape as run_ai_audit():
+        {"audit_report": AuditOutput-compatible dict or error str, ...}
+    """
+    _client = genai.Client(api_key=api_key)
+
+    # Collect all JIRA fields that might contain useful content
+    jira_fields = {
+        "summary":             jira.get("summary", ""),
+        "date":                jira.get("date", ""),
+        "segment":             jira.get("segment", ""),
+        "request_type":        jira.get("request_type", ""),
+        "timezone":            jira.get("timezone", ""),
+        "description":         jira.get("description", ""),
+        "additional_comments": jira.get("additional_comments", ""),
+        "cta_link":            jira.get("cta_link", ""),
+        "cta_button":          jira.get("cta_button", ""),
+        "footer_text":         jira.get("footer_text", ""),
+        "comments_thread":     jira.get("comments", ""),
+        "parsed_carousel":     jira.get("parsed_carousel"),
+    }
+    # Drop empty values to keep the payload lean
+    jira_fields = {k: v for k, v in jira_fields.items() if v}
+
+    prompt = _FREESTYLE_PROMPT.format(
+        client_name=client_name,
+        freestyle_reason=freestyle_reason or "key structured fields are missing or non-standard",
+        jira_fields_json=json.dumps(jira_fields, indent=2, ensure_ascii=False),
+        dma_config_json=json.dumps(dma_setup, indent=2, ensure_ascii=False),
+    )
+
+    contents: list = [prompt]
+
+    if jira_images:
+        contents.append("\n--- JIRA IMAGES ---")
+        for img_dict in (jira_images or []):
+            try:
+                img = Image.open(io.BytesIO(img_dict["bytes"]))
+                contents.extend([f"JIRA image ({img_dict.get('name','?')}):", img])
+            except Exception:
+                pass
+
+    if dma_images:
+        contents.append("\n--- DMA CONFIGURED IMAGES ---")
+        for i, img_bytes in enumerate(dma_images or []):
+            if img_bytes:
+                try:
+                    img = Image.open(io.BytesIO(img_bytes))
+                    contents.extend([f"DMA Slide {i+1}:", img])
+                except Exception:
+                    pass
+
+    from google.genai import types as _gt_fs
+    _tc = _thinking_config_for(model_name, gemini3_level="medium")   # higher reasoning
+    _cfg = _gt_fs.GenerateContentConfig(
+        system_instruction=(
+            "You are a senior QA auditor for WhatsApp marketing campaigns. "
+            "ABSOLUTE RULE: Respond ONLY in English. "
+            "Output ONLY valid JSON matching the AuditOutput schema."
+        ),
+        response_mime_type="application/json",
+        response_schema=AuditOutput,
+        **({} if _tc is None else {"thinking_config": _tc}),
+    )
+
+    raw_text = ""
+    try:
+        raw_text = _client.models.generate_content(
+            model=model_name, contents=contents, config=_cfg
+        ).text
+        if not raw_text:
+            raise ValueError("Empty response from Gemini")
+        try:
+            audit = AuditOutput.model_validate_json(raw_text)
+        except Exception:
+            audit = AuditOutput.model_validate_json(_repair_json(raw_text))
+        result = audit.model_dump()
+        # Tag as freestyle so the UI/report can surface this clearly
+        result["_freestyle"] = True
+        result["_freestyle_reason"] = freestyle_reason
+        return {"audit_report": result}
+    except Exception as exc:
+        logger.error("run_ai_audit_freestyle failed: %s", exc)
+        return {"audit_report": f"FREESTYLE_ERROR: {exc}\n\nRaw:\n{raw_text[:500]}"}
 
 
 def run_ai_audit(

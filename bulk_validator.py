@@ -17,8 +17,9 @@ def _strip_slide_labels(text: str) -> str:
         return text[:m.start()].strip()
     return text.strip()
 
-from ai_audit import (build_comparison_data, run_ai_audit, _is_audit_error,
-                      apply_data_quality_cap, strip_cover_note, check_audit_preconditions)
+from ai_audit import (build_comparison_data, run_ai_audit, run_ai_audit_freestyle,
+                      _is_audit_error, apply_data_quality_cap, strip_cover_note,
+                      check_audit_preconditions)
 from api_client import (
     fetch_account_leaflets,
     fetch_api_data,
@@ -1173,12 +1174,16 @@ def _validate_single_ticket_ai(
         from ai_audit import check_audit_preconditions as _pre_check
         _blockers = _pre_check(j_data, a_data, client, comparison_data)
         _hard_blocks = [b for b in _blockers if b["severity"] == "block"]
-        if _hard_blocks:
-            _block_msg = " | ".join(b["message"] for b in _hard_blocks)
-            logger.warning("%s: pre-audit gate blocked — %s", ticket_key, _block_msg)
-            result.status    = "skipped"
-            result.error_msg = f"⛔ Cannot audit: {_block_msg}"
-            return result
+
+        # Freestyle mode: non-standard ticket OR pre-audit hard blocker
+        # → use pro model with investigative prompt instead of blocking/structured audit
+        _freestyle = comparison_data.get("_freestyle_recommended", False) or bool(_hard_blocks)
+        _freestyle_reason = comparison_data.get("_freestyle_reason", "") or (
+            " | ".join(b["message"] for b in _hard_blocks) if _hard_blocks else ""
+        )
+        # Pro model for freestyle: use GEMINI_PRO_MODEL env var, fall back to current model
+        import os as _os
+        _pro_model = _os.environ.get("GEMINI_PRO_MODEL", "gemini-2.5-pro")
 
         # Download JIRA images — exactly as many as the template has cards
         card_count  = _detect_card_count(a_data, t_data)
@@ -1189,19 +1194,36 @@ def _validate_single_ticket_ai(
             token=jira_token,
         )
         logger.info(
-            "%s: card_count=%d  jira_imgs=%d  dma_imgs=%d",
-            ticket_key, card_count, len(jira_imgs), len(dma_bytes),
+            "%s: card_count=%d  jira_imgs=%d  dma_imgs=%d  freestyle=%s",
+            ticket_key, card_count, len(jira_imgs), len(dma_bytes), _freestyle,
         )
 
         _few_shot = examples_lib.select_for_audit(client) if examples_lib else []
-        audit = run_ai_audit(
-            gemini_key, gemini_model, comparison_data, client,
-            jira_images=jira_imgs or None,
-            dma_images=dma_bytes[:card_count] or None,
-            examples=_few_shot,
-        )
+        if _freestyle:
+            logger.info("%s: freestyle audit — %s", ticket_key, _freestyle_reason[:80])
+            audit = run_ai_audit_freestyle(
+                gemini_key, _pro_model,
+                jira=j_data,
+                dma_setup=comparison_data.get("DMA_API_Setup", {}),
+                client_name=client,
+                freestyle_reason=_freestyle_reason,
+                jira_images=jira_imgs or None,
+                dma_images=dma_bytes[:card_count] or None,
+            )
+        else:
+            audit = run_ai_audit(
+                gemini_key, gemini_model, comparison_data, client,
+                jira_images=jira_imgs or None,
+                dma_images=dma_bytes[:card_count] or None,
+                examples=_few_shot,
+            )
 
         report = audit.get("audit_report", "")
+        # Propagate freestyle flag so the UI can badge the result accordingly
+        if _freestyle:
+            if isinstance(report, dict):
+                report["_freestyle"] = True
+                report["_freestyle_reason"] = _freestyle_reason
         result.report    = report
         result.jira_urls = audit.get("jira_extracted_urls", [])
         result.api_urls  = audit.get("api_extracted_urls", [])

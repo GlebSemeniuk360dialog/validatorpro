@@ -923,7 +923,7 @@ function ExampleSaveModal({ checkKey, checkData, comparisonData, client, token, 
 /* ══════════════════════════════════════════════════════════════════════════
    AI AUDIT REPORT — replaces dangerouslySetInnerHTML blob
    ═════════════════════════════════════════════════════════════════════════ */
-function AiAuditReport({ structured, confidence, confidenceReason, issues, onSave, comparisonData, client }) {
+function AiAuditReport({ structured, confidence, confidenceReason, issues, onSave, comparisonData, client, freestyle }) {
   const [expanded, setExpanded] = useState({});
   if (!structured) return null;
 
@@ -952,8 +952,13 @@ function AiAuditReport({ structured, confidence, confidenceReason, issues, onSav
         borderRadius:8, background:ov.bg, border:`1px solid ${ov.bd}` }}>
         <span style={{ fontSize:22 }}>{ov.icon}</span>
         <div style={{ flex:1 }}>
-          <div style={{ fontSize:15, fontWeight:700, color:ov.fg }}>
-            Overall: {ov.label}
+          <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+            <span style={{ fontSize:15, fontWeight:700, color:ov.fg }}>Overall: {ov.label}</span>
+            {freestyle && (
+              <span title="Non-standard ticket — audited using investigative freestyle mode with the pro model" style={{ fontSize:11, padding:'2px 8px', borderRadius:999, background:t.info.soft, color:t.brand.text, border:`1px solid ${t.info.ring}`, fontWeight:600, cursor:'default' }}>
+                🔍 Freestyle Audit
+              </span>
+            )}
           </div>
           {confidenceReason && (
             <div style={{ fontSize:12, color:t.fg[3], marginTop:2 }}>{confidenceReason}</div>
@@ -1345,6 +1350,7 @@ function TicketPanel({ ticket, clients, token, onBack, initialSendout }) {
                 issues={aiResult.issues}
                 comparisonData={aiResult.comparison_data}
                 client={client}
+                freestyle={!!(aiResult.structured && aiResult.structured._freestyle)}
                 onSave={(key, chk) => setSaveModal({ checkKey:key, checkData:chk, comparisonData:aiResult.comparison_data })}
               />
               </>

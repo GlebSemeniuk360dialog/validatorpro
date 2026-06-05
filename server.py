@@ -74,6 +74,8 @@ API_TOKEN     = os.environ.get("DMA_API_TOKEN", "")
 GEMINI_KEY         = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")        # single-ticket audit
 GEMINI_BULK_MODEL  = os.environ.get("GEMINI_BULK_MODEL", "gemini-2.5-flash") # bulk AI — faster & cheaper
+# Freestyle (non-standard ticket) always uses the pro model for deeper reasoning.
+GEMINI_PRO_MODEL   = os.environ.get("GEMINI_PRO_MODEL", "gemini-2.5-pro")
 SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "")
 APP_BASE_URL  = os.environ.get("APP_BASE_URL", "http://localhost:8502")
 
@@ -1109,23 +1111,17 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
     )
 
     # ── Pre-audit data quality gate ───────────────────────────────────────────
-    from ai_audit import check_audit_preconditions as _pre_check
+    from ai_audit import check_audit_preconditions as _pre_check, run_ai_audit_freestyle as _run_freestyle
     _blockers = _pre_check(j_data, a_data, req.client, comparison_data)
     _hard_blocks = [b for b in _blockers if b["severity"] == "block"]
-    if _hard_blocks:
-        _block_msg = " | ".join(b["message"] for b in _hard_blocks)
-        logger.warning("Pre-audit gate blocked %s: %s", req.ticket_key, _block_msg)
-        return {
-            "html":       "",
-            "ai_result":  f"⛔ Cannot run AI audit: {_block_msg}",
-            "issues":     0,
-            "confidence": -1,
-            "confidence_reason": "Blocked by pre-audit data quality gate",
-            "ticket_key": req.ticket_key,
-            "client":     req.client,
-            "blocked":    True,
-            "block_reasons": [b["message"] for b in _hard_blocks],
-        }
+
+    # Determine whether to use freestyle mode:
+    #   • Hard pre-audit blockers (e.g. URL-only description) → freestyle instead of blocking
+    #   • comparison_data signals a non-standard ticket → freestyle
+    _freestyle = comparison_data.get("_freestyle_recommended", False) or bool(_hard_blocks)
+    _freestyle_reason = comparison_data.get("_freestyle_reason", "") or (
+        " | ".join(b["message"] for b in _hard_blocks) if _hard_blocks else ""
+    )
 
     # Download DMA images so Gemini can visually compare them (same URLs shown in Visuals tab)
     import urllib.request as _ur_img
@@ -1140,12 +1136,24 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
 
     _few_shot = _examples_lib.select_for_audit(req.client)
     try:
-        result = run_ai_audit(
-            GEMINI_KEY, GEMINI_MODEL, comparison_data, req.client,
-            jira_images=j_data.get("carousel_images"),
-            dma_images=_dma_img_bytes or None,
-            examples=_few_shot,
-        )
+        if _freestyle:
+            logger.info("Single audit %s: using freestyle mode — %s", req.ticket_key, _freestyle_reason[:80])
+            result = _run_freestyle(
+                GEMINI_KEY, GEMINI_PRO_MODEL,
+                jira=j_data,
+                dma_setup=comparison_data.get("DMA_API_Setup", {}),
+                client_name=req.client,
+                freestyle_reason=_freestyle_reason,
+                jira_images=j_data.get("carousel_images"),
+                dma_images=_dma_img_bytes or None,
+            )
+        else:
+            result = run_ai_audit(
+                GEMINI_KEY, GEMINI_MODEL, comparison_data, req.client,
+                jira_images=j_data.get("carousel_images"),
+                dma_images=_dma_img_bytes or None,
+                examples=_few_shot,
+            )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"AI audit failed: {_friendly_exc(exc)}")
 
