@@ -362,13 +362,7 @@ function IconValidator({ active }) {
     </svg>
   );
 }
-function IconOrphans({ active }) {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
-    </svg>
-  );
-}
+
 function IconDashboard({ active }) {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1033,153 +1027,6 @@ function ValidatorScreen({ ticket, token, userName, onBack }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   ORPHANS SCREEN
-   ═════════════════════════════════════════════════════════════════════════ */
-function OrphansScreen({ token }) {
-  const [daysAhead, setDaysAhead] = useState('7');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [result, setResult] = useState(null);
-
-  async function runScan() {
-    setLoading(true);
-    setError('');
-    try {
-      const data = await mapi('GET', `/api/orphan-scan?days_ahead=${daysAhead}&days_back=0`, null, token);
-      setResult(data);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function statusKind(s) {
-    if (!s) return 'neutral';
-    if (s === 'no_jira')   return 'danger';
-    if (s === 'no_gsheet') return 'warn';
-    if (s === 'auto')      return 'info';
-    if (s === 'ok')        return 'ok';
-    return 'neutral';
-  }
-  function statusLabel(s) {
-    if (s === 'no_jira')   return 'No JIRA';
-    if (s === 'no_gsheet') return 'No GSheet';
-    if (s === 'auto')      return 'Auto';
-    if (s === 'ok')        return 'OK';
-    return s || '—';
-  }
-  function statusEmoji(s) {
-    if (s === 'no_jira')   return '🔴';
-    if (s === 'no_gsheet') return '🟡';
-    if (s === 'auto')      return '🔵';
-    return '🟢';
-  }
-
-  const groups = result?.results ? (() => {
-    const g = {};
-    result.results.forEach(item => {
-      const k = item.status || 'unknown';
-      if (!g[k]) g[k] = [];
-      g[k].push(item);
-    });
-    return g;
-  })() : null;
-
-  const groupOrder = ['no_jira', 'no_gsheet', 'auto', 'ok'];
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ padding: '14px 16px 12px', background: T.bg.surface1, borderBottom: `1px solid ${T.border.base}` }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: T.fg[1], flex: 1 }}>Orphan Scanner</div>
-          <MLed kind="info" size={8} />
-        </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
-          <div style={{ flex: 1 }}>
-            <MOverline style={{ marginBottom: 5 }}>Days Ahead</MOverline>
-            <input type="number" className="vp-select" value={daysAhead} onChange={e => setDaysAhead(e.target.value)} min="0" max="60" style={{ textAlign: 'center' }} />
-          </div>
-          <MButton variant="primary" onClick={runScan} disabled={loading} style={{ flexShrink: 0 }}>
-            {loading ? <Spinner /> : 'Scan'}
-          </MButton>
-        </div>
-      </div>
-
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px 24px' }}>
-        <ErrorBox msg={error} onDismiss={() => setError('')} />
-
-        {loading && <SpinnerLg />}
-
-        {!loading && result && (
-          <>
-            {/* Summary grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 16 }}>
-              {[
-                { label: 'Total', value: result.total ?? (result.results?.length ?? 0), kind: 'neutral' },
-                { label: 'Matched', value: result.matched ?? result.results?.filter(r => r.status === 'ok' || r.status === 'auto').length ?? 0, kind: 'ok' },
-                { label: 'Orphans', value: result.orphans ?? result.results?.filter(r => r.status !== 'ok').length ?? 0, kind: 'danger' },
-              ].map(m => (
-                <MCard key={m.label} padding="12px 10px" style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 22, fontWeight: 700, fontFamily: T.font.mono, color: m.kind === 'neutral' ? T.fg[1] : m.kind === 'ok' ? T.ok.base : T.danger.base }}>{m.value}</div>
-                  <MOverline style={{ marginTop: 3 }}>{m.label}</MOverline>
-                </MCard>
-              ))}
-            </div>
-
-            {/* Grouped results */}
-            {groups && groupOrder.filter(k => groups[k]?.length).map(groupKey => (
-              <div key={groupKey} style={{ marginBottom: 16 }}>
-                <MSectionHeader>{statusEmoji(groupKey)} {statusLabel(groupKey)} ({groups[groupKey].length})</MSectionHeader>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {groups[groupKey].map((item, i) => (
-                    <MCard key={i} padding="12px 14px">
-                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
-                        <MBadge kind={statusKind(item.status)}>{statusLabel(item.status)}</MBadge>
-                        {item.config_ok != null && <MBadge kind={item.config_ok ? 'ok' : 'warn'}>{item.config_ok ? 'Config OK' : 'Config !'}</MBadge>}
-                        <span style={{ marginLeft: 'auto', fontSize: 10, fontFamily: T.font.mono, color: T.fg[4] }}>{item.sendout_id || '—'}</span>
-                      </div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: T.fg[1], marginBottom: 3 }}>{item.name || item.client || '—'}</div>
-                      <div style={{ fontSize: 11, color: T.fg[3], marginBottom: item.tags?.length ? 8 : 0 }}>
-                        {item.client && item.name && item.client !== item.name && <span style={{ fontWeight: 600 }}>{item.client} · </span>}
-                        {fmtDate(item.date)}
-                      </div>
-                      {item.tags?.length > 0 && (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                          {item.tags.map((tag, ti) => {
-                            const kind = typeof tag === 'object'
-                              ? (tag.type === 'excl' ? 'excl' : tag.type === 'incl' ? 'incl' : 'neutral')
-                              : 'neutral';
-                            const label = typeof tag === 'object' ? tag.value : tag;
-                            return <MTag key={ti} kind={kind}>{label}</MTag>;
-                          })}
-                        </div>
-                      )}
-                    </MCard>
-                  ))}
-                </div>
-              </div>
-            ))}
-
-            {result.results?.length === 0 && (
-              <div style={{ textAlign: 'center', color: T.fg[4], padding: 32, fontSize: 13 }}>No orphans found in this window.</div>
-            )}
-          </>
-        )}
-
-        {!loading && !result && !error && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '40px 20px', textAlign: 'center' }}>
-            <div style={{ fontSize: 40 }}>🔍</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: T.fg[1] }}>Ready to scan</div>
-            <div style={{ fontSize: 12, color: T.fg[3] }}>Set the window above and tap Scan to find unmatched sendouts.</div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
    DASHBOARD SCREEN
    ═════════════════════════════════════════════════════════════════════════ */
 function MiniStatCard({ label, value, kind='neutral', icon }) {
@@ -1531,7 +1378,6 @@ function MobileApp() {
 
   const tabs = [
     { id: 'validator', label: 'Validator', Icon: IconValidator },
-    { id: 'orphans',   label: 'Orphans',   Icon: IconOrphans   },
     { id: 'dashboard', label: 'Dashboard', Icon: IconDashboard  },
     { id: 'profile',   label: 'Profile',   Icon: IconProfile    },
   ];
@@ -1548,9 +1394,6 @@ function MobileApp() {
           openTicket
             ? <ValidatorScreen key={openTicket.key} ticket={openTicket} token={auth.token} userName={auth.name} onBack={handleBack} />
             : <QueueScreen token={auth.token} onOpenTicket={handleOpenTicket} />
-        )}
-        {activeTab === 'orphans' && (
-          <OrphansScreen token={auth.token} />
         )}
         {activeTab === 'dashboard' && (
           <DashboardScreen token={auth.token} />

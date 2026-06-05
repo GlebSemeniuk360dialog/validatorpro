@@ -1846,57 +1846,7 @@ async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(
     return [_serialize_result(r) for r in results]
 
 
-# ── Orphan Scanner ────────────────────────────────────────────────────────────
-
-class OrphanTriageRequest(BaseModel):
-    orphans: list[dict]
-
-@app.post("/api/orphan-triage")
-async def orphan_triage(req: OrphanTriageRequest, authorization: Optional[str] = Header(None)):
-    """AI triage of orphan sendouts — classifies risk, category and recommended action."""
-    _get_session(authorization)
-    if not GEMINI_KEY:
-        raise HTTPException(status_code=400, detail="GEMINI_API_KEY not configured")
-    if not req.orphans:
-        return {"results": []}
-    try:
-        from ai_audit import run_orphan_triage
-        results = run_orphan_triage(GEMINI_KEY, GEMINI_BULK_MODEL, req.orphans)
-        return {"results": results}
-    except Exception as exc:
-        logger.error("Orphan triage failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Triage failed: {exc}")
-
-
-@app.get("/api/orphan-scan")
-async def orphan_scan(
-    days_ahead: int = 7,
-    days_back:  int = 5,          # also look at sendouts from N days ago
-    authorization: Optional[str] = Header(None),
-):
-    """
-    Scan all DMA accounts for sendouts not matched in the JIRA queue or G-Sheet.
-    Window: [today - days_back  …  today + days_ahead]
-    Returns a list of result objects classified as: ok | no_jira | no_gsheet | auto
-    """
-    import asyncio as _asyncio
-    _get_session(authorization)
-
-    # Run all blocking I/O in a thread pool so the async event loop is not blocked.
-    # This prevents the scan (15+ sequential HTTP calls) from freezing the server.
-    loop = _asyncio.get_running_loop()
-
-    def _do_scan():
-        return _orphan_scan_sync(days_ahead, days_back)
-
-    try:
-        return await loop.run_in_executor(None, _do_scan)
-    except Exception as exc:
-        logger.error("orphan_scan crashed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Orphan scan failed: {exc}")
-
-
-def _orphan_scan_sync(days_ahead: int, days_back: int) -> dict:
+def _orphan_scan_sync(days_ahead: int, days_back: int) -> dict:  # kept for internal use only
     """
     Synchronous implementation of the orphan scan — runs in a thread pool
     so it doesn't block the async event loop.
@@ -2342,43 +2292,45 @@ async def _job_preflight_alert() -> None:
         logger.info("SCHEDULER: preflight — no tickets due in 48h, skipping (queue had %d tickets, today=%s)", len(queue), today)
         return
 
-    upcoming.sort(key=lambda x: x["date"])
-    lines: list[str] = []
-    for t in upcoming[:15]:
+    upcoming.sort(key=lambda x: (x["_delta"], x["date"]))
+
+    # Group by day label, build compact table
+    groups: dict[str, list[str]] = {"🔴 TODAY": [], "🟡 Tomorrow": [], "🟠 In 2 days": []}
+    for t in upcoming[:20]:
         delta     = t["_delta"]
-        label     = "🔴 TODAY" if delta == 0 else ("🟡 Tomorrow" if delta == 1 else "🟠 In 2 days")
+        day_label = "🔴 TODAY" if delta == 0 else ("🟡 Tomorrow" if delta == 1 else "🟠 In 2 days")
         ticket    = t["key"]
         client    = t.get("client", "")
-        date      = t.get("date", "")
         status    = t.get("status", "")
-        # Check if this ticket was already audited (DB-backed)
+
         audited = _al.get_audit_for_ticket(ticket)
         if not audited:
-            # Fallback to in-memory cache
             audited = next((v for v in _audited_sendouts.values() if v.get("ticket_key") == ticket), None)
         if audited:
-            if audited.get("overall") == "FAIL" or audited.get("issues", 0) > 0:
-                audit_icon = f"❌ AI FAIL"
-            else:
-                audit_icon = "✅ AI PASS"
+            overall = audited.get("overall", "")
+            conf    = audited.get("confidence", -1)
+            conf_str = f" {conf}%" if conf and conf >= 0 else ""
+            audit_str = f"✅{conf_str}" if overall != "FAIL" else f"❌{conf_str}"
         else:
-            audit_icon = "⏳ Not AI-audited"
+            audit_str = "⏳"
 
-        params   = {"ticket": ticket, "client": client}
-        app_link = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
         jira_link = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket}"
-        lines.append(
-            f"{label}  *{date}* — <{jira_link}|{ticket}> | {client}\n"
-            f"   Status: _{status}_ | AI: {audit_icon} | <{app_link}|Open in Validator>"
+        params    = {"ticket": ticket, "client": client}
+        app_link  = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
+        groups[day_label].append(
+            f"<{jira_link}|{ticket}> {client} | _{status}_ | AI: {audit_str} | <{app_link}|Validator>"
         )
 
-    summary = (
-        f"*{len(upcoming)}* sendout(s) going live in the next 48 hours — please review.\n"
-        f"Open the <{APP_BASE_URL.rstrip('/')}|Validator> to check each one."
-    )
+    sections: list[str] = [
+        f"*{len(upcoming)}* sendout(s) going live in the next 48 h — please review."
+    ]
+    for day_label, rows in groups.items():
+        if rows:
+            sections.append(f"*{day_label}*\n" + "\n".join(rows))
+
     _send_slack_block(
         header="🔔 Preflight Check — Upcoming Sendouts",
-        sections=[summary, "\n\n".join(lines)],
+        sections=sections,
     )
     logger.info("SCHEDULER: preflight alert sent for %d tickets", len(upcoming))
 
@@ -2399,56 +2351,6 @@ async def _job_preflight_alert() -> None:
     _al.record_preflight(pf_tickets, sent_slack=True)
 
 
-async def _job_orphan_digest() -> None:
-    """
-    Daily 08:00 UTC — run orphan scan and post a Slack digest if orphans are found.
-    Disabled: orphan Slack notifications are turned off until matching logic is fixed.
-    """
-    logger.info("SCHEDULER: orphan digest skipped — notifications disabled")
-    return
-
-    import asyncio as _asyncio
-
-    logger.info("SCHEDULER: running orphan digest job")
-    if not SLACK_WEBHOOK:
-        logger.info("SCHEDULER: orphan digest skipped — no SLACK_WEBHOOK")
-        return
-
-    loop = _asyncio.get_event_loop()
-    try:
-        scan = await loop.run_in_executor(None, _orphan_scan_sync, 7, 1)
-    except Exception as exc:
-        logger.warning("SCHEDULER orphan digest: scan failed: %s", exc)
-        return
-
-    orphans = [r for r in scan.get("results", []) if r["status"] in ("no_jira", "no_gsheet")]
-    if not orphans:
-        logger.info("SCHEDULER: orphan digest — no orphans found, skipping")
-        return
-
-    no_jira   = [r for r in orphans if not r["in_jira"]]
-    no_gsheet = [r for r in orphans if r["in_jira"] and not r["in_gsheet"]]
-
-    lines: list[str] = []
-    for r in orphans[:12]:
-        icon    = "🚨" if not r["in_jira"] else "⚠️"
-        label   = "No JIRA ticket" if not r["in_jira"] else "Not in G-Sheet"
-        filters = ", ".join(r.get("filters", [])[:3]) or "—"
-        lines.append(
-            f"{icon} *{r['client']}* | {r['date']} | _{r['name']}_\n"
-            f"   {label} | Filters: {filters}"
-        )
-
-    summary = (
-        f"Found *{len(orphans)}* orphan sendout(s): "
-        f"*{len(no_jira)}* missing JIRA ticket, *{len(no_gsheet)}* missing G-Sheet entry.\n"
-        f"Open the <{APP_BASE_URL.rstrip('/')}|Queue Scanner> to investigate."
-    )
-    _send_slack_block(
-        header=f"🔍 Daily Orphan Digest — {len(orphans)} issue(s) found",
-        sections=[summary, "\n\n".join(lines)],
-    )
-    logger.info("SCHEDULER: orphan digest sent — %d orphans", len(orphans))
 
 
 async def _job_auto_audit() -> None:
@@ -2505,6 +2407,7 @@ async def _job_auto_audit() -> None:
     gsheet_data   = _gsheet()
     audited_count = 0
     skipped_count = 0
+    passed_rows:  list[str] = []   # batched for end-of-run summary
 
     for issue in imminent[:5]:   # cap at 5 to respect Gemini rate limits
         norm       = _normalize_issue(issue)
@@ -2543,10 +2446,10 @@ async def _job_auto_audit() -> None:
             continue
 
         issues     = result.issues_found or 0
-        confidence = result.confidence          # from BulkTicketResult
+        confidence = result.confidence
         sendout_id = result.sendout_id or ""
 
-        # Record so we don't re-audit and preflight can show AI status
+        # Record so preflight (runs after) can show real AI status
         if sendout_id:
             _audited_sendouts[sendout_id] = {
                 "ticket_key": ticket_key,
@@ -2572,15 +2475,15 @@ async def _job_auto_audit() -> None:
         jira_link = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket_key}"
 
         if issues > 0:
-            # Use structured check labels (richer than regex-parsed text)
+            # FAIL → immediate <!here> alert per ticket (urgent, actionable)
             failed_labels = [c["label"] for c in (result.checks or []) if not c.get("ok")]
             checks_text   = "\n".join(f"• {lbl}" for lbl in failed_labels[:8])
+            conf_str = f" | Confidence: {confidence}%" if confidence >= 0 else ""
             _send_slack_block(
                 header=f"🤖 Auto-Audit: ❌ {ticket_key} FAILED — {client}",
                 sections=[
                     f"<!here> Auto AI audit found *{issues}* issue(s) for "
-                    f"<{jira_link}|{ticket_key}> ({client}) going live *{jira_date}*."
-                    + (f" Confidence: {confidence}%" if confidence >= 0 else ""),
+                    f"<{jira_link}|{ticket_key}> ({client}) going live *{jira_date}*{conf_str}.",
                     f"*Failed checks:*\n{checks_text}",
                 ],
                 actions=[
@@ -2595,19 +2498,23 @@ async def _job_auto_audit() -> None:
             except Exception:
                 pass
         else:
-            conf_str = f" Confidence: {confidence}%." if confidence >= 0 else ""
-            _send_slack_block(
-                header=f"🤖 Auto-Audit: ✅ {ticket_key} PASSED — {client}",
-                sections=[
-                    f"Auto AI audit *passed* for <{jira_link}|{ticket_key}> ({client}) "
-                    f"going live *{jira_date}*.{conf_str} "
-                    f"<{app_link}|View in Validator>"
-                ],
+            # PASS → collect for batched end-of-run summary (avoid per-ticket noise)
+            conf_str = f" {confidence}%" if confidence >= 0 else ""
+            passed_rows.append(
+                f"✅{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
+                f"  <{app_link}|Validator>"
             )
             try:
                 write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Approved")
             except Exception:
                 pass
+
+    # Send a single end-of-run summary for all passing tickets
+    if passed_rows:
+        _send_slack_block(
+            header=f"🤖 Auto-Audit: {len(passed_rows)} ticket(s) passed",
+            sections=["\n".join(passed_rows)],
+        )
 
     logger.info("SCHEDULER: auto-audit done — %d audited, %d skipped", audited_count, skipped_count)
 
@@ -2638,18 +2545,16 @@ async def _start_scheduler():
     # Explicitly bind the running event loop so AsyncIOScheduler works correctly
     # inside FastAPI's async startup context (Python 3.10+ deprecates get_event_loop)
     _scheduler._event_loop = _aio.get_running_loop()
+    # auto_audit runs first so preflight can show real AI results
     _scheduler.add_job(
-        _job_orphan_digest,   _CronTrigger(hour=8,  minute=0,  timezone="UTC"), id="orphan_digest"
+        _job_auto_audit,      _CronTrigger(hour=8,  minute=30, timezone="UTC"), id="auto_audit"
     )
     _scheduler.add_job(
-        _job_preflight_alert, _CronTrigger(hour=8,  minute=30, timezone="UTC"), id="preflight"
-    )
-    _scheduler.add_job(
-        _job_auto_audit,      _CronTrigger(hour=9,  minute=0,  timezone="UTC"), id="auto_audit"
+        _job_preflight_alert, _CronTrigger(hour=9,  minute=0,  timezone="UTC"), id="preflight"
     )
     _scheduler.start()
     logger.info(
-        "APScheduler started: state=%s running=%s orphan_digest@08:00, preflight@08:30, auto_audit@09:00 UTC",
+        "APScheduler started: state=%s running=%s auto_audit@08:30, preflight@09:00 UTC",
         _scheduler.state, _scheduler.running,
     )
 

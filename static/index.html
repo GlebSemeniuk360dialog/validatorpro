@@ -277,7 +277,7 @@ function NavPill({ active, onClick, children }) {
   );
 }
 function MainTabs({ active, onChange, isAdmin }) {
-  const PRIMARY = ['Validator', 'Queue Scanner', 'Sendout Form', 'Config'];
+  const PRIMARY = ['Validator', 'Sendout Form', 'Config'];
   const MORE    = ['Dashboard', 'AI Examples', ...(isAdmin ? ['Users'] : [])];
   const moreActive = MORE.includes(active);
 
@@ -332,7 +332,7 @@ function Sidebar({ user, onSignOut, onRefreshSheet, onClearCache, gsheetStatus, 
   const slackMeta = slackStatus==='ok' ? 'configured' : slackStatus==='none' ? 'no webhook' : 'unknown';
   const schedLed  = !schedulerStatus ? 'dim' : schedulerStatus.running ? 'ok' : 'warn';
   const schedMeta = !schedulerStatus ? 'unknown' : schedulerStatus.running ? 'running' : 'stopped';
-  const JOB_LABELS = { orphan_digest:'Orphan digest', preflight:'Preflight', auto_audit:'Auto-audit' };
+  const JOB_LABELS = { preflight:'Preflight', auto_audit:'Auto-audit' };
   return (
     <aside style={{ width:240, flexShrink:0, background:t.bg.surface1, borderRight:`1px solid ${t.border.base}`, padding:18, display:'flex', flexDirection:'column', gap:14, minHeight:'100vh', fontFamily:t.font.sans, fontSize:13, color:t.fg[2] }}>
       <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
@@ -765,16 +765,23 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
       {filtered.length>0&&(
         <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
           {/* Header */}
-          <div style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 148px', padding:'10px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3], alignItems:'center' }}>
+          <div style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 72px 148px', padding:'10px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:t.fg[3], alignItems:'center' }}>
             <div><input type="checkbox" checked={allFilteredSelected} onChange={toggleAll} title="Select all" /></div>
-            <div>ID</div><div>Summary</div><div>Client</div><div>Date</div><div>Status</div>
+            <div>ID</div><div>Summary</div><div>Client</div><div>Date</div><div>AI</div><div>Status</div>
           </div>
           {filtered.map(r=>{
             const isSel = selected.has(r.key);
             const sb = statusBadge(r.status);
+            // AI status badge
+            const aiVal = (r.ai_status||'').toLowerCase();
+            const aiBadge = aiVal.includes('approved') || aiVal==='pass'
+              ? { icon:'✅', c:t.ok.base,     bg:t.ok.soft,     border:t.ok.ring,     label:'PASS' }
+              : aiVal.includes('rejected') || aiVal==='fail'
+              ? { icon:'❌', c:t.danger.base, bg:t.danger.soft, border:t.danger.ring, label:'FAIL' }
+              : { icon:'⏳', c:t.fg[3],       bg:t.bg.surface3, border:t.border.base, label:'—'    };
             return (
               <div key={r.key} onClick={()=>toggle(r.key)}
-                style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 148px', padding:'11px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isSel?t.brand.soft:'transparent', cursor:'pointer', transition:'background .12s', alignItems:'center' }}>
+                style={{ display:'grid', gridTemplateColumns:'32px 96px 1fr 150px 100px 72px 148px', padding:'11px 14px', gap:10, borderBottom:`1px solid ${t.border.base}`, fontSize:13, color:t.fg[1], background:isSel?t.brand.soft:'transparent', cursor:'pointer', transition:'background .12s', alignItems:'center' }}>
                 <div onClick={e=>e.stopPropagation()}>
                   <input type="checkbox" checked={isSel} onChange={()=>toggle(r.key)} />
                 </div>
@@ -782,6 +789,14 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
                 <div style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontSize:13 }}>{r.summary}</div>
                 <div style={{ color:t.fg[2], fontSize:12, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{r.client}</div>
                 <div style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[2] }}>{r.date}</div>
+                <div title={r.ai_status||'Not audited'}>
+                  {r.ai_status
+                    ? <span style={{ fontSize:11, fontWeight:600, padding:'3px 7px', borderRadius:999, background:aiBadge.bg, border:`1px solid ${aiBadge.border}`, color:aiBadge.c, whiteSpace:'nowrap', display:'inline-block' }}>
+                        {aiBadge.label}
+                      </span>
+                    : <span style={{ color:t.fg[4]||t.fg[3], fontSize:12 }}>—</span>
+                  }
+                </div>
                 <div>
                   <span style={{ fontSize:11, fontWeight:600, fontFamily:t.font.sans, padding:'3px 9px', borderRadius:999, background:sb.bg, border:`1px solid ${sb.border}`, color:sb.c, whiteSpace:'nowrap', display:'inline-block' }} title={r.status}>
                     {sb.label}
@@ -1634,251 +1649,6 @@ function Dashboard({ token }) {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════════
-   ORPHAN SCANNER — full implementation
-   ═════════════════════════════════════════════════════════════════════════ */
-const STATUS_META = {
-  no_jira:   { icon:'🔴', label:'Missing from JIRA',    bg: t.danger.soft,  bd: t.danger.ring,  fg: t.danger.base  },
-  no_gsheet: { icon:'🟡', label:'Missing from G-Sheet', bg: t.warn.soft,    bd: t.warn.ring,    fg: t.warn.base    },
-  auto:      { icon:'🔵', label:'Automated (no JIRA)',  bg: t.info.soft,    bd: t.info.ring,    fg: t.brand.text   },
-  ok:        { icon:'🟢', label:'Matched',              bg: t.ok.soft,      bd: t.ok.ring,      fg: t.ok.base      },
-};
-
-function OrphanRow({ r, triage }) {
-  const [open, setOpen] = useState(false);
-  const m = STATUS_META[r.status] || STATUS_META.ok;
-
-  const riskColor = triage ? (
-    triage.risk === 'HIGH'   ? { bg: t.danger.soft, fg: t.danger.base, bd: t.danger.ring } :
-    triage.risk === 'MEDIUM' ? { bg: t.warn.soft,   fg: t.warn.base,   bd: t.warn.ring   } :
-                               { bg: t.ok.soft,     fg: t.ok.base,     bd: t.ok.ring     }
-  ) : null;
-
-  return (
-    <div style={{ border:`1px solid ${t.border.base}`, borderRadius:6, marginBottom:8, overflow:'hidden' }}>
-      <div onClick={()=>setOpen(o=>!o)} style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 16px', cursor:'pointer', background: open ? t.bg.surface2 : t.bg.surface1, userSelect:'none' }}>
-        <span style={{ fontSize:14 }}>{open ? '▾' : '›'}</span>
-        <span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[3], minWidth:90 }}>{r.date}</span>
-        <span style={{ fontWeight:600, color:t.fg[1], fontSize:13 }}>{r.client}</span>
-        {r.config_ok === true  && <Badge kind="ok"     style={{fontSize:10}}>config ✓</Badge>}
-        {r.config_ok === false && <Badge kind="danger" style={{fontSize:10}}>config ✗</Badge>}
-        {triage && <span style={{ fontSize:10, padding:'2px 8px', borderRadius:999, fontWeight:700, background:riskColor.bg, color:riskColor.fg, border:`1px solid ${riskColor.bd}`, whiteSpace:'nowrap' }}>⚡ {triage.risk}</span>}
-        <span style={{ color:t.fg[2], fontSize:13, flex:1, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{r.name}</span>
-        <span style={{ fontSize:11, padding:'3px 10px', borderRadius:999, background:m.bg, color:m.fg, border:`1px solid ${m.bd}`, whiteSpace:'nowrap' }}>{r.icon || m.icon} {r.in_jira ? '✅ JIRA' : '❌ JIRA'} · {r.in_gsheet ? '✅ G-Sheet' : '❌ G-Sheet'}</span>
-      </div>
-      {open && (
-        <div style={{ padding:'14px 20px', borderTop:`1px solid ${t.border.base}`, background:t.bg.surface2, display:'flex', flexDirection:'column', gap:10 }}>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-            <div style={{ fontSize:13, color:t.fg[2] }}><strong>Name:</strong> {r.name}</div>
-            <div style={{ fontSize:13, fontFamily:t.font.mono, color:t.fg[2] }}><strong>ID:</strong> {r.id}</div>
-          </div>
-          {r.filters && r.filters.length > 0 && (
-            <div style={{ fontSize:12, color:t.fg[2] }}>
-              <Overline style={{ marginBottom:6 }}>Filters</Overline>
-              <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-                {r.filters.map((f,i) => {
-                  const isExcl = /^excl:/i.test(f.trim());
-                  const isIncl = /^incl:/i.test(f.trim());
-                  const bg  = isExcl ? t.danger.soft  : isIncl ? t.ok.soft  : t.bg.surface3;
-                  const fg  = isExcl ? t.danger.base  : isIncl ? t.ok.base  : t.fg[1];
-                  const bd  = isExcl ? t.danger.ring  : isIncl ? t.ok.ring  : t.border.base;
-                  return (
-                    <span key={i} style={{ fontFamily:t.font.mono, fontSize:11, padding:'2px 8px', borderRadius:3, background:bg, color:fg, border:`1px solid ${bd}` }}>
-                      {f}
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-          {r.status === 'no_jira' && (
-            <div style={{ padding:'10px 14px', borderRadius:4, background:t.danger.soft2, border:`1px solid ${t.danger.ring}`, color:t.danger.base, fontSize:12 }}>
-              ⚠️ No matching JIRA ticket — this sendout may have been created directly in DMA without going through the approval process.
-            </div>
-          )}
-          {r.status === 'no_gsheet' && (
-            <div style={{ padding:'10px 14px', borderRadius:4, background:t.warn.soft, border:`1px solid ${t.warn.ring}`, color:t.warn.base, fontSize:12 }}>
-              ⚠️ No matching G-Sheet row for this date.
-            </div>
-          )}
-          {r.status === 'auto' && (
-            <div style={{ padding:'10px 14px', borderRadius:4, background:t.info.soft, border:`1px solid ${t.info.ring}`, color:t.brand.text, fontSize:12 }}>
-              ℹ️ Automated sendout — no JIRA ticket required.
-            </div>
-          )}
-          {triage && (
-            <div style={{ padding:'12px 14px', borderRadius:6, background:t.bg.surface1, border:`1px solid ${riskColor.bd}` }}>
-              <div style={{ fontSize:12, fontWeight:700, color:t.brand.text, marginBottom:8 }}>🤖 AI Triage</div>
-              <div style={{ display:'flex', gap:6, marginBottom:8, flexWrap:'wrap' }}>
-                <span style={{ fontSize:11, padding:'3px 9px', borderRadius:999, fontWeight:700, background:riskColor.bg, color:riskColor.fg, border:`1px solid ${riskColor.bd}` }}>⚡ {triage.risk}</span>
-                <span style={{ fontSize:11, padding:'3px 9px', borderRadius:999, background:t.bg.surface3, color:t.fg[1], border:`1px solid ${t.border.base}`, textTransform:'capitalize' }}>{triage.category.replace(/_/g,' ')}</span>
-              </div>
-              <div style={{ fontSize:12, color:t.fg[1], marginBottom:4 }}><strong>Action:</strong> {triage.action}</div>
-              <div style={{ fontSize:12, color:t.fg[2] }}><strong>Reason:</strong> {triage.reason}</div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const RISK_ORDER = { HIGH: 0, MEDIUM: 1, LOW: 2 };
-
-function OrphanScanner({ token }) {
-  const [daysAhead, setDaysAhead]   = useState(7);
-  const [loading, setLoading]       = useState(false);
-  const [scanData, setScanData]     = useState(null);   // {results, jira_count, gsheet_count}
-  const [showOk, setShowOk]         = useState(false);
-  const [error, setError]           = useState('');
-  const [triageMap, setTriageMap]   = useState({});     // sendout_id → triage result
-  const [triageLoading, setTriageLoading] = useState(false);
-  const [triageError, setTriageError]     = useState('');
-
-  const runScan = async () => {
-    setLoading(true); setError(''); setScanData(null); setTriageMap({}); setTriageError('');
-    try {
-      const data = await api('GET', `/api/orphan-scan?days_ahead=${daysAhead}&days_back=0`, null, token);
-      // Handle both old (array) and new (object) response shapes
-      if (Array.isArray(data)) setScanData({ results: data, jira_count: null, gsheet_count: null });
-      else setScanData(data);
-    } catch(e) { setError(e.message); }
-    finally { setLoading(false); }
-  };
-
-  const runTriage = async () => {
-    setTriageLoading(true); setTriageError('');
-    try {
-      const payload = orphans.map(r => ({
-        id: r.id, name: r.name, client: r.client, date: r.date,
-        status: r.status, filters: r.filters || [], config_ok: r.config_ok,
-        in_jira: r.in_jira, in_gsheet: r.in_gsheet,
-      }));
-      const data = await api('POST', '/api/orphan-triage', { orphans: payload }, token);
-      const map = {};
-      (data.results || []).forEach(t => { map[t.sendout_id] = t; });
-      setTriageMap(map);
-    } catch(e) { setTriageError(e.message); }
-    finally { setTriageLoading(false); }
-  };
-
-  const results   = scanData ? scanData.results : null;
-  const orphans   = results ? results.filter(r => r.status === 'no_jira' || r.status === 'no_gsheet') : [];
-  const autoCount = results ? results.filter(r => r.status === 'auto').length : 0;
-  const okCount   = results ? results.filter(r => r.status === 'ok').length : 0;
-  const displayed = results ? (showOk ? results : orphans) : [];
-
-  const exportCsv = () => {
-    if (!results) return;
-    const rows = [['Date','Client','Name','Sendout ID','In JIRA','In G-Sheet','Status']];
-    results.forEach(r => rows.push([r.date, r.client, r.name, r.id, r.in_jira, r.in_gsheet, r.status]));
-    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-    const a = document.createElement('a');
-    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-    a.download = `orphan_scan_${new Date().toISOString().slice(0,10)}.csv`;
-    a.click();
-  };
-
-  const groupOrder = ['no_jira','no_gsheet','auto','ok'];
-
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-      <HudPanel>
-        <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
-          <div style={{ flex:'0 0 auto' }}>
-            <Overline style={{ marginBottom:4 }}>Days ahead</Overline>
-            <input type="number" min={1} max={30} value={daysAhead}
-              onChange={e=>setDaysAhead(Number(e.target.value))}
-              style={{ width:70, padding:'8px 10px', borderRadius:4, border:`1px solid ${t.border.input}`, fontFamily:t.font.mono, fontSize:13, color:t.fg[1], background:t.bg.surface2, outline:'none' }} />
-          </div>
-          <div style={{ display:'flex', alignItems:'flex-end', gap:10, paddingBottom:0, marginTop:20 }}>
-            <Button onClick={runScan} disabled={loading}>
-              {loading ? <><span className="vp-spinner" /> Scanning all accounts…</> : '🔍 Scan all accounts'}
-            </Button>
-            {orphans && orphans.length > 0 && (
-              <Button variant="ghost" onClick={runTriage} disabled={triageLoading}>
-                {triageLoading ? <><span className="vp-spinner" /> Triaging…</> : `🤖 Triage ${orphans.length} orphan(s)`}
-              </Button>
-            )}
-            {scanData && <Button variant="ghost" onClick={()=>{ setScanData(null); setTriageMap({}); }}>Clear</Button>}
-            {scanData && <Button variant="ghost" onClick={exportCsv}>Export CSV</Button>}
-          </div>
-          <div style={{ marginLeft:'auto', fontFamily:t.font.mono, fontSize:11, color:t.fg[3], textAlign:'right', lineHeight:1.6 }}>
-            Finds DMA sendouts with no matching JIRA ticket or G-Sheet row.<br/>
-            <span style={{ color:t.ok.base }}>config ✓</span> = DMA filters match expected config &nbsp;·&nbsp;
-            <span style={{ color:t.danger.base }}>config ✗</span> = required filter missing
-            <span style={{ color:t.fg[4] }}> (e.g. REWE: excl. declined_new_terms · Nahkauf: offset_days=1)</span>
-          </div>
-        </div>
-      </HudPanel>
-
-      <ErrorBanner title="Queue scan failed" message={error} onDismiss={()=>setError('')} onRetry={runScan} />
-      <ErrorBanner title="AI Triage failed" message={triageError} onDismiss={()=>setTriageError('')} onRetry={runTriage} />
-
-      {!scanData && !loading && (
-        <div style={{ padding:48, textAlign:'center', color:t.fg[3], fontFamily:t.font.mono, fontSize:12 }}>Click <strong>Scan all accounts</strong> to start.</div>
-      )}
-
-      {scanData && (
-        <>
-          {/* Source counts — shows if JIRA/G-Sheet were actually loaded */}
-          <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
-            {scanData.jira_count !== null && (
-              <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:4, background: scanData.jira_count > 0 ? t.ok.soft : t.danger.soft, border:`1px solid ${scanData.jira_count > 0 ? t.ok.ring : t.danger.ring}`, fontSize:12, fontFamily:t.font.mono, color: scanData.jira_count > 0 ? t.ok.base : t.danger.base }}>
-                {scanData.jira_count > 0 ? '✅' : '❌'} JIRA: {scanData.jira_count} ticket(s) loaded
-              </div>
-            )}
-            {scanData.gsheet_count !== null && (
-              <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:4, background: scanData.gsheet_count > 0 ? t.ok.soft : t.warn.soft, border:`1px solid ${scanData.gsheet_count > 0 ? t.ok.ring : t.warn.ring}`, fontSize:12, fontFamily:t.font.mono, color: scanData.gsheet_count > 0 ? t.ok.base : t.warn.base }}>
-                {scanData.gsheet_count > 0 ? '✅' : '⚠️'} G-Sheet: {scanData.gsheet_count} date(s) indexed
-              </div>
-            )}
-          </div>
-
-          {/* Summary metrics */}
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'18px 22px' }}>
-            <Readout label="Total sendouts" value={<span>{results.length}</span>} />
-            <Readout label="Matched"        value={<span>{okCount + autoCount}</span>} valueKind="ok" />
-            <Readout label="Untracked"      value={<span>{orphans.length}</span>} valueKind={orphans.length > 0 ? 'danger' : 'ok'} />
-            <Readout label="Automated"      value={<span>{autoCount}</span>} valueKind="accent" sub="no JIRA required" />
-          </div>
-
-          {orphans.length === 0 && (
-            <div style={{ padding:'16px 20px', borderRadius:6, background:t.ok.soft, border:`1px solid ${t.ok.ring}`, color:t.ok.base, fontSize:14, fontWeight:500 }}>✅ All sendouts are tracked in JIRA and G-Sheet (+{daysAhead}d window).</div>
-          )}
-
-          {results.length > 0 && (
-            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-              <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, color:t.fg[2], cursor:'pointer', userSelect:'none' }}>
-                <input type="checkbox" checked={showOk} onChange={e=>setShowOk(e.target.checked)} />
-                Show matched sendouts
-              </label>
-              <span style={{ fontSize:12, color:t.fg[3] }}>{displayed.length} row(s) shown</span>
-            </div>
-          )}
-
-          {/* Results grouped by status, sorted by AI risk when triage is available */}
-          {groupOrder.map(status => {
-            const group = displayed.filter(r => r.status === status);
-            if (!group.length) return null;
-            const m = STATUS_META[status];
-            const hasTriage = Object.keys(triageMap).length > 0;
-            const sorted = hasTriage
-              ? [...group].sort((a, b) => (RISK_ORDER[triageMap[a.id]?.risk] ?? 9) - (RISK_ORDER[triageMap[b.id]?.risk] ?? 9))
-              : group;
-            return (
-              <div key={status}>
-                <SectionHeader style={{ marginTop:8 }}>{m.icon} {m.label} ({group.length})</SectionHeader>
-                {sorted.map((r,i) => <OrphanRow key={`${r.client}-${r.date}-${i}`} r={r} triage={triageMap[r.id]} />)}
-              </div>
-            );
-          })}
-        </>
-      )}
     </div>
   );
 }
@@ -3423,24 +3193,118 @@ function ClientEditPanel({ client, token, onSaved }) {
   );
 }
 
+/** New-client form panel */
+function NewClientPanel({ token, onSaved, onCancel }) {
+  const TZ_OPTIONS = [
+    'Europe/Berlin','Europe/London','Europe/Paris','Europe/Warsaw','Europe/Vienna',
+    'Europe/Zurich','Europe/Amsterdam','Europe/Brussels','Europe/Stockholm',
+    'America/New_York','America/Chicago','America/Los_Angeles','Asia/Dubai','Asia/Singapore','UTC',
+  ];
+  const [name,      setName]      = useState('');
+  const [accountId, setAccountId] = useState('');
+  const [tz,        setTz]        = useState('Europe/Berlin');
+  const [reqJira,   setReqJira]   = useState(true);
+  const [aliasRaw,  setAliasRaw]  = useState('');
+  const [saving,    setSaving]    = useState(false);
+  const [err,       setErr]       = useState('');
+
+  async function save() {
+    if (!name.trim()) { setErr('Client name is required'); return; }
+    if (!accountId)   { setErr('Account ID is required'); return; }
+    setSaving(true); setErr('');
+    try {
+      const aliases = aliasRaw.split('\n').map(s=>s.trim()).filter(Boolean);
+      await api('POST', '/api/config/clients', {
+        name: name.trim(), account_id: parseInt(accountId) || 0,
+        timezone_name: tz, requires_jira: reqJira,
+        filters: {}, aliases, mappings: {},
+      }, token);
+      onSaved(name.trim());
+    } catch(e) { setErr(e.message); }
+    finally { setSaving(false); }
+  }
+
+  const labelStyle = { fontFamily:t.font.mono, fontSize:10, fontWeight:500, letterSpacing:'.1em', textTransform:'uppercase', color:t.fg[3], marginBottom:6, display:'block' };
+  const inputStyle = { width:'100%', padding:'9px 12px', border:`1px solid ${t.border.input}`, borderRadius:4, fontSize:13, fontFamily:t.font.sans, color:t.fg[1], background:t.bg.surface1, outline:'none', boxSizing:'border-box' };
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:18 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:4 }}>
+        <div style={{ fontFamily:t.font.display, fontSize:20, fontWeight:600, color:t.fg[1] }}>New Client</div>
+        <Badge kind="brand">custom</Badge>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+        <div>
+          <label style={labelStyle}>— client name *</label>
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. REWE Germany" style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>— dma account id *</label>
+          <input value={accountId} onChange={e=>setAccountId(e.target.value)} placeholder="e.g. 83" type="number" style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>— timezone</label>
+          <select value={tz} onChange={e=>setTz(e.target.value)} style={{ ...inputStyle, appearance:'none' }}>
+            {TZ_OPTIONS.map(z=><option key={z} value={z}>{z}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>— requires jira</label>
+          <div style={{ display:'flex', gap:14, marginTop:6 }}>
+            {[true,false].map(v=>(
+              <label key={String(v)} style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', fontSize:13, color:t.fg[2] }}>
+                <input type="radio" checked={reqJira===v} onChange={()=>setReqJira(v)} style={{ accentColor:t.brand.base }} />
+                {v?'Yes':'No'}
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <label style={labelStyle}>— aliases <span style={{ textTransform:'none', letterSpacing:0, color:t.fg[4] }}>(one per line — display names JIRA may use)</span></label>
+        <textarea value={aliasRaw} onChange={e=>setAliasRaw(e.target.value)} rows={3} placeholder={'e.g. REWE GmbH\nREWE AG\nREWE Handelsgesellschaft'} style={{ ...inputStyle, resize:'vertical', fontFamily:t.font.mono, fontSize:12 }} />
+      </div>
+
+      <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+        <Button onClick={save} disabled={saving}>{saving?'Creating…':'＋ Create Client'}</Button>
+        <button onClick={onCancel} style={{ background:'none', border:'none', cursor:'pointer', fontSize:13, color:t.fg[3], fontFamily:t.font.sans }}>Cancel</button>
+        {err && <span style={{ color:t.danger.base, fontSize:13 }}>{err}</span>}
+      </div>
+    </div>
+  );
+}
+
 /** Main Config tab component */
 function ConfigEditor({ token }) {
   const [clients,  setClients]  = useState([]);
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState(null); // null = new client form
   const [loading,  setLoading]  = useState(true);
   const [err,      setErr]      = useState('');
   const [search,   setSearch]   = useState('');
+  const [showNew,  setShowNew]  = useState(false);
 
-  async function load() {
+  async function load(selectName) {
     try {
       const data = await api('GET', '/api/config/clients', null, token);
       setClients(data);
-      if (!selected && data.length) setSelected(data[0].name);
+      if (selectName) setSelected(selectName);
+      else if (!selected && data.length) setSelected(data[0].name);
     } catch(e) { setErr(e.message); }
     finally { setLoading(false); }
   }
 
   useEffect(()=>{ load(); }, []);
+
+  async function deleteClient(name) {
+    if (!window.confirm(`Delete custom client "${name}"? This cannot be undone.`)) return;
+    try {
+      await api('DELETE', `/api/config/clients/${encodeURIComponent(name)}`, null, token);
+      setSelected(null);
+      load();
+    } catch(e) { setErr(e.message); }
+  }
 
   const filtered = clients.filter(c=>c.name.toLowerCase().includes(search.toLowerCase()));
   const activeClient = clients.find(c=>c.name===selected);
@@ -3451,19 +3315,25 @@ function ConfigEditor({ token }) {
   return (
     <div style={{ display:'flex', height:'calc(100vh - 110px)', overflow:'hidden' }}>
       {/* Client list sidebar */}
-      <div style={{ width:220, flexShrink:0, borderRight:`1px solid ${t.border.base}`, overflowY:'auto', display:'flex', flexDirection:'column' }}>
-        <div style={{ padding:'12px 14px', borderBottom:`1px solid ${t.border.base}` }}>
+      <div style={{ width:230, flexShrink:0, borderRight:`1px solid ${t.border.base}`, overflowY:'auto', display:'flex', flexDirection:'column' }}>
+        <div style={{ padding:'12px 14px', borderBottom:`1px solid ${t.border.base}`, display:'flex', flexDirection:'column', gap:8 }}>
           <Input value={search} onChange={setSearch} placeholder="search clients…" style={{ fontSize:12 }} />
+          <button onClick={()=>{ setShowNew(true); setSelected(null); }}
+            style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:6, width:'100%', padding:'7px 0', border:`1.5px dashed ${t.brand.base}`, borderRadius:6, background:t.brand.soft, color:t.brand.text, fontFamily:t.font.sans, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+            ＋ New Client
+          </button>
         </div>
         <div style={{ flex:1, overflowY:'auto' }}>
           {filtered.map(c=>(
-            <div key={c.name} onClick={()=>setSelected(c.name)}
+            <div key={c.name} onClick={()=>{ setSelected(c.name); setShowNew(false); }}
               style={{ padding:'10px 14px', cursor:'pointer', fontSize:13, fontFamily:t.font.sans,
-                background: selected===c.name ? t.bg.surface2 : 'transparent',
-                borderLeft: selected===c.name ? `3px solid ${t.brand.base}` : '3px solid transparent',
-                color: selected===c.name ? t.fg[1] : t.fg[3],
-                borderBottom:`1px solid ${t.border.base}` }}>
-              {c.name}
+                background: selected===c.name && !showNew ? t.bg.surface2 : 'transparent',
+                borderLeft: selected===c.name && !showNew ? `3px solid ${t.brand.base}` : '3px solid transparent',
+                color: selected===c.name && !showNew ? t.fg[1] : t.fg[3],
+                borderBottom:`1px solid ${t.border.base}`,
+                display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ flex:1 }}>{c.name}</span>
+              {c.is_custom && <span style={{ fontSize:9, fontFamily:t.font.mono, color:t.brand.text, background:t.brand.soft, padding:'1px 5px', borderRadius:3 }}>custom</span>}
             </div>
           ))}
         </div>
@@ -3471,17 +3341,26 @@ function ConfigEditor({ token }) {
 
       {/* Editor panel */}
       <div style={{ flex:1, overflowY:'auto', padding:'24px 32px' }}>
-        {activeClient ? (
+        {showNew ? (
+          <NewClientPanel token={token} onCancel={()=>setShowNew(false)} onSaved={name=>{ setShowNew(false); load(name); }} />
+        ) : activeClient ? (
           <div>
             <div style={{ display:'flex', alignItems:'baseline', gap:12, marginBottom:20 }}>
               <div style={{ fontFamily:t.font.display, fontSize:20, fontWeight:600, color:t.fg[1] }}>{activeClient.name}</div>
+              {activeClient.is_custom && <Badge kind="brand">custom</Badge>}
               <Badge kind="info">{activeClient.requires_jira?'jira required':'no jira'}</Badge>
               <div style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[4] }}>updated {activeClient.updated_at?.slice(0,16)}</div>
+              {activeClient.is_custom && (
+                <button onClick={()=>deleteClient(activeClient.name)}
+                  style={{ marginLeft:'auto', padding:'4px 10px', border:`1px solid ${t.danger.base}`, borderRadius:4, background:'none', color:t.danger.base, fontSize:12, cursor:'pointer', fontFamily:t.font.sans }}>
+                  Delete
+                </button>
+              )}
             </div>
-            <ClientEditPanel key={activeClient.name} client={activeClient} token={token} onSaved={load} />
+            <ClientEditPanel key={activeClient.name} client={activeClient} token={token} onSaved={()=>load()} />
           </div>
         ) : (
-          <div style={{ color:t.fg[4], fontFamily:t.font.mono, fontSize:13 }}>Select a client to edit</div>
+          <div style={{ color:t.fg[4], fontFamily:t.font.mono, fontSize:13 }}>Select a client to edit or create a new one</div>
         )}
       </div>
     </div>
@@ -3624,7 +3503,6 @@ function App() {
                 : <Queue rows={queueRows} onLoad={row=>{setCurrentTicket(row);}} loading={queueLoading} onRefresh={()=>fetchQueue()} token={token} onBulkResult={(data,mode)=>setBulkResult({results:data,mode})} fetchError={queueError} />
           )}
 
-          {mainTab==='Queue Scanner'&&<OrphanScanner token={token} />}
           {mainTab==='Dashboard'&&<Dashboard token={token} />}
           {mainTab==='Sendout Form'&&<SendoutForm token={token} clients={clients} />}
           {mainTab==='AI Examples'&&<ExamplesManager token={token} />}

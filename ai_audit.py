@@ -40,18 +40,6 @@ class AuditOutput(BaseModel):
     confidence_reason: str
 
 
-# ── Orphan triage schema ───────────────────────────────────────────────────────
-
-class OrphanTriageItem(BaseModel):
-    sendout_id: str
-    risk:     Literal["HIGH", "MEDIUM", "LOW"]
-    category: Literal["test_qa", "legitimate_missed", "config_error",
-                       "duplicate", "system_task", "unknown"]
-    action: str   # one-sentence recommended action (English)
-    reason: str   # one-sentence explanation (English)
-
-class OrphanTriageOutput(BaseModel):
-    results: list[OrphanTriageItem]
 
 _AUDIT_PROMPT_TEMPLATE = """\
 {examples_block}⚠️ LANGUAGE RULE — HIGHEST PRIORITY ⚠️
@@ -1548,7 +1536,7 @@ def build_comparison_data(
 
 
 
-_TRIAGE_PROMPT = """\
+_TRIAGE_PROMPT_REMOVED = """\
 LANGUAGE RULE: Respond in ENGLISH ONLY.
 
 You are triaging DMA sendouts that exist in the system but are missing a JIRA ticket,
@@ -1594,30 +1582,6 @@ Orphan sendouts to triage:
 """
 
 
-def run_orphan_triage(api_key: str, model_name: str, orphans: list[dict]) -> list[dict]:
-    """
-    Triage a list of orphan sendouts with Gemini.
-    Each orphan dict should have: id, name, client, date, status, filters, config_ok.
-    Returns list of dicts matching OrphanTriageItem fields.
-    """
-    from datetime import date as _date2
-    _client_ai = genai.Client(api_key=api_key)
-    prompt = _TRIAGE_PROMPT.format(
-        today=_date2.today().isoformat(),
-        orphans_json=json.dumps(orphans, indent=2, ensure_ascii=False),
-    )
-    from google.genai import types as _gt2
-    _tc = _thinking_config_for(model_name, gemini3_level="low")
-    _cfg = _gt2.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=OrphanTriageOutput,
-        **({} if _tc is None else {"thinking_config": _tc}),
-    )
-    raw = _client_ai.models.generate_content(
-        model=model_name, contents=[prompt], config=_cfg
-    ).text
-    output = OrphanTriageOutput.model_validate_json(raw)
-    return [item.model_dump() for item in output.results]
 
 
 def _repair_json(raw: str) -> str:
