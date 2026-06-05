@@ -175,9 +175,8 @@ CLIENT_CONFIGS: dict[str, dict] = {
         "timezone_name": "Europe/Berlin",
         "mappings": {},
         # Carousel sendout — CTA buttons are inside the carousel cards, not in JIRA fields.
-        # Description uses "Intro: …" brief format, not raw copy text.
+        # Description uses "Intro: Hallo x, …" format which IS the campaign copy (not a brief).
         "cta_in_template": True,
-        "description_is_brief": True,  # account manager brief, not campaign copy
         "filters": {"Standard": [{"type": "tag", "name": "declined_new_terms", "mode": "exclude", "value": "true"}]},
     },
     "Toom": {
@@ -301,9 +300,8 @@ CLIENT_CONFIGS: dict[str, dict] = {
         "timezone_name": "Europe/Berlin",
         "mappings": {},
         # Carousel — CTA buttons are inside cards, not in JIRA fields.
-        # Same "Intro: Hallo x," brief format as REWE (same account manager).
+        # "Intro: Hallo x," format IS the campaign copy, not an internal brief.
         "cta_in_template": True,
-        "description_is_brief": True,
         "filters": {"Standard": [{"type": "leaflet_tag", "mode": "include", "offset_days": 1}]},
     },
     "Kaufland WABA": {

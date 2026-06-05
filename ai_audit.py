@@ -1651,19 +1651,18 @@ def _extract_json(raw_text: str) -> str:
 # ── Cover-note stripper ───────────────────────────────────────────────────────
 
 _COVER_NOTE_RE = _re.compile(
-    # Informal greeting to a named person: "Hi Martina," / "Hello Gleb," / "Hallo Alex,"
-    r'^(?:Hi|Hello|Dear|Hallo|Ciao|Bonjour|Hola)\s+\w[\w\s,]+[,\n]'
-    # Formal German greeting with placeholder: "Hallo (Name Nachname),"
-    r'|^Hallo\s+\([^)]{3,40}\)\s*,'
-    # Greeting to the whole team: "Hello everyone," / "Hello all," / "Hallo zusammen,"
-    r'|^(?:Hi|Hello|Hallo)\s+(?:everyone|all|zusammen|team)\s*,',
+    # Informal greeting to a specific named person: "Hi Martina," / "Hello Gleb," / "Hallo Alex,"
+    # Note: does NOT match "[Name]", "FIRSTNAME", "(Name Nachname)" — those are campaign placeholders.
+    r'^(?:Hi|Hello|Dear|Hallo|Ciao|Bonjour|Hola)\s+\w[\w\s,]+[,\n]',
     _re.IGNORECASE,
 )
 
 # Pattern that strongly indicates the description is a 360Dialog internal briefing
-# to the team rather than campaign copy — "Hi Alex, We have a new special sendout..."
+# to the team rather than campaign copy.
+# Only matches when the name after the greeting is a known team member — "Hi Alex, ..."
+# Does NOT match campaign placeholders like "Hallo [Name]", "Hallo x,", "(Name Nachname)".
 _INTERNAL_BRIEF_RE = _re.compile(
-    r'^(?:Hi|Hello|Hallo)\s+(?:Alex|Gleb|Martina|everyone|all|zusammen|team)\b',
+    r'^(?:Hi|Hello|Hallo)\s+(?:Alex|Gleb|Martina)\b',
     _re.IGNORECASE,
 )
 _FORM_FIELD_LABELS = (
