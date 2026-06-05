@@ -19,7 +19,7 @@ def _strip_slide_labels(text: str) -> str:
 
 from ai_audit import (build_comparison_data, run_ai_audit, run_ai_audit_freestyle,
                       _is_audit_error, apply_data_quality_cap, strip_cover_note,
-                      check_audit_preconditions)
+                      check_audit_preconditions, assess_freestyle_signals)
 from api_client import (
     fetch_account_leaflets,
     fetch_api_data,

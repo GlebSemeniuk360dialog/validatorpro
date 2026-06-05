@@ -1355,10 +1355,11 @@ def build_comparison_data(
     #   the team, not the campaign copy.  Copy check should be NA.
     _desc_is_brief = _cfg_client.get("description_is_brief", False)
 
-    # Also detect internal briefs dynamically from the description text itself
+    # Auto-detect whether this ticket needs freestyle — score-based, checks multiple signals
     _raw_desc = str(jira.get("description", "") or "").strip()
-    if not _desc_is_brief and _raw_desc and _INTERNAL_BRIEF_RE.match(_raw_desc):
-        _desc_is_brief = True  # e.g. "Hi Alex, We have a new sendout..."
+    _freestyle_auto, _freestyle_auto_reason = assess_freestyle_signals(jira, _cfg_client)
+    # Merge with config flag
+    _desc_is_brief = _cfg_client.get("description_is_brief", False) or _freestyle_auto
 
     # ── ALDI Suisse: multi-language description — extract the correct locale ──
     # Tickets contain DE/FR/IT sections in one description; pick the one matching
@@ -1575,14 +1576,13 @@ def build_comparison_data(
             **( {"aldi_portugal_shop_list": _aldi_pt_shop_diff} if _aldi_pt_shop_diff else {} ),
         },
         # ── Freestyle routing signal ──────────────────────────────────────────
-        # Set to True when the ticket is non-standard enough that the caller
-        # should switch to run_ai_audit_freestyle() with the pro model.
+        # Set to True when signal scoring detects a non-standard ticket.
+        # The caller routes to run_ai_audit_freestyle() + pro model.
         "_freestyle_recommended": _desc_is_brief,
-        "_freestyle_reason": (
-            f"{client_name} JIRA description is an internal 360Dialog briefing "
-            f"(addressed to a team member), not campaign copy. "
-            f"All JIRA fields have been passed to the freestyle audit."
-        ) if _desc_is_brief else "",
+        "_freestyle_reason": _freestyle_auto_reason or (
+            f"{client_name} description flagged as internal briefing via config"
+            if _cfg_client.get("description_is_brief") else ""
+        ),
     }
 
 
@@ -1678,6 +1678,86 @@ _FORM_FIELD_LABELS = (
     "Main Body Text", "Card Body Texts", "Card Button Texts",
     "Number of cards", "Card Images", "Slide 1", "Slide 2", "Card 1",
 )
+
+# Phrases that indicate the description is a process note, not campaign copy.
+_NON_COPY_PHRASES = _re.compile(
+    r'\b(?:same as (?:last|before|usual|always)|no changes?|as usual|'
+    r'see (?:attachment|excel|pdf|sheet|above|below|file)|'
+    r'pls? (?:use|find|see)|please (?:use|find|see)|'
+    r'regular send(?:out)?|standard send(?:out)?|'
+    r'nothing (?:changed|new)|unchanged|as per (?:last|usual|brief)|'
+    r'copy (?:is )?(?:the )?same)\b',
+    _re.IGNORECASE,
+)
+
+
+def assess_freestyle_signals(jira: dict, client_cfg: dict | None = None) -> tuple[bool, str]:
+    """
+    Analyse the JIRA ticket data and return (use_freestyle, reason_string).
+
+    Signal scoring:
+      STRONG  (score=2) — any single strong signal triggers freestyle.
+      MEDIUM  (score=1) — two or more medium signals trigger freestyle.
+    Threshold: total score >= 2.
+
+    Signals (strong):
+      • Description is addressed to a 360Dialog team member ("Hi Alex, …")
+      • Description is only a URL / smart link
+
+    Signals (medium):
+      • Description is very short (< 50 chars meaningful text)
+      • Description contains non-copy phrases ("same as last week", "see attachment", …)
+      • Description is empty, but additional_comments has content
+      • JIRA has a non-image attachment (.xlsx, .pdf, .csv) — may contain the copy
+      • Description still contains unstripped JIRA wiki markup (h1., {color:})
+    """
+    desc    = str(jira.get("description", "") or "").strip()
+    comment = str(jira.get("additional_comments", "") or "").strip()
+    attachments = jira.get("_img_attachments", []) or []
+
+    score = 0
+    reasons: list[str] = []
+
+    # ── Strong signals (score=2 each) ────────────────────────────────────────
+    if desc and _INTERNAL_BRIEF_RE.match(desc):
+        score += 2
+        reasons.append("description is a 360Dialog internal briefing (addressed to team member)")
+
+    if desc and _re.match(r'^\s*https?://\S+\s*$|\[.*?\]\(https?://\S+\)', desc):
+        score += 2
+        reasons.append("description contains only a URL/smart link — no copy text")
+
+    # ── Medium signals (score=1 each) ────────────────────────────────────────
+    meaningful = _re.sub(r'\s+', '', desc)  # collapse whitespace
+    if desc and len(meaningful) < 50:
+        score += 1
+        reasons.append(f"description is very short ({len(meaningful)} chars)")
+
+    if desc and _NON_COPY_PHRASES.search(desc):
+        score += 1
+        reasons.append("description contains non-copy phrase (e.g. 'same as last week', 'see attachment')")
+
+    if not desc and comment:
+        # Strong signal: description is entirely absent but comments/additional_comments have content.
+        # The copy almost certainly lives outside the standard field.
+        score += 2
+        reasons.append("description is empty; copy may be in additional_comments or comments thread")
+
+    if desc and _re.search(r'h\d\.\s|\{color:', desc):
+        score += 1
+        reasons.append("description contains unstripped JIRA wiki markup")
+
+    has_doc_attachment = any(
+        str(a.get("name", "")).lower().rsplit(".", 1)[-1] in ("xlsx", "xls", "pdf", "csv", "docx")
+        for a in attachments
+    )
+    if has_doc_attachment:
+        score += 1
+        reasons.append("ticket has document attachment (xlsx/pdf/csv) that may contain campaign copy")
+
+    use_freestyle = score >= 2
+    reason_str = "; ".join(reasons) if reasons else ""
+    return use_freestyle, reason_str
 
 def extract_language_section(description: str, locale: str) -> str:
     """
@@ -2225,6 +2305,80 @@ def run_ai_audit_freestyle(
     """
     _client = genai.Client(api_key=api_key)
 
+    # ── Fetch external documents that may contain campaign copy ───────────────
+    doc_texts: list[str] = []   # extracted text from attachments / linked docs
+
+    # 1. JIRA non-image attachments (xlsx, pdf, csv, docx)
+    for att in (jira.get("_img_attachments") or []):
+        fname = str(att.get("name", "")).lower()
+        ext   = fname.rsplit(".", 1)[-1] if "." in fname else ""
+        raw_bytes = att.get("bytes", b"")
+        if not raw_bytes:
+            continue
+        try:
+            if ext in ("xlsx", "xls"):
+                import openpyxl as _opxl
+                wb = _opxl.load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
+                lines: list[str] = []
+                for ws in wb.worksheets:
+                    for row in ws.iter_rows(values_only=True):
+                        cells = [str(c) for c in row if c is not None and str(c).strip()]
+                        if cells:
+                            lines.append(" | ".join(cells))
+                if lines:
+                    doc_texts.append(f"[Excel: {att.get('name','?')}]\n" + "\n".join(lines[:200]))
+            elif ext == "csv":
+                import csv as _csv
+                reader = _csv.reader(io.StringIO(raw_bytes.decode("utf-8", errors="replace")))
+                rows = [" | ".join(r) for r in reader if any(c.strip() for c in r)]
+                if rows:
+                    doc_texts.append(f"[CSV: {att.get('name','?')}]\n" + "\n".join(rows[:200]))
+            elif ext == "pdf":
+                # Pass PDF bytes directly to Gemini via the contents list (handled below)
+                att["_is_pdf"] = True
+            elif ext == "docx":
+                try:
+                    import docx as _docx
+                    doc = _docx.Document(io.BytesIO(raw_bytes))
+                    text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                    if text:
+                        doc_texts.append(f"[Word doc: {att.get('name','?')}]\n{text[:3000]}")
+                except Exception:
+                    pass
+        except Exception as _exc:
+            logger.warning("freestyle: could not parse attachment %s: %s", att.get("name"), _exc)
+
+    # 2. Google Sheets / Google Docs public export URLs found anywhere in the ticket
+    all_ticket_text = " ".join(filter(None, [
+        str(jira.get("description", "")),
+        str(jira.get("additional_comments", "")),
+        str(jira.get("comments", "")),
+        str(jira.get("cta_link", "")),
+    ]))
+    import urllib.request as _ur_doc
+    for _gurl in _re.findall(r'https?://docs\.google\.com/\S+', all_ticket_text):
+        _gurl = _gurl.rstrip(".,;)")
+        try:
+            # Google Sheets: convert to CSV export
+            if "spreadsheets" in _gurl:
+                _csv_url = _re.sub(r'/edit.*$', '/export?format=csv', _gurl)
+                if "export" not in _csv_url:
+                    _csv_url = _gurl.split("?")[0] + "/export?format=csv"
+                with _ur_doc.urlopen(_csv_url, timeout=8) as _resp:
+                    _content = _resp.read().decode("utf-8", errors="replace")[:4000]
+                doc_texts.append(f"[Google Sheet: {_gurl[:60]}]\n{_content}")
+            # Google Docs: export as plain text
+            elif "document" in _gurl:
+                _doc_id = _re.search(r'/d/([a-zA-Z0-9_-]+)', _gurl)
+                if _doc_id:
+                    _txt_url = f"https://docs.google.com/document/d/{_doc_id.group(1)}/export?format=txt"
+                    with _ur_doc.urlopen(_txt_url, timeout=8) as _resp:
+                        _content = _resp.read().decode("utf-8", errors="replace")[:4000]
+                    doc_texts.append(f"[Google Doc: {_gurl[:60]}]\n{_content}")
+        except Exception as _exc:
+            logger.debug("freestyle: could not fetch Google URL %s: %s", _gurl[:60], _exc)
+
+    # ── Build the prompt ──────────────────────────────────────────────────────
     # Collect all JIRA fields that might contain useful content
     jira_fields = {
         "summary":             jira.get("summary", ""),
@@ -2240,8 +2394,9 @@ def run_ai_audit_freestyle(
         "comments_thread":     jira.get("comments", ""),
         "parsed_carousel":     jira.get("parsed_carousel"),
     }
-    # Drop empty values to keep the payload lean
     jira_fields = {k: v for k, v in jira_fields.items() if v}
+    if doc_texts:
+        jira_fields["_external_documents"] = doc_texts
 
     prompt = _FREESTYLE_PROMPT.format(
         client_name=client_name,
@@ -2251,6 +2406,18 @@ def run_ai_audit_freestyle(
     )
 
     contents: list = [prompt]
+
+    # PDF attachments passed as binary parts directly to Gemini
+    from google.genai import types as _gt_fs
+    for att in (jira.get("_img_attachments") or []):
+        if att.get("_is_pdf") and att.get("bytes"):
+            try:
+                contents.append(_gt_fs.Part.from_bytes(
+                    data=att["bytes"], mime_type="application/pdf"
+                ))
+                contents.append(f"(PDF above: {att.get('name','?')})")
+            except Exception as _exc:
+                logger.debug("freestyle: could not add PDF %s: %s", att.get("name"), _exc)
 
     if jira_images:
         contents.append("\n--- JIRA IMAGES ---")
@@ -2271,8 +2438,7 @@ def run_ai_audit_freestyle(
                 except Exception:
                     pass
 
-    from google.genai import types as _gt_fs
-    _tc = _thinking_config_for(model_name, gemini3_level="medium")   # higher reasoning
+    _tc = _thinking_config_for(model_name, gemini3_level="medium")   # higher reasoning for freestyle
     _cfg = _gt_fs.GenerateContentConfig(
         system_instruction=(
             "You are a senior QA auditor for WhatsApp marketing campaigns. "
