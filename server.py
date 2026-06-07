@@ -1830,53 +1830,72 @@ async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(
             progress_queue.put_nowait(None)  # sentinel
 
     async def _stream():
-        task = _aio.create_task(_run_in_thread())
-        while True:
-            item = await progress_queue.get()
-            if item is None:
-                break
-            r, idx, tot = item
-            safe = _serialize_result(r)
-            yield f"data: {_json.dumps({'type':'progress','index':idx,'total':tot,'result':safe})}\n\n"
+        try:
+            task = _aio.create_task(_run_in_thread())
+            while True:
+                item = await progress_queue.get()
+                if item is None:
+                    break
+                r, idx, tot = item
+                try:
+                    safe = _serialize_result(r)
+                    yield f"data: {_json.dumps({'type':'progress','index':idx,'total':tot,'result':safe})}\n\n"
+                except Exception as _pe:
+                    logger.warning("bulk_ai_audit: failed to serialize progress result: %s", _pe)
 
-        await task  # ensure thread finished
+            await task  # ensure thread finished
 
-        if results_collector and isinstance(results_collector[0], Exception):
-            yield f"data: {_json.dumps({'type':'error','detail':str(results_collector[0])})}\n\n"
-            return
+            if results_collector and isinstance(results_collector[0], Exception):
+                yield f"data: {_json.dumps({'type':'error','detail':str(results_collector[0])})}\n\n"
+                return
 
-        results = results_collector
+            results = results_collector
 
-        # Post-process: validation log + Slack
-        global _validation_log
-        _slack_failed: list[dict] = []
-        for r in results:
-            _ai_fc = [c["label"] for c in (r.checks or []) if not c.get("ok")]
-            _validation_log = record_validation(
-                ticket_key=r.ticket_key, client=r.client,
-                status=r.status, mode="ai",
-                issues=r.issues_found, approved=False,
-                log=_validation_log,
-                user=user_name,
-                failed_checks=_ai_fc,
-                confidence=getattr(r, "confidence", None),
-            )
-            if r.status == "failed" and r.issues_found > 0:
-                failed_checks = [c["label"] for c in (r.checks or []) if not c.get("ok")]
-                if not failed_checks and r.report:
-                    failed_checks = _extract_failed_checks(r.report)
-                _slack_failed.append({
-                    "ticket_key": r.ticket_key,
-                    "client": r.client,
-                    "issues": r.issues_found,
-                    "failed_checks": failed_checks[:8],
-                    "sendout_id": r.sendout_id or "",
-                })
-        if _slack_failed:
-            _send_slack_bulk_alert(_slack_failed, user_name=user_name)
+            # Post-process: validation log + Slack
+            global _validation_log
+            _slack_failed: list[dict] = []
+            for r in results:
+                try:
+                    _ai_fc = [c["label"] for c in (r.checks or []) if not c.get("ok")]
+                    _validation_log = record_validation(
+                        ticket_key=r.ticket_key, client=r.client,
+                        status=r.status, mode="ai",
+                        issues=r.issues_found, approved=False,
+                        log=_validation_log,
+                        user=user_name,
+                        failed_checks=_ai_fc,
+                        confidence=getattr(r, "confidence", None),
+                    )
+                    if r.status == "failed" and r.issues_found > 0:
+                        failed_checks = [c["label"] for c in (r.checks or []) if not c.get("ok")]
+                        if not failed_checks and r.report:
+                            failed_checks = _extract_failed_checks(r.report)
+                        _slack_failed.append({
+                            "ticket_key": r.ticket_key,
+                            "client": r.client,
+                            "issues": r.issues_found,
+                            "failed_checks": failed_checks[:8],
+                            "sendout_id": r.sendout_id or "",
+                        })
+                except Exception as _re:
+                    logger.warning("bulk_ai_audit: post-process error for %s: %s", getattr(r, 'ticket_key', '?'), _re)
 
-        all_safe = [_serialize_result(r) for r in results]
-        yield f"data: {_json.dumps({'type':'done','results':all_safe})}\n\n"
+            if _slack_failed:
+                _send_slack_bulk_alert(_slack_failed, user_name=user_name)
+
+            try:
+                all_safe = [_serialize_result(r) for r in results]
+                yield f"data: {_json.dumps({'type':'done','results':all_safe})}\n\n"
+            except Exception as _se:
+                logger.error("bulk_ai_audit: failed to serialize final results: %s", _se, exc_info=True)
+                yield f"data: {_json.dumps({'type':'error','detail':f'Result serialization failed: {_se}'})}\n\n"
+
+        except Exception as _ue:
+            logger.error("bulk_ai_audit _stream crashed: %s", _ue, exc_info=True)
+            try:
+                yield f"data: {_json.dumps({'type':'error','detail':str(_ue)})}\n\n"
+            except Exception:
+                pass
 
     return _SR(
         _stream(),
