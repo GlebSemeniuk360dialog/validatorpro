@@ -1473,13 +1473,17 @@ def build_comparison_data(
                 _filter_parts.append(f"{name}={val}")
             elif name:
                 _filter_parts.append(name)
-        expected_incl = ", ".join(_filter_parts) if _filter_parts else "(from config)"
+        # Use empty string for diff computation (no G-Sheet include tags to compare);
+        # keep a display label for the AI prompt separately.
+        expected_incl = ", ".join(_filter_parts) if _filter_parts else ""
+        _expected_incl_display = expected_incl or "(from config — no G-Sheet tags required)"
         # G-Sheet exclude tags are still valid for Kaufland/ALDI Portugal —
         # only include tags are skipped (those come from config instead).
         expected_excl = _norm_tags(str(jira.get("gsheet_exclude_tags", "")))
     else:
         expected_incl = _norm_tags(str(jira.get("gsheet_tags", "")))
         expected_excl = _norm_tags(str(jira.get("gsheet_exclude_tags", "")))
+        _expected_incl_display = expected_incl
 
     # ── Pre-compute diffs so AI confirms results rather than discovering them ──
     _jira_url_list  = extract_urls(jira_all_text)
@@ -1584,7 +1588,7 @@ def build_comparison_data(
             "Comment_Thread": "\n".join(jira.get("comments", [])),
         },
         "G_Sheet_Intent": {
-            "Include_Tags": expected_incl,
+            "Include_Tags": _expected_incl_display,
             "Exclude_Tags": expected_excl,
             "Note": "(derived from client config, not G-Sheet)" if any(s in _client_lower for s in _SKIP_GSHEET_TAGS) else "",
             "CRITICAL": "If Exclude_Tags is non-empty, DMA MUST have matching exclude filters. Missing/wrong excludes = ❌ FAIL." if expected_excl else "",
