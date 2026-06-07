@@ -1735,10 +1735,20 @@ class BulkRequest(BaseModel):
 
 
 def _serialize_result(r: BulkTicketResult) -> dict:
+    import datetime as _dt
     d = dataclasses.asdict(r)
     # keep only JSON-safe fields (drop large api_payload)
     d.pop("api_payload", None)
-    return d
+    # Convert any non-serializable types
+    def _make_safe(obj):
+        if isinstance(obj, dict):
+            return {k: _make_safe(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_make_safe(v) for v in obj]
+        if isinstance(obj, (_dt.datetime, _dt.date)):
+            return obj.isoformat()
+        return obj
+    return _make_safe(d)
 
 
 @app.post("/api/bulk-validate")
@@ -2375,7 +2385,13 @@ async def _job_preflight_alert() -> None:
             overall = audited.get("overall", "")
             conf    = audited.get("confidence", -1)
             conf_str = f" {conf}%" if conf and conf >= 0 else ""
-            audit_str = f"✅{conf_str}" if overall != "FAIL" else f"❌{conf_str}"
+            if overall == "FAIL":
+                _check_names = ["scheduling", "copy", "footer", "cta", "tags", "images"]
+                _failed = [c.upper() for c in _check_names if audited.get(c, "").upper() == "FAIL"]
+                _fail_str = f" — _{', '.join(_failed)}_" if _failed else ""
+                audit_str = f"❌{conf_str}{_fail_str}"
+            else:
+                audit_str = f"✅{conf_str}"
         else:
             audit_str = "⏳"
 
