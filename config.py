@@ -230,6 +230,9 @@ CLIENT_CONFIGS: dict[str, dict] = {
         # Carousel slide 1 is always a leaflet image from the Leaflets API — not in JIRA.
         # JIRA attachments correspond to slides 2, 3, 4, … only.
         "first_card_is_leaflet": True,
+        # Copy is sourced from JIRA form fields (parsed_carousel), not the description.
+        # The description field often contains only a Google Sheet reference link.
+        "description_is_brief": True,
         "filters": {"Standard": []},
     },
     "Sonderpreis Baumarkt": {"account_id": 26, "timezone_name": "Europe/Berlin", "mappings": {}, "requires_jira": False, "filters": {"Standard": []}},

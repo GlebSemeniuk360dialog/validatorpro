@@ -1775,9 +1775,14 @@ def assess_freestyle_signals(jira: dict, client_cfg: dict | None = None) -> tupl
     desc    = str(jira.get("description", "") or "").strip()
     comment = str(jira.get("additional_comments", "") or "").strip()
     attachments = jira.get("_img_attachments", []) or []
+    _cfg = client_cfg or {}
 
     score = 0
     reasons: list[str] = []
+
+    # If the client config explicitly marks description_is_brief, a URL-only or
+    # short description is expected — don't escalate to freestyle on that signal alone.
+    _desc_brief_by_config = bool(_cfg.get("description_is_brief"))
 
     # ── Strong signals (score=2 each) ────────────────────────────────────────
     if desc and _INTERNAL_BRIEF_RE.match(desc):
@@ -1793,7 +1798,9 @@ def assess_freestyle_signals(jira: dict, client_cfg: dict | None = None) -> tupl
         r')\s*$',
         _re.DOTALL,
     )
-    if desc and _url_only_re.match(desc):
+    if desc and _url_only_re.match(desc) and not _desc_brief_by_config:
+        # Only trigger freestyle for URL-only descriptions when the client isn't
+        # already known to use forms/briefings instead of copy in the description.
         score += 2
         reasons.append("description contains only a URL/smart link — no copy text")
 
@@ -2286,14 +2293,18 @@ def apply_data_quality_cap(confidence, confidence_reason, comparison_data, log_k
     cd   = comparison_data if isinstance(comparison_data, dict) else {}
     dma  = cd.get("DMA_API_Setup", {}) or {}
     jira = cd.get("JIRA_Intent", {}) or {}
-    has_template_body = bool(dma.get("Template_Body_Intro") or dma.get("Template_Carousel_Cards"))
-    has_jira_desc     = bool(str(jira.get("Text_Description", "")).strip())
+    has_template_body   = bool(dma.get("Template_Body_Intro") or dma.get("Template_Carousel_Cards"))
+    has_jira_desc       = bool(str(jira.get("Text_Description", "")).strip())
+    has_carousel_copy   = bool(cd.get("JIRA_Intent", {}).get("Carousel_Cards") or
+                               dma.get("Template_Carousel_Cards"))
     reason = str(confidence_reason or "")
     if not has_template_body and conf > 55:
         if log_key:
             logger.warning("%s: confidence capped %d→55%% — no DMA template body", log_key, conf)
         return 55, "[Auto-capped: no DMA template body — copy check was speculative] " + reason
-    if not has_jira_desc and conf > 65:
+    # Only cap for missing description when there's no carousel/form copy to fall back on.
+    # Form-based clients (PENNY Austria, Netto, etc.) have copy in parsed_carousel — not desc.
+    if not has_jira_desc and not has_carousel_copy and conf > 65:
         if log_key:
             logger.warning("%s: confidence capped %d→65%% — no JIRA description", log_key, conf)
         return 65, "[Auto-capped: no JIRA description — copy check unverifiable] " + reason
