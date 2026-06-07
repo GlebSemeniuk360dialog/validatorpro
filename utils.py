@@ -385,59 +385,21 @@ def check_tags(j_data: dict, a_data: dict, client: str) -> dict:
     incl_lower = [s.lower() for s in api_incl]
     missing_incl = [e for e in expected_incl if e.lower() not in incl_lower]
 
-    # ── Client-specific config filters ──
+    # ── Client-specific config filters — use _pick_filter_set for all clients ──
+    from ai_audit import _pick_filter_set as _pfs
     all_client_filters = CLIENT_CONFIGS.get(client, {}).get("filters", {})
-    if client in ("Kaufland RCS", "Kaufland WABA"):
-        from datetime import datetime as _dt
-        try:
-            dt = _dt.fromisoformat(str(a_data.get("scheduled_date","")).replace("Z","+00:00"))
-            is_sun = dt.weekday() == 6
-        except Exception:
-            is_sun = False
-        expected_filters = all_client_filters.get(
-            "Sunday" if is_sun else "Wednesday", all_client_filters.get("Standard", []))
-    elif client == "ALDI Portugal":
-        # Primary: JIRA segment field (most reliable — set by the team on the ticket)
-        # Fallback: DMA sendout name or template name
-        jira_segment = str(j_data.get("segment", "") or "").lower()
-        sendout_name = (a_data.get("name") or a_data.get("campaign_name") or
-                        a_data.get("task_name") or "").lower()
-        tmpl_name    = str(a_data.get("template_name", "")).lower()
-        combined     = f"{jira_segment} {sendout_name} {tmpl_name}"
-        if any(kw in combined for kw in ("northern", "norte", "north")):
-            expected_filters = all_client_filters.get("Northern", all_client_filters.get("Standard", []))
-        else:
-            expected_filters = all_client_filters.get("Regular", all_client_filters.get("Standard", []))
-    elif client == "ALDI Suisse":
-        # Pick filter variant by sendout/task name — DE/FR/IT locale variants + test sendouts
-        task_name = (a_data.get("name") or a_data.get("task_name") or
-                     j_data.get("request_type", "")).lower()
-        matched_variant = None
-        for variant_key in all_client_filters:
-            if variant_key.lower() in task_name or task_name in variant_key.lower():
-                matched_variant = variant_key
-                break
-        if not matched_variant:
-            # Fallback: detect locale from leaflet_filter tags
-            lf_tags = a_data.get("leaflet_filter", {}).get("tags", [])
-            lf_locale = next((t.get("value","") for t in lf_tags if t.get("name") == "locale"), "")
-            for variant_key in all_client_filters:
-                if lf_locale and lf_locale in variant_key.lower():
-                    matched_variant = variant_key
-                    break
-        expected_filters = all_client_filters.get(matched_variant or "Standard", [])
-    elif client == "ALDI Italy":
-        # Carousel sendouts don't use leaflet_tag filter
-        _is_carousel = any(
-            cp.get("source") == "custom_cards" or cp.get("type") == "carousel"
-            for cp in a_data.get("component_parameters", [])
-            if isinstance(cp, dict)
-        )
-        expected_filters = all_client_filters.get(
-            "Carousel" if _is_carousel else "Standard", []
-        )
-    else:
-        expected_filters = all_client_filters.get("Standard", [])
+    from ai_audit import _detect_is_carousel as _dic
+    _is_carousel_u = _dic(a_data)
+    _segment_u      = str(j_data.get("segment", "") or "")
+    _api_date_u     = str(a_data.get("scheduled_date", ""))
+    _req_type_u     = str(j_data.get("request_type", "") or "")
+    _, expected_filters = _pfs(
+        all_client_filters,
+        api_date=_api_date_u,
+        is_carousel=_is_carousel_u,
+        segment=_segment_u,
+        request_type=_req_type_u,
+    )
 
     if client == "Toom":
         if "special" in str(j_data.get("request_type", "")).lower():

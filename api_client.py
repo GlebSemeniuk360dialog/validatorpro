@@ -155,6 +155,11 @@ def fetch_pending_sendouts(token: str, account_id: int, days_ahead: int = 30, da
                     "fetch_pending_sendouts: account %s status=%s → %d task(s)",
                     account_id, status, len(tasks)
                 )
+                # Log keys of first task to help identify disabled/filtered fields
+                if tasks:
+                    logger.info("fetch_pending_sendouts: sample task keys=%s sample=%s",
+                                list(tasks[0].keys())[:20],
+                                {k: tasks[0].get(k) for k in ("name","status","enabled","active","is_active","is_enabled","type","action_type","task_type") if k in tasks[0]})
                 return tasks
         except requests.RequestException as exc:
             logger.warning("fetch_pending_sendouts failed for account %s status=%s: %s",
@@ -162,13 +167,20 @@ def fetch_pending_sendouts(token: str, account_id: int, days_ahead: int = 30, da
         except Exception as exc:
             logger.warning("fetch_pending_sendouts parse error account %s: %s", account_id, exc)
 
-    # Last resort: no status filter at all
+    # Last resort: no status filter — but strip disabled/cancelled/draft tasks
+    _INACTIVE = {"disabled", "cancelled", "canceled", "draft", "inactive", "deleted", "archived"}
     try:
         res = requests.get(base_url, headers=headers, params=base_params, timeout=HTTP_TIMEOUT)
         res.raise_for_status()
         tasks = _parse_response(res.json())
-        logger.info("fetch_pending_sendouts: account %s no-status-filter → %d task(s)",
-                    account_id, len(tasks))
+        before = len(tasks)
+        tasks = [
+            t for t in tasks
+            if str(t.get("status") or t.get("task_status") or t.get("state") or "").lower()
+               not in _INACTIVE
+        ]
+        logger.info("fetch_pending_sendouts: account %s no-status-filter → %d task(s) (%d removed as inactive)",
+                    account_id, len(tasks), before - len(tasks))
         return tasks
     except Exception as exc:
         logger.warning("fetch_pending_sendouts fallback failed account %s: %s", account_id, exc)
@@ -566,19 +578,23 @@ def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str)
                     return str(item.get("answer", "")).strip()
             return ""
 
-        intro = _get(["main body text", "body text", "intro", "message"])
+        # Log all labels so we can debug new form layouts
+        all_labels = [item.get("label", "") for item in answers]
+        logger.info("fetch_jira_form_answers: %s form labels: %s", issue_key, all_labels)
+
+        intro = _get(["main body text", "body text", "intro", "message", "text"])
 
         # Parse per-card sections from "Card N: text" format
         def _parse_cards(raw: str) -> list[str]:
             import re as _re
             if not raw:
                 return []
-            parts = _re.split(r'Card\s*\d+\s*:', raw)
+            parts = _re.split(r'(?:Card|Karte|Slide)\s*\d+\s*[:\-]', raw, flags=_re.IGNORECASE)
             return [p.strip() for p in parts if p.strip()]
 
-        bodies_raw = _get(["card body texts", "card bodies", "card text"])
-        btns_raw   = _get(["card button texts", "button texts", "button text", "cta text"])
-        urls_raw   = _get(["card button urls", "button urls", "card urls"])
+        bodies_raw = _get(["card body texts", "card bodies", "card text", "body", "text", "copy", "content"])
+        btns_raw   = _get(["card button texts", "button texts", "button text", "cta text", "button", "cta", "call to action"])
+        urls_raw   = _get(["card button urls", "button urls", "card urls", "url", "link", "cta url", "cta link"])
 
         bodies = _parse_cards(bodies_raw)
         btns   = _parse_cards(btns_raw)
@@ -587,6 +603,20 @@ def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str)
 
         n = max(len(bodies), len(btns), len(urls))
         if n == 0:
+            # Last resort: try to find any answer that looks like it has multiple card sections
+            import re as _re
+            for item in answers:
+                raw = str(item.get("answer", ""))
+                card_sections = _re.split(r'(?:Card|Karte|Slide)\s*\d+\s*[:\-]', raw, flags=_re.IGNORECASE)
+                card_sections = [s.strip() for s in card_sections if s.strip()]
+                if len(card_sections) > 1:
+                    bodies = card_sections
+                    n = len(bodies)
+                    logger.info("fetch_jira_form_answers: %s fallback card parse on label '%s' → %d cards",
+                                issue_key, item.get("label",""), n)
+                    break
+        if n == 0:
+            logger.warning("fetch_jira_form_answers: %s — could not parse any cards from labels %s", issue_key, all_labels)
             return None
 
         cards = [
@@ -745,6 +775,16 @@ def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch
     # selectively download later (e.g. bulk mode detects card count first).
     data["_img_attachments"] = sorted_atts
 
+    # Collect non-image document attachments for freestyle AI audit
+    _DOC_EXTS = (".xlsx", ".xls", ".pdf", ".csv", ".docx", ".doc")
+    doc_atts = [
+        a for a in attachments
+        if not _is_image(a) and any(
+            getattr(a, "filename", "").lower().endswith(ext) for ext in _DOC_EXTS
+        )
+    ]
+    data["_doc_attachments"] = []  # will be filled with {"name", "bytes", "mime"} dicts
+
     # Download attachments sequentially using requests with basic auth.
     # The jira session causes "multiple values for timeout" on some attachments,
     # so we use requests directly with explicit basic auth.
@@ -778,6 +818,27 @@ def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch
     if data["carousel_images"]:
         data["attachment_bytes"] = data["carousel_images"][0]["bytes"]
         data["attachment_name"] = data["carousel_images"][0]["name"]
+
+    # Download document attachments (always, regardless of fetch_images flag)
+    for att in doc_atts[:5]:  # max 5 docs to avoid runaway downloads
+        att_url = getattr(att, "content", None)
+        if not att_url:
+            continue
+        logger.info("Downloading doc attachment '%s' from %s", att.filename, att_url)
+        try:
+            r = requests.get(att_url, headers=_headers,
+                             timeout=HTTP_TIMEOUT, allow_redirects=True)
+            if r.status_code == 200 and len(r.content) > 0:
+                data["_doc_attachments"].append({
+                    "name": att.filename,
+                    "bytes": r.content,
+                    "mime": getattr(att, "mimeType", "") or "",
+                })
+                logger.info("  -> Stored doc '%s' (%d bytes)", att.filename, len(r.content))
+            else:
+                logger.warning("  -> Doc download failed: HTTP %d", r.status_code)
+        except Exception as exc:
+            logger.error("  -> Exception downloading doc '%s': %s", att.filename, exc)
 
     return data
 

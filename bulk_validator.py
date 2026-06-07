@@ -142,12 +142,25 @@ def _find_sendout_id(ticket_key: str, client: str, gsheet_data: list[dict],
     try:
         target_date = _dt.fromisoformat(jira_date[:10]).date()
         tasks = fetch_pending_sendouts(api_token, account_id)
+        # System task name patterns — never match these for validation
+        _SYSTEM_PATTERNS = ("load shops", "load leaflet", "load store", "load data",
+                            "test sendout", "test send", "[test]", "dummy")
+        _INACTIVE = {"disabled", "cancelled", "canceled", "draft", "inactive", "deleted", "archived"}
+
         # Collect all active tasks matching the date
         date_matches = []
         for task in tasks:
-            # Do NOT skip on is_active=False — future pending tasks have
-            # is_active=False until they start executing; status filter in
-            # fetch_pending_sendouts (pending/scheduled/approved) is sufficient.
+            # Skip system tasks and disabled sendouts
+            if task.get("action_type") == "dma_bot":
+                continue
+            if task.get("is_active") is False:
+                continue
+            _tname = (task.get("name") or task.get("campaign_name") or task.get("task_name") or "").lower()
+            if any(p in _tname for p in _SYSTEM_PATTERNS):
+                continue
+            _tstatus = str(task.get("status") or task.get("task_status") or task.get("state") or "").lower()
+            if _tstatus in _INACTIVE:
+                continue
             try:
                 task_date = _dt.fromisoformat(
                     str(task.get("scheduled_date", ""))[:10]
@@ -284,169 +297,33 @@ def _build_audit_payload(
     client: str,
 ) -> tuple[dict, list[str], list[bytes | None]]:
     """
-    Extract template components, resolve leaflet references, and build
-    the comparison_data dict ready for run_ai_audit.
+    Thin wrapper around audit_prep.extract_dma_components().
+    Calls build_comparison_data and fetches DMA image bytes.
     Returns (comparison_data, dma_image_urls, dma_image_bytes_list).
     """
-    tmpl_body, tmpl_footer, tmpl_buttons = "", "", []
-    dma_carousel_texts: list[str] = []
-    dma_image_urls: list[str] = []
-
-    # Step 1: check component_parameters for custom header image first
-    for cp in api.get("component_parameters", []):
-        if cp.get("type") == "header_image":
-            url = cp.get("value")
-            if url and str(url).startswith("http"):
-                dma_image_urls.append(url)
-            elif cp.get("source") == "leaflet_image_url":
-                dma_image_urls.append("@leaflet_image_url")
-            break
-
-    # Step 2: carousel custom images
-    api_custom_images = _collect_custom_carousel_images(api)
-    if api_custom_images:
-        dma_image_urls = [img for img in api_custom_images if img]
-
-    if tmpl:
-        for comp in tmpl.get("components", []):
-            ctype = comp["type"]
-            if ctype == "BODY":
-                tmpl_body = comp.get("text", "")
-            elif ctype == "FOOTER":
-                tmpl_footer = comp.get("text", "")
-            elif ctype == "BUTTONS":
-                tmpl_buttons = [
-                    f"{b.get('text', '')} ({b.get('type', '')})"
-                    for b in comp.get("buttons", [])
-                ]
-            elif ctype == "HEADER" and comp.get("format") == "IMAGE" and not dma_image_urls:
-                url = comp.get("example", {}).get("header_handle", [None])[0]
-                if url:
-                    dma_image_urls.append(url)
-            elif ctype == "CAROUSEL":
-                for ci, card in enumerate(comp.get("cards", [])):
-                    body, btns = "", []
-                    for cc in card.get("components", []):
-                        if cc["type"] == "HEADER" and cc.get("format") == "IMAGE" and not api_custom_images:
-                            url = cc.get("example", {}).get("header_handle", [None])[0]
-                            if url:
-                                dma_image_urls.append(url)
-                        elif cc["type"] == "BODY":
-                            body = cc.get("text", "")
-                        elif cc["type"] == "BUTTONS":
-                            btns = [b.get("text", "") for b in cc.get("buttons", [])]
-                    dma_carousel_texts.append(f"Card {ci+1} Body: '{body}' | Buttons: {btns}")
-
-    # Resolve leaflet placeholders
-    first_leaflet = leaflet_data[0] if leaflet_data else None
-    if first_leaflet:
-        l_url = first_leaflet.get("public_url") or first_leaflet.get("url", "")
-        l_img = first_leaflet.get("document_url") or first_leaflet.get("image_url")
-        if l_url:
-            dma_image_urls = [l_img if u == "@leaflet_image_url" else u for u in dma_image_urls]
-
-    # Tag summary
-    api_tags = extract_all_tags(api)
-    tag_parts: list[str] = []
-    for t in api_tags:
-        key_name = t.get("name") or t.get("type") or "filter"
-        raw_val = (t.get("value") or t.get("exclude_value") or t.get("values")
-                   or t.get("exclude_values") or t.get("offset_days") or "Active")
-        # Flatten list values (e.g. shop_number lists) to a short summary
-        if isinstance(raw_val, list):
-            val = f"[{len(raw_val)} values]"
-        else:
-            val = str(raw_val)
-        mode = "Exclude" if ("exclude_value" in t or "exclude_values" in t or t.get("mode") == "exclude") else "Include"
-        # Represent leaflet_tag offset_days in both forms for Gemini
-        if t.get("type") == "leaflet_tag" and t.get("offset_days") is not None:
-            tag_parts.append(f"[{mode}] leaflet_tag={t.get('offset_days')} (offset_days={t.get('offset_days')})")
-        else:
-            tag_parts.append(f"[{mode}] {key_name}={val}")
-
-    api_urls = extract_api_urls_advanced(api)
-    if tmpl:
-        api_urls += extract_urls(str(tmpl))
-    if first_leaflet:
-        l_url = first_leaflet.get("public_url") or first_leaflet.get("url", "")
-        if l_url:
-            api_urls = [u.replace("@leaflet_url_path", l_url) for u in api_urls]
-
-    # Kaufland RCS Sunday: add RCS card texts and expected static texts
-    rcs_cards_bv = (api.get("google_rcs_content", {})
-                       .get("richCard", {})
-                       .get("carouselCard", {})
-                       .get("cardContents", []))
-    if rcs_cards_bv:
-        for ci, rcs_card in enumerate(rcs_cards_bv):
-            title = rcs_card.get("title", f"Card {ci+1}")
-            desc  = rcs_card.get("description", "")
-            btn   = next((s.get("action", {}).get("text", "")
-                          for s in rcs_card.get("suggestions", [])), "")
-            dma_carousel_texts.append(f"Card {ci+1} Title: '{title}' | Body: '{desc}' | Button: {btn}")
-
-        # Inject expected static texts for Sunday sendouts
-        from datetime import datetime as _dt_bv
-        try:
-            _is_sun_bv = _dt_bv.fromisoformat(
-                api.get("scheduled_date","").replace("Z","+00:00")
-            ).weekday() == 6
-        except Exception:
-            _is_sun_bv = False
-        if _is_sun_bv and client == "Kaufland RCS":
-            static_bv = CLIENT_CONFIGS.get("Kaufland RCS", {}).get("sunday_rcs_cards", [])
-            if static_bv:
-                expected_texts = " | ".join(
-                    f"Card {i+1}: Title='{c['title']}' Body='{c['body'][:80]}...' Button='{c['button']}'"
-                    for i, c in enumerate(static_bv)
-                )
-                jira = dict(jira)
-                jira["description"] = f"[STATIC RCS TEMPLATE] Expected card texts:\n{expected_texts}"
-
-        # Kaufland WABA: inject expected static carousel card body text from config
-        if client == "Kaufland WABA" and not jira.get("description"):
-            _waba_cfg  = CLIENT_CONFIGS.get("Kaufland WABA", {})
-            _WABA_BODY = _waba_cfg.get("static_carousel_body", "")
-            _WABA_NOTE = _waba_cfg.get("static_carousel_note", "")
-            if _WABA_BODY:
-                jira = dict(jira)
-                jira["description"] = (
-                    f"[STATIC WABA CAROUSEL TEMPLATE] Both carousel cards use this body text:\n"
-                    f"{_WABA_BODY}"
-                    + (f"\n{_WABA_NOTE}" if _WABA_NOTE else "")
-                )
-
-    # Normalize template-variable URLs to their base paths instead of dropping them.
-    # e.g. https://www.rewe.de/angebote/{{1}}/ → https://www.rewe.de/angebote/
-    #      angebote/{shop_id}/?ecid=...         → kept as-is (single-brace, handled by _urls_equivalent)
-    from ai_audit import _tmpl_url_base as _tub
-    _api_urls_norm: list[str] = []
-    for _u in api_urls:
-        if "{{" in _u:
-            _base = _tub(_u)
-            if _base:
-                _api_urls_norm.append(_base)
-            # else: URL was entirely a variable — skip it
-        else:
-            _api_urls_norm.append(_u)
+    from audit_prep import extract_dma_components
+    d = extract_dma_components(api=api, tmpl=tmpl, leaflet_data=leaflet_data,
+                               jira=jira, client=client)
+    # jira may have been modified by static template injection
+    jira = d["jira"]
 
     comparison_data = build_comparison_data(
         jira=jira,
-        tmpl_body=tmpl_body,
-        tmpl_footer=tmpl_footer,
-        tmpl_buttons=tmpl_buttons,
-        dma_carousel_texts=dma_carousel_texts,
-        api_tag_str=", ".join(tag_parts),
-        api_urls=_api_urls_norm,
+        tmpl_body=d["tmpl_body"],
+        tmpl_footer=d["tmpl_footer"],
+        tmpl_buttons=d["tmpl_buttons"],
+        dma_carousel_texts=d["dma_carousel_texts"],
+        api_tag_str=d["tag_str"],
+        api_urls=d["api_urls"],
         client_name=client,
         api_date=str(api.get("scheduled_date", "")),
     )
 
-    dma_image_bytes = [fetch_dma_image_bytes(u) for u in dma_image_urls if u]
-    return comparison_data, dma_image_urls, dma_image_bytes
+    dma_image_bytes = [fetch_dma_image_bytes(u) for u in d["dma_image_urls"] if u]
+    return comparison_data, d["dma_image_urls"], dma_image_bytes
 
 
-def _detect_card_count(a_data: dict, t_data: dict | None) -> int:
+def _detect_card_count(a_data: dict, t_data: dict | None, j_data: dict | None = None) -> int:
     """
     Return the number of carousel cards in this sendout.
     Falls back to 1 for single-image (non-carousel) sendouts.
@@ -472,6 +349,13 @@ def _detect_card_count(a_data: dict, t_data: dict | None) -> int:
     custom = [img for img in _collect_custom_carousel_images(a_data) if img]
     if len(custom) > 1:
         return min(len(custom), 6)
+    # Fallback: JIRA form carousel data (for clients like Penny AT, ALDI Italy whose
+    # DMA carousel structure isn't yet recognised by the detectors above)
+    if j_data:
+        _jc = j_data.get("parsed_carousel") or {}
+        _cards = _jc.get("cards") if isinstance(_jc, dict) else None
+        if _cards and len(_cards) > 1:
+            return min(len(_cards), 6)
     return 1  # single-image (regular template)
 
 
@@ -509,28 +393,8 @@ def _download_jira_images(
     return result
 
 
-def _collect_custom_carousel_images(api_data) -> list[str | None]:
-    images: list[str | None] = []
-
-    def _walk(obj):
-        if isinstance(obj, dict):
-            if obj.get("type") == "carousel" and "cards" in obj:
-                for card in obj["cards"]:
-                    found = None
-                    for cp in card.get("component_parameters", []):
-                        if cp.get("type") == "header_image" and cp.get("value"):
-                            found = cp["value"]
-                    images.append(found)
-                return
-            for k, v in obj.items():
-                if not (obj.get("type") == "carousel" and k == "cards"):
-                    _walk(v)
-        elif isinstance(obj, list):
-            for item in obj:
-                _walk(item)
-
-    _walk(api_data)
-    return images
+# _collect_custom_carousel_images was moved to audit_prep.py
+from audit_prep import _collect_custom_carousel_images  # keep name for _detect_card_count
 
 
 
@@ -1185,11 +1049,31 @@ def _validate_single_ticket_ai(
         import os as _os
         _pro_model = _os.environ.get("GEMINI_PRO_MODEL", "gemini-2.5-pro")
 
-        # Download JIRA images — exactly as many as the template has cards
-        card_count  = _detect_card_count(a_data, t_data)
-        jira_imgs   = _download_jira_images(
+        # Download JIRA images — exactly as many as the template has cards.
+        # For clients where the first card is always a leaflet image (not in JIRA),
+        # JIRA attachments correspond to cards 2, 3, 4, … — download card_count-1.
+        from config import CLIENT_CONFIGS as _CC
+        _client_cfg     = _CC.get(client, {})
+        _first_leaflet  = _client_cfg.get("first_card_is_leaflet", False)
+        card_count      = _detect_card_count(a_data, t_data, j_data)
+        if _first_leaflet:
+            # Card 1 = leaflet (not in JIRA). JIRA images = cards 2, 3, 4, …
+            # Template/DMA detection may miss the leaflet card; correct by using
+            # actual JIRA attachment count + 1 when that's larger.
+            _jira_att_count = len(j_data.get("_img_attachments", []))
+            _jira_based     = min(_jira_att_count + 1, 6)
+            if _jira_based > card_count:
+                logger.info(
+                    "%s: first_card_is_leaflet — boosting card_count %d→%d (JIRA has %d imgs)",
+                    ticket_key, card_count, _jira_based, _jira_att_count,
+                )
+                card_count = _jira_based
+            _jira_img_slots = max(1, card_count - 1)
+        else:
+            _jira_img_slots = card_count
+        jira_imgs       = _download_jira_images(
             j_data.get("_img_attachments", []),
-            max_images=card_count,
+            max_images=_jira_img_slots,
             email=jira_email,
             token=jira_token,
         )
@@ -1209,6 +1093,7 @@ def _validate_single_ticket_ai(
                 freestyle_reason=_freestyle_reason,
                 jira_images=jira_imgs or None,
                 dma_images=dma_bytes[:card_count] or None,
+                precomputed_diffs=comparison_data.get("Precomputed_Diffs", {}),
             )
         else:
             audit = run_ai_audit(

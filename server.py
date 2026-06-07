@@ -199,6 +199,88 @@ def _send_slack_alert(
         logger.warning("Slack alert failed: %s", exc)
 
 
+def _send_slack_bulk_alert(
+    failed_tickets: list[dict],
+    user_name: str = "Validator",
+    webhook: str = "",
+) -> None:
+    """Send a single Slack notification summarising all failed tickets from a bulk AI check."""
+    url = webhook or SLACK_WEBHOOK
+    if not url or not failed_tickets:
+        return
+    try:
+        import json as _json
+        import urllib.parse as _up
+        import urllib.request as _ur
+
+        total = len(failed_tickets)
+        header_text = f"❌ AI Bulk Check — {total} ticket{'s' if total > 1 else ''} failed"
+
+        blocks: list[dict] = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": header_text},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"<!here> *{total} sendout{'s' if total > 1 else ''}* need manual review — checked by *{user_name}*."},
+            },
+        ]
+
+        for item in failed_tickets:
+            ticket_key = item["ticket_key"]
+            client = item["client"]
+            sendout_id = item.get("sendout_id", "")
+            failed_checks = item.get("failed_checks", [])
+            issues = item.get("issues", 0)
+
+            ticket_url = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket_key}"
+            params = {"ticket": ticket_key, "client": client}
+            if sendout_id:
+                params["sendout"] = sendout_id
+            app_link = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
+
+            checks_text = (
+                ", ".join(f"_{c}_" for c in failed_checks[:6])
+                if failed_checks
+                else f"{issues} issue(s)"
+            )
+
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*<{ticket_url}|{ticket_key}>* — {client}\n"
+                        f"❌ {checks_text}"
+                    ),
+                },
+                "accessory": {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open in Validator"},
+                    "url": app_link,
+                    "style": "danger",
+                },
+            })
+
+        payload = {
+            "text": f"<!here> {header_text}",
+            "blocks": blocks,
+        }
+
+        req = _ur.Request(
+            url,
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        _ur.urlopen(req, timeout=8)
+        logger.info("SLACK_BULK_ALERT\t%d failed ticket(s) — %s", total, user_name)
+    except Exception as exc:
+        logger.warning("Slack bulk alert failed: %s", exc)
+
+
 def _send_slack_approval(ticket_key: str, user_name: str, approver: str, webhook: str = "") -> None:
     """Post an approval confirmation to Slack."""
     url = webhook or SLACK_WEBHOOK
@@ -242,31 +324,8 @@ def _strip_slide_labels(text: str) -> str:
     return text.strip()
 
 
-def _collect_custom_carousel_images(api_data) -> list:
-    """Return per-card custom image URLs from the raw DMA API response."""
-    images = []
-
-    def _walk(obj):
-        if isinstance(obj, dict):
-            if obj.get("type") == "carousel" and "cards" in obj:
-                for card in obj["cards"]:
-                    found = None
-                    for comp in card.get("components", []):
-                        if comp.get("type") == "HEADER" and comp.get("format") == "IMAGE":
-                            ex = comp.get("example", {})
-                            handles = ex.get("header_handle", [])
-                            if handles:
-                                found = handles[0]
-                    images.append(found)
-                return
-            for v in obj.values():
-                _walk(v)
-        elif isinstance(obj, list):
-            for item in obj:
-                _walk(item)
-
-    _walk(api_data)
-    return images
+# _collect_custom_carousel_images was moved to audit_prep.py
+from audit_prep import _collect_custom_carousel_images  # keep name for any remaining callers
 
 
 def _ticket_client(issue: dict) -> str:
@@ -427,154 +486,24 @@ def _gsheet() -> list[dict]:
 
 def _prepare_audit_data(api: dict, tmpl: Optional[dict], leaflet_data: list, jira: dict, client: str):
     """
-    Extract template body/footer/buttons, DMA carousel texts, image URLs,
-    and tag/URL lists needed for build_comparison_data and build_results_html.
-    Returns: (tmpl_body, tmpl_footer, tmpl_buttons, dma_carousel_texts,
-               dma_image_urls, tag_str, api_urls, rcs_cards)
+    Thin wrapper around audit_prep.extract_dma_components().
+    Returns the same tuple as before so all call-sites remain unchanged:
+        (tmpl_body, tmpl_footer, tmpl_buttons, dma_carousel_texts,
+         dma_image_urls, tag_str, api_urls, rcs_cards)
     """
-    tmpl_body: str = ""
-    tmpl_footer: str = ""
-    tmpl_buttons: list[str] = []
-    dma_carousel_texts: list[str] = []
-    dma_image_urls: list[str] = []
-
-    # Header image from component_parameters
-    api_custom_images: list = []
-    for cp in api.get("component_parameters", []):
-        if cp.get("type") == "header_image":
-            url = cp.get("value")
-            if url and str(url).startswith("http"):
-                dma_image_urls.append(url)
-            elif cp.get("source") == "leaflet_image_url":
-                dma_image_urls.append("@leaflet_image_url")
-            break
-
-    # Carousel custom images from component_parameters
-    api_custom_images = _collect_custom_carousel_images(api)
-    if api_custom_images:
-        dma_image_urls = [img for img in api_custom_images if img]
-
-    # RCS carousel
-    rcs_cards = (api.get("google_rcs_content", {})
-                    .get("richCard", {})
-                    .get("carouselCard", {})
-                    .get("cardContents", []))
-    if rcs_cards and not dma_image_urls:
-        leaflet_by_type: dict = {}
-        for lf_item in (leaflet_data or []):
-            lft = (lf_item.get("data") or {}).get("leaflet_type", "")
-            if lft and lft not in leaflet_by_type:
-                leaflet_by_type[lft] = lf_item.get("document_url") or lf_item.get("image_url", "")
-        for ci, rcs_card in enumerate(rcs_cards):
-            img_url = (rcs_card.get("media", {})
-                           .get("contentInfo", {})
-                           .get("fileUrl", ""))
-            if img_url and img_url.startswith("http"):
-                dma_image_urls.append(img_url)
-            else:
-                card_lf = rcs_card.get("leaflet_filter", {})
-                lft = next((tg.get("value", "") for tg in card_lf.get("tags", [])
-                            if tg.get("name") == "leaflet_type"), "")
-                img_url = (leaflet_by_type.get(lft) or
-                           (leaflet_by_type.get(list(leaflet_by_type.keys())[0], ""))
-                           if leaflet_by_type else "")
-                if img_url:
-                    dma_image_urls.append(img_url)
-            title = rcs_card.get("title", f"Card {ci+1}")
-            desc  = rcs_card.get("description", "")
-            btn   = next((s.get("action", {}).get("text", "")
-                          for s in rcs_card.get("suggestions", [])), "")
-            dma_carousel_texts.append(f"Card {ci+1} Title: '{title}' | Body: '{desc}' | Button: {btn}")
-
-    # Template components
-    if tmpl:
-        for comp in tmpl.get("components", []):
-            ctype = comp.get("type", "")
-            if ctype == "BODY":
-                tmpl_body = comp.get("text", "")
-            elif ctype == "FOOTER":
-                tmpl_footer = comp.get("text", "")
-            elif ctype == "BUTTONS":
-                tmpl_buttons = [
-                    f"{b.get('text', '')} ({b.get('type', '')})"
-                    for b in comp.get("buttons", [])
-                ]
-            elif ctype == "HEADER" and comp.get("format") == "IMAGE" and not dma_image_urls:
-                url = comp.get("example", {}).get("header_handle", [None])[0]
-                if url:
-                    dma_image_urls.append(url)
-            elif ctype == "CAROUSEL":
-                for ci, card in enumerate(comp.get("cards", [])):
-                    body, btns = "", []
-                    for cc in card.get("components", []):
-                        if cc["type"] == "HEADER" and cc.get("format") == "IMAGE" and not api_custom_images:
-                            url = cc.get("example", {}).get("header_handle", [None])[0]
-                            if url:
-                                dma_image_urls.append(url)
-                        elif cc["type"] == "BODY":
-                            body = cc.get("text", "")
-                        elif cc["type"] == "BUTTONS":
-                            btns = [b.get("text", "") for b in cc.get("buttons", [])]
-                    dma_carousel_texts.append(f"Card {ci+1} Body: '{body}' | Buttons: {btns}")
-
-    # Resolve leaflet references
-    if leaflet_data:
-        first_leaflet = leaflet_data[0]
-        l_url = first_leaflet.get("public_url") or first_leaflet.get("url", "")
-        l_img = first_leaflet.get("document_url") or first_leaflet.get("image_url")
-        if l_url:
-            dma_image_urls = [l_img if u == "@leaflet_image_url" else u for u in dma_image_urls]
-
-    # Build tag summary string
-    api_tags = extract_all_tags(api)
-    tag_parts: list[str] = []
-    for tg in api_tags:
-        key_name = tg.get("name") or tg.get("type") or "filter"
-        raw_val  = (tg.get("value") or tg.get("exclude_value") or tg.get("values")
-                    or tg.get("exclude_values") or tg.get("offset_days") or "Active")
-        val = f"[{len(raw_val)} values]" if isinstance(raw_val, list) else str(raw_val)
-        mode = ("Exclude" if ("exclude_value" in tg or "exclude_values" in tg
-                              or tg.get("mode") == "exclude") else "Include")
-        if tg.get("type") == "leaflet_tag" and tg.get("offset_days") is not None:
-            tag_parts.append(f"[{mode}] leaflet_tag={tg.get('offset_days')}")
-        else:
-            tag_parts.append(f"[{mode}] {_norm_tags(f'{key_name}={val}')}")
-
-    # Build URL list
-    api_urls = extract_api_urls_advanced(api)
-    if tmpl:
-        api_urls += extract_urls(str(tmpl))
-    if leaflet_data:
-        l_url = leaflet_data[0].get("public_url") or leaflet_data[0].get("url", "")
-        if l_url:
-            api_urls = [u.replace("@leaflet_url_path", l_url) for u in api_urls]
-
-    # Resolve relative URLs to absolute
-    jira_all_text = " ".join(filter(None, [
-        str(jira.get("description", "")),
-        str(jira.get("additional_comments", "")),
-        str(jira.get("cta_link", "")),
-    ]))
-    jira_urls = extract_urls(jira_all_text)
-    base_domain = None
-    for u in jira_urls:
-        try:
-            p = urlparse(u)
-            if p.scheme and p.netloc:
-                base_domain = f"{p.scheme}://{p.netloc}"
-                break
-        except Exception:
-            pass
-    if base_domain:
-        api_urls = [
-            f"{base_domain}/{u.lstrip('/')}"
-            if not u.startswith("http") and not u.startswith("@") and u
-            else u
-            for u in api_urls
-        ]
-
-    tag_str = ", ".join(tag_parts)
-    return tmpl_body, tmpl_footer, tmpl_buttons, dma_carousel_texts, dma_image_urls, tag_str, api_urls, rcs_cards
+    from audit_prep import extract_dma_components
+    d = extract_dma_components(api=api, tmpl=tmpl, leaflet_data=leaflet_data,
+                               jira=jira, client=client)
+    return (
+        d["tmpl_body"],
+        d["tmpl_footer"],
+        d["tmpl_buttons"],
+        d["dma_carousel_texts"],
+        d["dma_image_urls"],
+        d["tag_str"],
+        d["api_urls"],
+        d["rcs_cards"],
+    )
 
 
 def _fetch_core_data(client: str, ticket_key: str, sendout_id: str,
@@ -682,7 +611,10 @@ async def index(request: Request, force: str = ""):
     path = os.path.join(_STATIC_DIR, "index.html")
     if not os.path.exists(path):
         return HTMLResponse("<h1>index.html not found</h1>", status_code=404)
-    return HTMLResponse(open(path, encoding="utf-8").read())
+    return HTMLResponse(
+        open(path, encoding="utf-8").read(),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/mobile", response_class=HTMLResponse)
@@ -791,17 +723,40 @@ async def get_sendouts(client: str, authorization: Optional[str] = Header(None))
         tasks = fetch_pending_sendouts(API_TOKEN, account_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"DMA fetch failed: {exc}")
+    # Name patterns that are system tasks, not WhatsApp sendouts — never show these
+    _SYSTEM_NAME_PATTERNS = (
+        "load shops", "load leaflet", "load store", "load data",
+        "test sendout", "test send", "[test]", "dummy",
+    )
+    _INACTIVE_STATUSES = {"disabled", "cancelled", "canceled", "draft", "inactive", "deleted", "archived"}
+
     result = []
     for t in tasks:
-        # is_active=False on a pending task just means it hasn't started yet —
-        # do NOT skip. Status filter in fetch_pending_sendouts is sufficient.
         task_id = str(t.get("id") or t.get("task_id") or t.get("sendout_id") or "")
         if not task_id:
             continue
         name = str(t.get("name") or t.get("campaign_name") or t.get("task_name")
                    or t.get("title") or t.get("sendout_name") or "")
+        name_lower = name.lower()
+
+        # Skip system tasks (dma_bot action type = Load Shops/Leaflets etc.)
+        if t.get("action_type") == "dma_bot":
+            continue
+        # Skip disabled sendouts — is_active=False means disabled in DMA
+        if t.get("is_active") is False:
+            continue
+        # Skip system/utility tasks by name (fallback)
+        if any(pat in name_lower for pat in _SYSTEM_NAME_PATTERNS):
+            continue
+        # Skip if status explicitly inactive
+        task_status = str(t.get("status") or t.get("task_status") or t.get("state") or "").lower()
+        if task_status in _INACTIVE_STATUSES:
+            continue
+
+
+
         date = str(t.get("scheduled_date") or t.get("date") or t.get("send_date") or "")[:10]
-        result.append({"id": task_id, "name": name, "date": date})
+        result.append({"id": task_id, "name": name, "date": date, "status": task_status})
     result.sort(key=lambda r: r["date"] or "0000")
     return result
 
@@ -879,11 +834,21 @@ async def ticket_enrich(req: EnrichRequest, authorization: Optional[str] = Heade
                 except Exception:
                     tasks = []
 
+                _SYS_PATS  = ("load shops","load leaflet","load store","load data",
+                               "test sendout","test send","[test]","dummy")
+                _INACT_STS = {"disabled","cancelled","canceled","draft","inactive","deleted","archived"}
                 date_matches = []
                 for task in tasks:
-                    # Do NOT skip on is_active=False — future pending tasks have
-                    # is_active=False until they start executing; status filter
-                    # in fetch_pending_sendouts (pending/scheduled/approved) is sufficient.
+                    if task.get("action_type") == "dma_bot":
+                        continue
+                    if task.get("is_active") is False:
+                        continue
+                    _tn = (task.get("name") or task.get("campaign_name") or task.get("task_name") or "").lower()
+                    if any(p in _tn for p in _SYS_PATS):
+                        continue
+                    _ts = str(task.get("status") or task.get("task_status") or task.get("state") or "").lower()
+                    if _ts in _INACT_STS:
+                        continue
                     raw_d = str(task.get("scheduled_date") or task.get("date") or "")
                     try:
                         if _dti.fromisoformat(raw_d[:10]).date() == jira_date:
@@ -1057,14 +1022,23 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
      dma_carousel_texts, dma_image_urls, tag_str, api_urls, rcs_cards) = _prepare_audit_data(
         a_data, t_data, leaflet_data, j_data, req.client
     )
+    if not dma_carousel_texts:
+        logger.info("SINGLE %s: dma_carousel_texts empty — component_parameters: %s | template components types: %s",
+            req.ticket_key,
+            [cp.get("type") for cp in (a_data.get("component_parameters") or [])],
+            [c.get("type") for c in (t_data.get("components") or [])] if t_data else [],
+        )
 
     # Build jira_for_comparison with slide labels stripped
     jira_for_comparison = dict(j_data)
     if jira_for_comparison.get("description"):
         jira_for_comparison["description"] = _strip_slide_labels(jira_for_comparison["description"])
 
-    # Kaufland RCS Sunday static cards
-    if req.client == "Kaufland RCS" and rcs_cards:
+    # Kaufland RCS Sunday carousel static cards — only inject for carousel, not standaloneCard
+    _is_standalone_rcs = bool(
+        a_data.get("google_rcs_content", {}).get("richCard", {}).get("standaloneCard")
+    )
+    if req.client == "Kaufland RCS" and rcs_cards and not _is_standalone_rcs:
         try:
             from datetime import datetime as _dt_rcs
             _is_sun = _dt_rcs.fromisoformat(
@@ -1138,14 +1112,24 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
     try:
         if _freestyle:
             logger.info("Single audit %s: using freestyle mode — %s", req.ticket_key, _freestyle_reason[:80])
+            # Also try to fetch JIRA-side images from the G-Sheet image URLs
+            _jira_imgs = list(j_data.get("carousel_images") or [])
+            if not _jira_imgs:
+                for _jimg_url in (comparison_data.get("jira_image_urls") or [])[:6]:
+                    try:
+                        with _ur_img.urlopen(_jimg_url, timeout=8) as _r:
+                            _jira_imgs.append({"name": _jimg_url.split("/")[-1], "bytes": _r.read()})
+                    except Exception:
+                        pass
             result = _run_freestyle(
                 GEMINI_KEY, GEMINI_PRO_MODEL,
                 jira=j_data,
                 dma_setup=comparison_data.get("DMA_API_Setup", {}),
                 client_name=req.client,
                 freestyle_reason=_freestyle_reason,
-                jira_images=j_data.get("carousel_images"),
+                jira_images=_jira_imgs or None,
                 dma_images=_dma_img_bytes or None,
+                precomputed_diffs=comparison_data.get("Precomputed_Diffs", {}),
             )
         else:
             result = run_ai_audit(
@@ -1798,60 +1782,107 @@ async def bulk_validate(req: BulkRequest, authorization: Optional[str] = Header(
 
 @app.post("/api/bulk-ai-audit")
 async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(None)):
-    _get_session(authorization)
+    """
+    Streaming SSE endpoint — emits one JSON event per completed ticket plus a
+    final 'done' event.  Each event is:  data: <json>\n\n
+    Event types: { type: "progress", index, total, result }
+                 { type: "done", results: [...] }
+                 { type: "error", detail }
+    """
+    from fastapi.responses import StreamingResponse as _SR
+    import asyncio as _aio
+    import json as _json
+
+    session = _get_session(authorization)
+    user_name = session.get("name", "Validator Pro")
     key_set = set(req.ticket_keys)
     issues = [i for i in _cached_queue() if i["key"] in key_set]
     if not issues:
         raise HTTPException(status_code=404, detail="None of the requested tickets found in the JIRA queue — try refreshing the queue first")
 
-    try:
-        results: list[BulkTicketResult] = run_bulk_validation(
-            tickets=issues,
-            gsheet_data=_gsheet(),
-            jira_server=JIRA_SERVER,
-            jira_email=JIRA_EMAIL,
-            jira_token=JIRA_TOKEN,
-            api_token=API_TOKEN,
-            gemini_key=GEMINI_KEY,
-            gemini_model=GEMINI_BULK_MODEL,
-            on_progress=lambda r, i, t: None,
-            examples_lib=_examples_lib,
-        )
-    except Exception as exc:
-        logger.error("bulk_ai_audit failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Bulk AI audit failed: {_friendly_exc(exc)}")
+    total = len(issues)
+    results_collector: list = []
+    progress_queue: "asyncio.Queue" = _aio.Queue()
 
-    session = _sessions.get((authorization or "").split(" ", 1)[-1], {})
-    user_name = session.get("name", "Validator Pro")
+    def _on_progress(r: "BulkTicketResult", idx: int, tot: int):
+        progress_queue.put_nowait((r, idx, tot))
 
-    global _validation_log
-    for r in results:
-        _ai_fc = [c["label"] for c in (r.checks or []) if not c.get("ok")]
-        _validation_log = record_validation(
-            ticket_key=r.ticket_key, client=r.client,
-            status=r.status, mode="ai",
-            issues=r.issues_found, approved=False,
-            log=_validation_log,
-            user=user_name,
-            failed_checks=_ai_fc,
-            confidence=getattr(r, "confidence", None),
-        )
-        # Send Slack alert for each failed ticket
-        if r.status == "failed" and r.issues_found > 0:
-            failed_checks = [c["label"] for c in (r.checks or []) if not c.get("ok")]
-            if not failed_checks and r.report:
-                failed_checks = _extract_failed_checks(r.report)
-            _send_slack_alert(
-                ticket_key=r.ticket_key,
-                client=r.client,
-                mode="AI Bulk Check",
-                issues=r.issues_found,
-                user_name=user_name,
-                failed_checks=failed_checks[:8],
-                sendout_id=r.sendout_id or "",
+    async def _run_in_thread():
+        loop = _aio.get_event_loop()
+        try:
+            results = await loop.run_in_executor(None, lambda: run_bulk_validation(
+                tickets=issues,
+                gsheet_data=_gsheet(),
+                jira_server=JIRA_SERVER,
+                jira_email=JIRA_EMAIL,
+                jira_token=JIRA_TOKEN,
+                api_token=API_TOKEN,
+                gemini_key=GEMINI_KEY,
+                gemini_model=GEMINI_BULK_MODEL,
+                on_progress=_on_progress,
+                examples_lib=_examples_lib,
+            ))
+            results_collector.extend(results)
+        except Exception as exc:
+            logger.error("bulk_ai_audit failed: %s", exc, exc_info=True)
+            results_collector.append(exc)
+        finally:
+            progress_queue.put_nowait(None)  # sentinel
+
+    async def _stream():
+        task = _aio.create_task(_run_in_thread())
+        while True:
+            item = await progress_queue.get()
+            if item is None:
+                break
+            r, idx, tot = item
+            safe = _serialize_result(r)
+            yield f"data: {_json.dumps({'type':'progress','index':idx,'total':tot,'result':safe})}\n\n"
+
+        await task  # ensure thread finished
+
+        if results_collector and isinstance(results_collector[0], Exception):
+            yield f"data: {_json.dumps({'type':'error','detail':str(results_collector[0])})}\n\n"
+            return
+
+        results = results_collector
+
+        # Post-process: validation log + Slack
+        global _validation_log
+        _slack_failed: list[dict] = []
+        for r in results:
+            _ai_fc = [c["label"] for c in (r.checks or []) if not c.get("ok")]
+            _validation_log = record_validation(
+                ticket_key=r.ticket_key, client=r.client,
+                status=r.status, mode="ai",
+                issues=r.issues_found, approved=False,
+                log=_validation_log,
+                user=user_name,
+                failed_checks=_ai_fc,
+                confidence=getattr(r, "confidence", None),
             )
+            if r.status == "failed" and r.issues_found > 0:
+                failed_checks = [c["label"] for c in (r.checks or []) if not c.get("ok")]
+                if not failed_checks and r.report:
+                    failed_checks = _extract_failed_checks(r.report)
+                _slack_failed.append({
+                    "ticket_key": r.ticket_key,
+                    "client": r.client,
+                    "issues": r.issues_found,
+                    "failed_checks": failed_checks[:8],
+                    "sendout_id": r.sendout_id or "",
+                })
+        if _slack_failed:
+            _send_slack_bulk_alert(_slack_failed, user_name=user_name)
 
-    return [_serialize_result(r) for r in results]
+        all_safe = [_serialize_result(r) for r in results]
+        yield f"data: {_json.dumps({'type':'done','results':all_safe})}\n\n"
+
+    return _SR(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _orphan_scan_sync(days_ahead: int, days_back: int) -> dict:  # kept for internal use only
@@ -2140,9 +2171,16 @@ def _enrich_for_scheduler(
             except Exception:
                 return result
 
+            _SYS2  = ("load shops","load leaflet","load store","load data",
+                       "test sendout","test send","[test]","dummy")
+            _INACT2 = {"disabled","cancelled","canceled","draft","inactive","deleted","archived"}
             date_matches = [
                 t for t in tasks
                 if _safe_date_str_match(str(t.get("scheduled_date") or "")[:10], jira_dt)
+                and t.get("action_type") != "dma_bot"
+                and t.get("is_active") is not False
+                and not any(p in (t.get("name") or t.get("campaign_name") or t.get("task_name") or "").lower() for p in _SYS2)
+                and str(t.get("status") or t.get("task_status") or t.get("state") or "").lower() not in _INACT2
             ]
 
             if date_matches:
@@ -2324,9 +2362,13 @@ async def _job_preflight_alert() -> None:
 
         jira_link = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket}"
         params    = {"ticket": ticket, "client": client}
+        # Include sendout_id in the deep-link if the audit recorded it
+        _sendout_id = (audited or {}).get("sendout_id", "")
+        if _sendout_id:
+            params["sendout"] = _sendout_id
         app_link  = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
         groups[day_label].append(
-            f"<{jira_link}|{ticket}> {client} | _{status}_ | AI: {audit_str} | <{app_link}|Validator>"
+            f"<{jira_link}|{ticket}> {client} | _{status}_ | AI: {audit_str} | <{app_link}|Validator ↗>"
         )
 
     sections: list[str] = [
@@ -2405,17 +2447,29 @@ async def _job_auto_audit() -> None:
 
     logger.info("SCHEDULER auto-audit: %d imminent ticket(s) found", len(imminent))
 
-    # Build set of already-audited keys — in-memory AND DB-backed
-    already_audited_keys: set[str] = {v.get("ticket_key") for v in _audited_sendouts.values()}
+    # Tickets going live TODAY are always re-audited (stale results may be from
+    # before the sendout was fixed). Tickets going live tomorrow are skipped if
+    # already audited today (avoid redundant checks).
+    _today_keys: set[str] = set()
+    _already_audited_keys: set[str] = {v.get("ticket_key") for v in _audited_sendouts.values()}
     for _iss in imminent:
-        _tk = _iss.get("key", "")
-        if _tk and _al.get_audit_for_ticket(_tk):
-            already_audited_keys.add(_tk)
+        _tk  = _iss.get("key", "")
+        _nd  = _normalize_issue(_iss)
+        _raw = (_nd.get("date") or "")[:10]
+        try:
+            _delta = _safe_date_delta(_raw, today)
+        except Exception:
+            _delta = 99
+        if _delta == 0:
+            _today_keys.add(_tk)   # always re-audit today's tickets
+        elif _tk and _al.get_audit_for_ticket(_tk):
+            _already_audited_keys.add(_tk)   # skip tomorrow+ if already done
 
     gsheet_data   = _gsheet()
     audited_count = 0
     skipped_count = 0
-    passed_rows:  list[str] = []   # batched for end-of-run summary
+    passed_rows: list[str] = []   # collected for single summary message
+    failed_rows: list[str] = []   # collected for single summary message
 
     for issue in imminent[:5]:   # cap at 5 to respect Gemini rate limits
         norm       = _normalize_issue(issue)
@@ -2423,9 +2477,10 @@ async def _job_auto_audit() -> None:
         client     = norm.get("client", "")
         jira_date  = norm.get("date", "")
 
-        if ticket_key in already_audited_keys:
+        _going_live_today = ticket_key in _today_keys
+        if not _going_live_today and ticket_key in _already_audited_keys:
             skipped_count += 1
-            logger.info("SCHEDULER auto-audit: %s already audited, skipping", ticket_key)
+            logger.info("SCHEDULER auto-audit: %s already audited (not today), skipping", ticket_key)
             continue
 
         logger.info("SCHEDULER auto-audit: processing %s (%s) for %s", ticket_key, client, jira_date)
@@ -2482,46 +2537,38 @@ async def _job_auto_audit() -> None:
         app_link  = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
         jira_link = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket_key}"
 
+        conf_str = f" {confidence}%" if confidence >= 0 else ""
         if issues > 0:
-            # FAIL → immediate <!here> alert per ticket (urgent, actionable)
             failed_labels = [c["label"] for c in (result.checks or []) if not c.get("ok")]
-            checks_text   = "\n".join(f"• {lbl}" for lbl in failed_labels[:8])
-            conf_str = f" | Confidence: {confidence}%" if confidence >= 0 else ""
-            _send_slack_block(
-                header=f"🤖 Auto-Audit: ❌ {ticket_key} FAILED — {client}",
-                sections=[
-                    f"<!here> Auto AI audit found *{issues}* issue(s) for "
-                    f"<{jira_link}|{ticket_key}> ({client}) going live *{jira_date}*{conf_str}.",
-                    f"*Failed checks:*\n{checks_text}",
-                ],
-                actions=[
-                    {"type": "button", "text": {"type": "plain_text", "text": "Open in Validator"},
-                     "url": app_link, "style": "danger"},
-                    {"type": "button", "text": {"type": "plain_text", "text": "Open in JIRA"},
-                     "url": jira_link},
-                ],
+            checks_str = ", ".join(failed_labels[:4])
+            failed_rows.append(
+                f"❌{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
+                f"  _{checks_str}_  <{app_link}|Open>"
             )
             try:
                 write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Rejected")
             except Exception:
                 pass
         else:
-            # PASS → collect for batched end-of-run summary (avoid per-ticket noise)
-            conf_str = f" {confidence}%" if confidence >= 0 else ""
             passed_rows.append(
                 f"✅{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
-                f"  <{app_link}|Validator>"
+                f"  <{app_link}|Open>"
             )
             try:
                 write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Approved")
             except Exception:
                 pass
 
-    # Send a single end-of-run summary for all passing tickets
-    if passed_rows:
+    # Single combined summary message
+    if failed_rows or passed_rows:
+        sections = []
+        if failed_rows:
+            sections.append(f"<!here>\n*❌ Failed ({len(failed_rows)})*\n" + "\n".join(failed_rows))
+        if passed_rows:
+            sections.append(f"*✅ Passed ({len(passed_rows)})*\n" + "\n".join(passed_rows))
         _send_slack_block(
-            header=f"🤖 Auto-Audit: {len(passed_rows)} ticket(s) passed",
-            sections=["\n".join(passed_rows)],
+            header=f"🤖 Auto-Audit complete — {len(failed_rows)} failed, {len(passed_rows)} passed",
+            sections=sections,
         )
 
     logger.info("SCHEDULER: auto-audit done — %d audited, %d skipped", audited_count, skipped_count)
@@ -2560,9 +2607,12 @@ async def _start_scheduler():
     _scheduler.add_job(
         _job_preflight_alert, _CronTrigger(hour=9,  minute=0,  timezone="UTC"), id="preflight"
     )
+    _scheduler.add_job(
+        _job_auto_audit,      _CronTrigger(hour=14, minute=0,  timezone="UTC"), id="auto_audit_pm"
+    )
     _scheduler.start()
     logger.info(
-        "APScheduler started: state=%s running=%s auto_audit@08:30, preflight@09:00 UTC",
+        "APScheduler started: state=%s running=%s auto_audit@08:30+14:00, preflight@09:00 UTC",
         _scheduler.state, _scheduler.running,
     )
 
@@ -2603,6 +2653,11 @@ async def scheduler_status(authorization: Optional[str] = Header(None)):
         "state":             raw_state,
         "jobs":              jobs,
         "audited_sendouts":  len(_audited_sendouts),
+        "models": {
+            "single":    GEMINI_MODEL,
+            "bulk":      GEMINI_BULK_MODEL,
+            "freestyle": GEMINI_PRO_MODEL,
+        },
     }
 
 

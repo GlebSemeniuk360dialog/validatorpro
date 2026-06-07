@@ -850,18 +850,37 @@ def _build_content_panel(jira, api, tmpl, leaflet_data, ai_urls, client=""):
     jira_desc = _strip_slide_labels(str(jira.get("description", "")).replace("\r", "").strip())
     body = next((c.get("text","") for c in (tmpl or {}).get("components",[]) if c["type"]=="BODY"), "")
 
-    # Kaufland RCS: Sunday = fully static; Wednesday = Card 1 static, Card 2 from JIRA
+    # Kaufland RCS content panel — behaviour depends on sendout type
     if client == "Kaufland RCS":
         from datetime import datetime as _dtrcs
+        _rcs_rich_cp = api.get("google_rcs_content", {}).get("richCard", {})
+        _is_standalone_cp = bool(_rcs_rich_cp.get("standaloneCard"))
         try:
             _is_sun_rcs = _dtrcs.fromisoformat(
                 str(api.get("scheduled_date","")).replace("Z","+00:00")
             ).weekday() == 6
         except Exception:
-            _is_sun_rcs = True  # safe default — treat as static
+            _is_sun_rcs = not _is_standalone_cp  # safe default for carousel
 
-        if _is_sun_rcs or not jira_desc:
-            # Sunday or no description — show static card texts
+        if _is_standalone_cp:
+            # Non-carousel special sendout — just show JIRA description vs card description
+            _sc_cp = _rcs_rich_cp.get("standaloneCard", {}).get("cardContent", {})
+            _sc_title = _sc_cp.get("title", "")
+            _sc_desc  = _sc_cp.get("description", "")
+            parts.append(_section("RCS Single Card Content"))
+            sim = difflib.SequenceMatcher(None, jira_desc or "", _sc_desc or "").ratio() if (_sc_desc and jira_desc) else 0
+            sim_kind = "ok" if sim > 0.9 else ("warn" if sim > 0.6 else "fail")
+            parts.append(
+                f'<div class="vp-two-col">'
+                f'<div class="vp-card"><div class="vp-card-title">JIRA Description</div>'
+                f'<pre>{_e(jira_desc) or "<em>None</em>"}</pre></div>'
+                f'<div class="vp-card"><div class="vp-card-title">RCS Card: {_e(_sc_title)}</div>'
+                f'<pre>{_e(_sc_desc) or "<em>None</em>"}</pre></div>'
+                f'</div>'
+            )
+
+        elif _is_sun_rcs or not jira_desc:
+            # Sunday carousel — fully static card texts
             static_cards = CLIENT_CONFIGS.get("Kaufland RCS", {}).get("sunday_rcs_cards", [])
             if static_cards:
                 parts.append(_badge("Static RCS Template — No JIRA description required", "info"))
@@ -876,11 +895,8 @@ def _build_content_panel(jira, api, tmpl, leaflet_data, ai_urls, client=""):
                         f'</div>'
                     )
         else:
-            # Wednesday — Card 2 has JIRA-specific promotional text
-            rcs_cards = (api.get("google_rcs_content", {})
-                           .get("richCard", {})
-                           .get("carouselCard", {})
-                           .get("cardContents", []))
+            # Wednesday carousel — Card 1 static, Card 2 from JIRA
+            rcs_cards = _rcs_rich_cp.get("carouselCard", {}).get("cardContents", [])
             parts.append(_section("Wednesday RCS Cards"))
             parts.append(_badge("Card 1: Static leaflet card (Knüller-Angebote)", "info"))
             if len(rcs_cards) >= 2:
@@ -1061,15 +1077,29 @@ def _jira_images_by_slide(carousel_images: list) -> dict:
 
 
 def _extract_rcs_cards(api: dict) -> list[dict]:
-    """Extract RCS cardContents from google_rcs_content.richCard.carouselCard."""
+    """Extract RCS cards from google_rcs_content — handles both carouselCard and standaloneCard."""
     try:
-        cards = (api.get("google_rcs_content", {})
-                    .get("richCard", {})
-                    .get("carouselCard", {})
-                    .get("cardContents", []))
-        return cards if isinstance(cards, list) else []
+        rich = api.get("google_rcs_content", {}).get("richCard", {})
+        # Carousel
+        cards = rich.get("carouselCard", {}).get("cardContents", [])
+        if cards and isinstance(cards, list):
+            return cards
+        # Standalone single card — normalise to same shape as carousel cardContent
+        sc = rich.get("standaloneCard", {}).get("cardContent", {})
+        if sc:
+            return [sc]
     except Exception:
-        return []
+        pass
+    return []
+
+
+def _is_rcs_standalone(api: dict) -> bool:
+    """Return True if this is a standaloneCard (single non-carousel RCS) sendout."""
+    return bool(
+        api.get("google_rcs_content", {})
+           .get("richCard", {})
+           .get("standaloneCard")
+    )
 
 
 def _is_sunday_sendout(api: dict) -> bool:
@@ -1095,12 +1125,13 @@ def _build_visuals_panel(jira: dict, api: dict, tmpl: dict | None,
                          leaflet_data: list) -> str:
     parts = []
 
-    # ── RCS carousel (Kaufland RCS) ──
-    rcs_cards = _extract_rcs_cards(api)
+    # ── RCS cards (Kaufland RCS — carousel or standalone single card) ──
+    rcs_cards   = _extract_rcs_cards(api)
+    _standalone = _is_rcs_standalone(api)
     if rcs_cards:
-        parts.append(_section("RCS Carousel Cards"))
+        parts.append(_section("RCS Single Card" if _standalone else "RCS Carousel Cards"))
         is_sunday = _is_sunday_sendout(api)
-        if is_sunday:
+        if is_sunday and not _standalone:
             parts.append(_badge("Sunday Sendout — Static RCS template", "info"))
         for i, card in enumerate(rcs_cards, 1):
             title = card.get("title", f"Card {i}")
@@ -1391,18 +1422,20 @@ def _build_tech_panel(jira: dict, api: dict, client: str) -> str:
 
     parts.append(_section("Tag Configuration"))
 
-    # ── Resolve config filters (day-of-week aware for Kaufland) ──────────────
+    # ── Resolve config filters using _pick_filter_set (handles when: conditions) ─
     _all_cf = _client_cfg.get("filters", {})
-    if client in ("Kaufland RCS", "Kaufland WABA"):
-        from datetime import datetime as _dt2
-        _ds = str(api.get("scheduled_date", ""))
-        try:
-            _dt_obj = _dt2.fromisoformat(_ds.replace("Z", "+00:00"))
-            _is_sun = _dt_obj.weekday() == 6
-        except Exception:
-            _is_sun = False
-        _cfg_filters = _all_cf.get("Sunday" if _is_sun else "Wednesday", _all_cf.get("Standard", []))
-    else:
+    try:
+        from ai_audit import _pick_filter_set as _pfs
+        _api_date = str(api.get("scheduled_date", ""))
+        from ai_audit import _detect_is_carousel as _dic_ui
+        _is_carousel_ui = _dic_ui(api)
+        _segment_ui  = str(jira.get("segment", "") or "")
+        _req_type_ui = str(jira.get("request_type", "") or "")
+        _, _cfg_filters = _pfs(_all_cf, api_date=_api_date,
+                                is_carousel=_is_carousel_ui, segment=_segment_ui,
+                                request_type=_req_type_ui)
+        # No match — leave _cfg_filters empty (correct: no mandatory filters for this combo)
+    except Exception:
         _cfg_filters = _all_cf.get("Standard", [])
 
     # ── G-Sheet include/exclude tags (always shown for every client) ─────────

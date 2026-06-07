@@ -153,7 +153,7 @@ CLIENT_CONFIGS: dict[str, dict] = {
                 "Keins davon": "keins", "None": "keins",
             },
         },
-        "filters": {"Standard": [{"name": "leaflet_accepted", "value": "true"}]},
+        "filters": {"Standard": [{"type": "tag", "name": "leaflet_accepted", "mode": "include", "value": "true"}]},
     },
     "ALDI Suisse": {
         "account_id": 36,
@@ -185,9 +185,17 @@ CLIENT_CONFIGS: dict[str, dict] = {
         "mappings": {},
         # CTA URL is embedded in the DMA template; JIRA cta_link field is often empty.
         "cta_link_optional": True,
-        "filters": {"Standard": [
-            {"type": "leaflet_tag", "mode": "include", "offset_days": 1},
-        ]},
+        "filters": {
+            # Special sendouts (request_type contains "special") don't require leaflet_tag
+            "Special": {
+                "rules": [],
+                "when": {"request_type": "special"},
+            },
+            # Standard sendouts always require leaflet_tag=1
+            "Standard": [
+                {"type": "leaflet_tag", "mode": "include", "offset_days": 1},
+            ],
+        },
     },
     "Netto": {
         "account_id": 10,
@@ -197,6 +205,10 @@ CLIENT_CONFIGS: dict[str, dict] = {
         # No CTA fields — buttons are part of the carousel card templates.
         "cta_in_template": True,
         "description_is_brief": True,
+        # Carousel slide 1 is always a leaflet image pulled automatically from the
+        # Leaflets API — it is never attached to the JIRA ticket. JIRA attachments
+        # correspond to slides 2, 3, 4, ... only.
+        "first_card_is_leaflet": True,
         "filters": {"Standard": []},
     },
     "Hieber":             {"account_id": 15,  "timezone_name": "Europe/Berlin", "mappings": {}, "filters": {"Standard": []}},
@@ -211,7 +223,15 @@ CLIENT_CONFIGS: dict[str, dict] = {
             {"type": "leaflet_tag", "mode": "include", "offset_days": 1},
         ]},
     },
-    "PENNY Austria": {"account_id": 21, "timezone_name": "Europe/Berlin", "mappings": {}, "filters": {"Standard": []}},
+    "PENNY Austria": {
+        "account_id": 21,
+        "timezone_name": "Europe/Berlin",
+        "mappings": {},
+        # Carousel slide 1 is always a leaflet image from the Leaflets API — not in JIRA.
+        # JIRA attachments correspond to slides 2, 3, 4, … only.
+        "first_card_is_leaflet": True,
+        "filters": {"Standard": []},
+    },
     "Sonderpreis Baumarkt": {"account_id": 26, "timezone_name": "Europe/Berlin", "mappings": {}, "requires_jira": False, "filters": {"Standard": []}},
     "Combi":              {"account_id": 29,  "timezone_name": "Europe/Berlin", "mappings": {}, "filters": {"Standard": []}},
     "Famila NordWest":    {"account_id": 30,  "timezone_name": "Europe/Berlin", "mappings": {}, "filters": {"Standard": []}},
@@ -323,12 +343,16 @@ CLIENT_CONFIGS: dict[str, dict] = {
             "Card 1: leaflet_type=special, offset_days=1 | Card 2: leaflet_type=regular, offset_days=4"
         ),
         "filters": {
-            "Standard": [{"type": "tag", "name": "leaflet_type", "mode": "include", "value": "regular"}],
+            "Standard": [
+                {"type": "tag",   "name": "leaflet_type",       "mode": "include", "value": "regular"},
+                {"type": "named", "name": "exclude_shop_number", "mode": "exclude"},
+            ],
             "Sunday": [
-                {"type": "tag",        "name": "leaflet_type", "mode": "include", "value": "regular"},
+                {"type": "tag",        "name": "leaflet_type",       "mode": "include", "value": "regular"},
                 {"type": "leaflet_tag", "mode": "include", "offset_days": 4},
                 {"type": "leaflet_tag", "mode": "include", "offset_days": 1},
-                {"type": "tag",        "name": "leaflet_type", "mode": "include", "value": "special"},
+                {"type": "tag",        "name": "leaflet_type",       "mode": "include", "value": "special"},
+                {"type": "named",      "name": "exclude_shop_number", "mode": "exclude"},
             ],
         },
     },
@@ -340,6 +364,9 @@ CLIENT_CONFIGS: dict[str, dict] = {
         "timezone_name": "Europe/Berlin",
         "mappings": {},
         "filters": {
+            # exclude_shop_number is always present on every Kaufland RCS sendout —
+            # it is a permanent DMA-managed list of closed/special stores.
+            # Added to every filter set so the validator never flags it as unexpected.
             # Sunday carousel: two leaflet cards (special offset_days=1 + regular offset_days=4)
             "Sunday": {
                 "rules": [
@@ -347,6 +374,7 @@ CLIENT_CONFIGS: dict[str, dict] = {
                     {"type": "leaflet_tag", "mode": "include", "offset_days": 4},
                     {"type": "leaflet_tag", "mode": "include", "offset_days": 1},
                     {"type": "tag",        "name": "leaflet_type", "mode": "include", "value": "special"},
+                    {"type": "named",      "name": "exclude_shop_number", "mode": "exclude"},
                 ],
                 "when": {"day_of_week": "sunday"},
             },
@@ -355,14 +383,24 @@ CLIENT_CONFIGS: dict[str, dict] = {
                 "rules": [
                     {"type": "tag",        "name": "leaflet_type", "mode": "include", "value": "regular"},
                     {"type": "leaflet_tag", "mode": "include", "offset_days": 1},
+                    {"type": "named",      "name": "exclude_shop_number", "mode": "exclude"},
                 ],
                 "when": {"day_of_week": "wednesday", "is_carousel": True},
             },
-            # Wednesday non-carousel: single-message RCS sendout (no carousel cards)
-            # TODO: fill in the actual filter rules once the sendout spec is confirmed
+            # Wednesday non-carousel: single-message RCS sendout
             "Wednesday Non-Carousel": {
-                "rules": [],
+                "rules": [
+                    {"type": "named", "name": "exclude_shop_number", "mode": "exclude"},
+                ],
                 "when": {"day_of_week": "wednesday", "is_carousel": False},
+            },
+            # Special/irregular sendouts (any day, non-carousel standaloneCard)
+            # Lower score (1 condition) so Sunday/Wednesday rules take priority.
+            "Special Non-Carousel": {
+                "rules": [
+                    {"type": "named", "name": "exclude_shop_number", "mode": "exclude"},
+                ],
+                "when": {"is_carousel": False},
             },
         },
         # Wednesday RCS: Card 1 = static leaflet card ("Knüller-Angebote")

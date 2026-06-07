@@ -463,7 +463,24 @@ function _extractFailedNames(report) {
   return hits;
 }
 
-function BulkResultPanel({ results, mode, onBack }) {
+class BulkResultErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(e) { return { err: e }; }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{ padding:32, fontFamily:'monospace', fontSize:13, color:'#ef4444', background:'#1a1a1a', borderRadius:6, margin:16 }}>
+          <div style={{ fontWeight:700, marginBottom:8 }}>⚠️ BulkResultPanel crashed</div>
+          <pre style={{ whiteSpace:'pre-wrap', wordBreak:'break-word' }}>{String(this.state.err)}</pre>
+          <button onClick={this.props.onBack} style={{ marginTop:16, padding:'6px 14px', background:'#333', color:'#fff', border:'none', borderRadius:4, cursor:'pointer' }}>← Back to queue</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function BulkResultPanel({ results, mode, onBack, schedulerStatus }) {
   const [openKey, setOpenKey] = useState(null);
   const [showReport, setShowReport] = useState({});
   const sorted = [...results].sort((a,b) => {
@@ -504,7 +521,7 @@ function BulkResultPanel({ results, mode, onBack }) {
         <div style={{ display:'flex', alignItems:'center', gap:14 }}>
           <Button variant="ghost" onClick={onBack}>← Back to queue</Button>
           <Bracket>{isAI ? '🤖 AI Bulk Audit' : '⚡ Bulk Regular Check'}</Bracket>
-          {isAI && <span style={{ fontSize:11, fontFamily:t.font.mono, color:t.fg[3] }}>gemini-2.5-flash</span>}
+          {isAI && <span style={{ fontSize:11, fontFamily:t.font.mono, color:t.fg[3] }}>{(schedulerStatus && schedulerStatus.models && schedulerStatus.models.bulk) || 'gemini'}</span>}
           <div style={{ marginLeft:'auto', display:'flex', gap:20 }}>
             <Readout label="Passed"  value={<span>{passed}</span>}  valueKind="ok" />
             <Readout label="Failed"  value={<span>{failed}</span>}  valueKind={failed>0?'danger':undefined} />
@@ -656,6 +673,7 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
   const [selected, setSelected] = useState(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkError, setBulkError] = useState('');
+  const [bulkProgress, setBulkProgress] = useState(null); // {done, total, current}
 
   // Sort ascending — earliest sendout date first
   const sorted = [...rows].sort((a,b) => (a.date||'').localeCompare(b.date||''));
@@ -698,14 +716,74 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
     return { c:t.fg[3], bg:t.bg.surface3, border:t.border.base, label: s||'—' };
   };
 
+  const _sanitizeResult = (r) => ({
+    ticket_key:        String(r.ticket_key || ''),
+    client:            String(r.client || ''),
+    sendout_id:        String(r.sendout_id || ''),
+    sendout_name:      String(r.sendout_name || ''),
+    sendout_date:      String(r.sendout_date || ''),
+    status:            String(r.status || 'error'),
+    mode:              String(r.mode || 'ai'),
+    issues_found:      Number(r.issues_found) || 0,
+    report:            typeof r.report === 'string' ? r.report : JSON.stringify(r.report ?? ''),
+    error_msg:         String(r.error_msg || ''),
+    confidence:        typeof r.confidence === 'number' ? r.confidence : -1,
+    confidence_reason: String(r.confidence_reason || ''),
+    checks:            Array.isArray(r.checks) ? r.checks : [],
+    jira_urls:         Array.isArray(r.jira_urls) ? r.jira_urls : [],
+    api_urls:          Array.isArray(r.api_urls) ? r.api_urls : [],
+    overrides:         Array.isArray(r.overrides) ? r.overrides : [],
+    structured:        r.structured && typeof r.structured === 'object' ? r.structured : {},
+    gsheet_row:        r.gsheet_row && typeof r.gsheet_row === 'object' ? r.gsheet_row : {},
+  });
+
   const runBulk = async (mode) => {
-    setBulkLoading(true); setBulkError('');
+    setBulkLoading(true); setBulkError(''); setBulkProgress(null);
     try {
-      const endpoint = mode==='ai' ? '/api/bulk-ai-audit' : '/api/bulk-validate';
-      const data = await api('POST', endpoint, { ticket_keys: selKeys }, token);
-      onBulkResult(data, mode);
+      if (mode === 'regular') {
+        // Regular check: plain JSON response
+        const data = await api('POST', '/api/bulk-validate', { ticket_keys: selKeys }, token);
+        const safe = Array.isArray(data) ? data.map(_sanitizeResult) : [];
+        onBulkResult(safe, mode);
+        return;
+      }
+      // AI check: SSE streaming — shows progress per ticket
+      const res = await fetch('/api/bulk-ai-audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ ticket_keys: selKeys }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || res.statusText);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n\n');
+        buf = lines.pop(); // keep incomplete last chunk
+        for (const chunk of lines) {
+          const line = chunk.trim();
+          if (!line.startsWith('data:')) continue;
+          try {
+            const evt = JSON.parse(line.slice(5).trim());
+            if (evt.type === 'progress') {
+              setBulkProgress({ done: evt.index + 1, total: evt.total, current: evt.result?.ticket_key || '' });
+            } else if (evt.type === 'done') {
+              const safe = (evt.results || []).map(_sanitizeResult);
+              onBulkResult(safe, mode);
+            } else if (evt.type === 'error') {
+              throw new Error(evt.detail || 'Bulk AI audit failed');
+            }
+          } catch(parseErr) { /* incomplete JSON chunk, continue */ }
+        }
+      }
     } catch(e) { setBulkError(e.message); }
-    finally { setBulkLoading(false); }
+    finally { setBulkLoading(false); setBulkProgress(null); }
   };
 
   return (
@@ -729,7 +807,12 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
         {multiSel && (
           <>
             {bulkLoading
-              ? <span style={{ display:'inline-flex', alignItems:'center', gap:8, fontSize:13, color:t.fg[2] }}><span className="vp-spinner" /> Running…</span>
+              ? <span style={{ display:'inline-flex', alignItems:'center', gap:8, fontSize:13, color:t.fg[2] }}>
+                  <span className="vp-spinner" />
+                  {bulkProgress
+                    ? <span>{bulkProgress.done}/{bulkProgress.total} — <span style={{fontFamily:t.font.mono}}>{bulkProgress.current}</span></span>
+                    : 'Starting…'}
+                </span>
               : <>
                   <Button onClick={()=>runBulk('regular')} style={{flexShrink:0}}>⚡ Bulk Check ({selKeys.length})</Button>
                   <Button onClick={()=>runBulk('ai')} style={{flexShrink:0}}>🤖 AI Bulk ({selKeys.length})</Button>
@@ -1194,8 +1277,10 @@ function TicketPanel({ ticket, clients, token, onBack, initialSendout }) {
     const d = new Date(); d.setDate(d.getDate() + 7);
     return [new Date().toISOString().slice(0,10), d.toISOString().slice(0,10)];
   })();
+  const _INACTIVE_STATUSES = new Set(['disabled','cancelled','canceled','draft','inactive','deleted','archived']);
   const _visibleSendouts = sendouts.filter(s => {
     if (!s.date) return false;
+    if (s.status && _INACTIVE_STATUSES.has(String(s.status).toLowerCase())) return false;
     return s.date >= _today7[0] && s.date <= _today7[1];
   });
   const sendoutOptions = _visibleSendouts.map(s=>({ value:s.id, label:`${s.date}  |  ${s.name}  |  ${s.id}` }));
@@ -1574,7 +1659,7 @@ function Dashboard({ token }) {
         <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
           <DashMini label="AI Audits Run"      value={spin?'…':fmt(d.ai_total)}           icon="🤖" />
           <DashMini label="Avg Confidence"     value={spin?'…':d.ai_avg_confidence!=null?`${d.ai_avg_confidence}%`:'—'}
-            kind={d.ai_avg_confidence>=80?'ok':d.ai_avg_confidence>=60?'warn':'neutral'} icon="🎯" sub="gemini-2.5-pro" />
+            kind={d.ai_avg_confidence>=80?'ok':d.ai_avg_confidence>=60?'warn':'neutral'} icon="🎯" sub={schedulerStatus?.models?.single||'gemini'} />
           <DashMini label="Low Confidence (<60%)" value={spin?'…':fmt(d.ai_low_confidence)}
             kind={d.ai_low_confidence>0?'danger':'neutral'} icon="⚠️" />
         </div>
@@ -3004,70 +3089,168 @@ function AliasEditor({ aliases, onChange }) {
 }
 
 /** One filter rule row inside a filter set */
+const RULE_TYPES = ['leaflet_tag','tag','shop_number','named'];
+const RULE_MODES = ['include','exclude'];
+const DAYS_OF_WEEK = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+
 function FilterRuleRow({ rule, onChange, onDelete }) {
-  const fields = Object.keys(rule);
+  const type = rule.type || 'leaflet_tag';
+  const mode = rule.mode || 'include';
   return (
-    <div style={{ background:t.bg.surface2, border:`1px solid ${t.border.input}`, borderRadius:4, padding:'10px 12px', display:'flex', flexDirection:'column', gap:8, position:'relative' }}>
+    <div style={{ background:t.bg.surface2, border:`1px solid ${t.border.input}`, borderRadius:6, padding:'10px 12px', display:'flex', gap:8, alignItems:'flex-start', position:'relative' }}>
       <button onClick={onDelete} title="Remove rule"
         style={{ position:'absolute', top:6, right:8, background:'none', border:'none', cursor:'pointer', color:t.danger.base, fontSize:16, lineHeight:1 }}>×</button>
-      {fields.map(k=>(
-        <div key={k} style={{ display:'grid', gridTemplateColumns:'140px 1fr', gap:8, alignItems:'center' }}>
-          <label style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3], textAlign:'right', paddingRight:4 }}>{k}</label>
-          <Input value={typeof rule[k]==='object'?JSON.stringify(rule[k]):String(rule[k]??'')}
-            onChange={v=>{ let parsed=v; try{ parsed=JSON.parse(v); }catch(e){ parsed=v; } onChange({...rule,[k]:parsed}); }}
-            style={{ fontSize:12, fontFamily:t.font.mono }} />
-        </div>
-      ))}
-      <div style={{ display:'grid', gridTemplateColumns:'140px 1fr', gap:8, alignItems:'center' }}>
-        <label style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3], textAlign:'right', paddingRight:4 }}>+ new field</label>
-        <AddFieldInline onAdd={key=>{ if(key&&!(key in rule)) onChange({...rule,[key]:''}); }} />
-      </div>
-    </div>
-  );
-}
 
-function AddFieldInline({ onAdd }) {
-  const [v, setV] = useState('');
-  return (
-    <div style={{ display:'flex', gap:6 }}>
-      <Input value={v} onChange={setV} placeholder="field name…" style={{ fontSize:12, fontFamily:t.font.mono }}
-        onKeyDown={e=>{ if(e.key==='Enter'){e.preventDefault();onAdd(v.trim());setV('');} }} />
-      <Button variant="ghost" onClick={()=>{onAdd(v.trim());setV('');}} style={{ whiteSpace:'nowrap', flexShrink:0, fontSize:12, padding:'6px 10px' }}>Add</Button>
-    </div>
-  );
-}
-
-/** Editor for a single filter set (list of rule objects) */
-function FilterRulesEditor({ setName, rules, onChangeRules, onDeleteSet }) {
-  const [open, setOpen] = useState(false);
-  function addRule() {
-    onChangeRules([...rules, { type:'exact', value:'' }]);
-    setOpen(true);
-  }
-  return (
-    <div style={{ border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden', marginBottom:8 }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', background:t.bg.surface2, cursor:'pointer' }} onClick={()=>setOpen(o=>!o)}>
-        <span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[2] }}>{setName} <span style={{ color:t.fg[4] }}>({rules.length} rule{rules.length!==1?'s':''})</span></span>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          <Button variant="danger" onClick={e=>{e.stopPropagation();onDeleteSet();}} style={{ fontSize:11, padding:'3px 9px' }}>Delete set</Button>
-          <span style={{ color:t.fg[3], fontSize:14 }}>{open?'▲':'▼'}</span>
-        </div>
+      {/* Type */}
+      <div style={{ display:'flex', flexDirection:'column', gap:3, minWidth:120 }}>
+        <label style={{ fontSize:10, color:t.fg[4], fontWeight:600, textTransform:'uppercase', letterSpacing:.5 }}>Type</label>
+        <Select value={type} onChange={v=>onChange({...rule, type:v})} options={RULE_TYPES} style={{ fontSize:12 }} />
       </div>
-      {open&&(
-        <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
-          {rules.map((rule,i)=>(
-            <FilterRuleRow key={i} rule={rule}
-              onChange={r=>{ const next=[...rules]; next[i]=r; onChangeRules(next); }}
-              onDelete={()=>onChangeRules(rules.filter((_,j)=>j!==i))} />
-          ))}
-          <Button variant="ghost" onClick={addRule} style={{ alignSelf:'flex-start', fontSize:12 }}>+ Add rule</Button>
+
+      {/* Mode */}
+      <div style={{ display:'flex', flexDirection:'column', gap:3, minWidth:90 }}>
+        <label style={{ fontSize:10, color:t.fg[4], fontWeight:600, textTransform:'uppercase', letterSpacing:.5 }}>Mode</label>
+        <Select value={mode} onChange={v=>onChange({...rule, mode:v})} options={RULE_MODES} style={{ fontSize:12 }} />
+      </div>
+
+      {/* Type-specific fields */}
+      {type==='leaflet_tag' && (
+        <div style={{ display:'flex', flexDirection:'column', gap:3, minWidth:80 }}>
+          <label style={{ fontSize:10, color:t.fg[4], fontWeight:600, textTransform:'uppercase', letterSpacing:.5 }}>Offset days</label>
+          <Input value={String(rule.offset_days??1)} onChange={v=>onChange({...rule, offset_days:parseInt(v)||0})}
+            style={{ fontSize:12, width:70 }} />
+        </div>
+      )}
+      {(type==='tag'||type==='named') && (<>
+        <div style={{ display:'flex', flexDirection:'column', gap:3, minWidth:120 }}>
+          <label style={{ fontSize:10, color:t.fg[4], fontWeight:600, textTransform:'uppercase', letterSpacing:.5 }}>Name</label>
+          <Input value={rule.name||''} onChange={v=>onChange({...rule, name:v})} style={{ fontSize:12 }} />
+        </div>
+        {type==='tag' && (
+          <div style={{ display:'flex', flexDirection:'column', gap:3, flex:1 }}>
+            <label style={{ fontSize:10, color:t.fg[4], fontWeight:600, textTransform:'uppercase', letterSpacing:.5 }}>Value</label>
+            <Input value={rule.value||''} onChange={v=>onChange({...rule, value:v})} style={{ fontSize:12 }} />
+          </div>
+        )}
+      </>)}
+      {type==='shop_number' && (
+        <div style={{ display:'flex', flexDirection:'column', gap:3, flex:1 }}>
+          <label style={{ fontSize:10, color:t.fg[4], fontWeight:600, textTransform:'uppercase', letterSpacing:.5 }}>Values (comma-separated)</label>
+          <Input value={(rule.values||[]).join(', ')}
+            onChange={v=>onChange({...rule, values:v.split(',').map(s=>s.trim()).filter(Boolean)})}
+            style={{ fontSize:12 }} />
         </div>
       )}
     </div>
   );
 }
 
-/** Editor for the full filters dict: {setName: [rules]} */
+/** when-condition editor for a filter set */
+function WhenEditor({ when, onChange }) {
+  const dow = when?.day_of_week || '';
+  const isCarousel = when?.is_carousel;
+  const segment = when?.segment || '';
+  function update(key, val) {
+    const next = {...(when||{})};
+    if (val===''||val===null||val===undefined) delete next[key];
+    else next[key] = val;
+    onChange(Object.keys(next).length ? next : null);
+  }
+  return (
+    <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'flex-end', padding:'8px 10px', background:t.bg.surface3||t.bg.surface2, borderRadius:6, border:`1px dashed ${t.border.base}` }}>
+      <span style={{ fontSize:10, color:t.fg[4], fontWeight:700, textTransform:'uppercase', letterSpacing:.5, alignSelf:'center' }}>Trigger when</span>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+        <label style={{ fontSize:10, color:t.fg[4] }}>Day of week</label>
+        <Select value={dow} onChange={v=>update('day_of_week',v)}
+          options={['(any)',...DAYS_OF_WEEK]} style={{ fontSize:12, minWidth:110 }} />
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+        <label style={{ fontSize:10, color:t.fg[4] }}>Is carousel</label>
+        <Select value={isCarousel===true?'yes':isCarousel===false?'no':'(any)'}
+          onChange={v=>update('is_carousel', v==='yes'?true:v==='no'?false:null)}
+          options={['(any)','yes','no']} style={{ fontSize:12, minWidth:80 }} />
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+        <label style={{ fontSize:10, color:t.fg[4] }}>Segment contains</label>
+        <Input value={segment} onChange={v=>update('segment',v)} placeholder="e.g. regular"
+          style={{ fontSize:12, minWidth:120 }} />
+      </div>
+    </div>
+  );
+}
+
+/** Editor for a single named filter set */
+function FilterRulesEditor({ setName, value, onChangeValue, onDeleteSet }) {
+  const [open, setOpen] = useState(false);
+  // value is either [] (plain) or {rules:[], when:{}}
+  const isConditional = value && !Array.isArray(value);
+  const rules = isConditional ? (value.rules||[]) : (value||[]);
+  const when  = isConditional ? (value.when||null) : null;
+
+  function setRules(r) {
+    onChangeValue(isConditional ? {...value, rules:r} : r);
+  }
+  function setWhen(w) {
+    if (!w && !isConditional) return;
+    onChangeValue(w ? {rules, when:w} : rules);
+  }
+  function toggleConditional() {
+    if (isConditional) onChangeValue(rules);       // strip when → plain list
+    else onChangeValue({rules, when:{}});           // add empty when
+  }
+  function addRule() {
+    setRules([...rules, {type:'leaflet_tag', mode:'include', offset_days:1}]);
+    setOpen(true);
+  }
+
+  return (
+    <div style={{ border:`1px solid ${t.border.base}`, borderRadius:8, overflow:'hidden', marginBottom:8 }}>
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', background:t.bg.surface2, cursor:'pointer' }} onClick={()=>setOpen(o=>!o)}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[2], fontWeight:600 }}>{setName}</span>
+          {isConditional && (
+            <span style={{ fontSize:10, padding:'2px 7px', borderRadius:99, background:t.info?.soft||'#e0f0ff', color:t.info?.base||'#0070cc', fontWeight:600 }}>
+              conditional
+            </span>
+          )}
+          <span style={{ color:t.fg[4], fontSize:11 }}>{rules.length} rule{rules.length!==1?'s':''}</span>
+        </div>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <Button variant="ghost" onClick={e=>{e.stopPropagation();toggleConditional();}}
+            style={{ fontSize:11, padding:'3px 9px' }} title={isConditional?'Remove trigger conditions':'Add trigger conditions (when)'}>
+            {isConditional?'Remove conditions':'+ Add conditions'}
+          </Button>
+          <Button variant="danger" onClick={e=>{e.stopPropagation();onDeleteSet();}} style={{ fontSize:11, padding:'3px 9px' }}>Delete</Button>
+          <span style={{ color:t.fg[3], fontSize:14 }}>{open?'▲':'▼'}</span>
+        </div>
+      </div>
+
+      {open&&(
+        <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:10 }}>
+          {/* When conditions */}
+          {isConditional && <WhenEditor when={when} onChange={setWhen} />}
+
+          {/* Rules */}
+          <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+            {rules.length===0 && <span style={{ fontSize:12, color:t.fg[4], fontStyle:'italic' }}>No rules — all filters pass for this set</span>}
+            {rules.map((rule,i)=>(
+              <FilterRuleRow key={i} rule={rule}
+                onChange={r=>{ const next=[...rules]; next[i]=r; setRules(next); }}
+                onDelete={()=>setRules(rules.filter((_,j)=>j!==i))} />
+            ))}
+            <Button variant="ghost" onClick={addRule} style={{ alignSelf:'flex-start', fontSize:12 }}>+ Add rule</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Editor for the full filters dict: {setName: [] | {rules,when}} */
 function FilterSetsEditor({ filters, onChange }) {
   const [newSetName, setNewSetName] = useState('');
   const setNames = Object.keys(filters);
@@ -3079,10 +3262,10 @@ function FilterSetsEditor({ filters, onChange }) {
   }
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-      {setNames.length===0&&<span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[4] }}>no filter sets defined</span>}
+      {setNames.length===0&&<span style={{ fontFamily:t.font.mono, fontSize:12, color:t.fg[4] }}>No filter sets defined</span>}
       {setNames.map(sn=>(
-        <FilterRulesEditor key={sn} setName={sn} rules={filters[sn]||[]}
-          onChangeRules={rules=>onChange({...filters,[sn]:rules})}
+        <FilterRulesEditor key={sn} setName={sn} value={filters[sn]}
+          onChangeValue={v=>onChange({...filters,[sn]:v})}
           onDeleteSet={()=>{ const f={...filters}; delete f[sn]; onChange(f); }} />
       ))}
       <div style={{ display:'flex', gap:8, marginTop:4 }}>
@@ -3120,8 +3303,29 @@ function ClientEditPanel({ client, token, onSaved }) {
     catch(e) { setMappingsErr('Invalid JSON: '+e.message); }
   }
 
+  function validateFilters(filtersObj) {
+    // filtersObj is { setName: rulesArray | {rules, when} }
+    const errs = [];
+    Object.entries(filtersObj || {}).forEach(([setName, setVal]) => {
+      const rules = Array.isArray(setVal) ? setVal : (setVal?.rules || []);
+      rules.forEach((rule, i) => {
+        const label = `"${setName}" rule ${i+1}`;
+        if (!rule.type) { errs.push(`${label}: missing type`); return; }
+        if (rule.type === 'tag' && !rule.name) errs.push(`${label}: tag rule missing name`);
+        if (rule.type === 'tag' && !rule.value) errs.push(`${label}: tag rule missing value`);
+        if (rule.type === 'leaflet_tag' && rule.offset_days == null) errs.push(`${label}: leaflet_tag rule missing offset_days`);
+        if (rule.type === 'shop_number' && (!rule.values || rule.values.length === 0)) errs.push(`${label}: shop_number rule missing values`);
+        if (rule.type === 'named' && !rule.name) errs.push(`${label}: named rule missing name`);
+        if (!['include','exclude'].includes(rule.mode)) errs.push(`${label}: mode must be include or exclude`);
+      });
+    });
+    return errs;
+  }
+
   async function save() {
     if (mappingsErr) { setErr('Fix mappings JSON first'); return; }
+    const filterErrs = validateFilters(filters);
+    if (filterErrs.length > 0) { setErr('Filter errors:\n• ' + filterErrs.join('\n• ')); return; }
     setSaving(true); setErr(''); setSaved(false);
     try {
       await api('PUT', '/api/config/clients/'+encodeURIComponent(client.name),
@@ -3505,7 +3709,7 @@ function App() {
             currentTicket
               ? <TicketPanel key={`${cacheKey}-${currentTicket.key}`} ticket={currentTicket} clients={clients} token={token} onBack={()=>setCurrentTicket(null)} initialSendout={currentTicket.key === deepLinkParams.ticket ? deepLinkParams.sendout : ''} />
               : bulkResult
-                ? <BulkResultPanel results={bulkResult.results} mode={bulkResult.mode} onBack={()=>setBulkResult(null)} />
+                ? <BulkResultErrorBoundary onBack={()=>setBulkResult(null)}><BulkResultPanel results={bulkResult.results} mode={bulkResult.mode} onBack={()=>setBulkResult(null)} schedulerStatus={schedulerStatus} /></BulkResultErrorBoundary>
                 : <Queue rows={queueRows} onLoad={row=>{setCurrentTicket(row);}} loading={queueLoading} onRefresh={()=>fetchQueue()} token={token} onBulkResult={(data,mode)=>setBulkResult({results:data,mode})} fetchError={queueError} />
           )}
 

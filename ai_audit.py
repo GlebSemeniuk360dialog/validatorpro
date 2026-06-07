@@ -117,7 +117,7 @@ N/A rules: use "NA" ONLY when the check genuinely cannot be evaluated (no images
 overridden by your judgement. If any of the following pre-verdicts is FAIL, the corresponding
 check WILL be forced to FAIL regardless of what you output, so you should also mark it FAIL:
   • Precomputed_Diffs.scheduling.pre_verdict = FAIL (diff > 40 min)  → CHECK 1 FAIL
-  • JIRA description is only a URL/link (no copy text)               → CHECK 2 FAIL
+  • JIRA description is only a URL/link (no copy text) [standard mode only — freestyle handles separately] → CHECK 2 FAIL
   • Precomputed_Diffs.carousel.pre_verdict = FAIL (card count mismatch) → CHECK 2 FAIL
   • Precomputed_Diffs.aldi_portugal_shop_list.pre_verdict = FAIL (wrong store count) → CHECK 5 FAIL
   • Precomputed_Diffs.tags has any missing_exclude or extra_exclude → CHECK 5 FAIL (excludes are non-negotiable)
@@ -147,13 +147,12 @@ REQUIRED CHECKS & RULES (apply inside the protocol steps above):
      An approval statement without the actual approved text in the ticket is meaningless for
      CHECK 2. Only comments that provide or clearly change the actual expected text content count
      as a copy override.
-   - *JIRA DESCRIPTION IS ONLY A URL/SMART LINK (ABSOLUTE):* If the JIRA description contains
-     only a URL (e.g. a Google Sheet link, Confluence link, Figma link, Slack archive link, or
-     any other external link), there is NO actual copy text in JIRA to compare against. In this
-     case CHECK 2 (copy) MUST be ❌ FAIL with reason "JIRA description contains only a link — no
-     copy text available to verify. The actual campaign copy must be added to the JIRA ticket."
-     Do NOT pass copy based on the DMA template content alone when JIRA provides no text to
-     compare it against. Do NOT infer or assume the copy is correct from external references.
+   - *JIRA DESCRIPTION IS ONLY A URL/SMART LINK (STANDARD MODE ONLY):* This rule applies ONLY
+     in standard (non-freestyle) audit mode. If the JIRA description contains only a URL with no
+     campaign copy text alongside it, CHECK 2 (copy) MUST be ❌ FAIL — there is nothing to
+     compare. Do NOT pass copy based on the DMA template content alone.
+     NOTE: This rule does not apply in freestyle mode, where a URL is treated as a document
+     pointer and the copy is sourced from _external_documents or marked NA if inaccessible.
 2. **Scheduling:** Check Date and Time.
    - *TAG EQUIVALENCE RULE:* `offset days=1` in the G-Sheet means `leaflet_tag=1` in
      the DMA API (`leaflet_filter.offset_days=1`). Treat these as identical notation —
@@ -418,9 +417,11 @@ Confidence scoring guide (for the confidence field, 0-100):
 _EMPTY_TAG_VALUES = {"none", "-", "–", "—", "n/a", "null", ""}
 
 def _norm_tags(s: str) -> str:
-    """Normalise a tag string, splitting on , or newline; skip empty/none values."""
+    """Normalise a tag string, splitting on , or newline or '. ' (period-space); skip empty/none values."""
     import re as _re
-    parts = _re.split(r"[,\n;]+", str(s or ""))
+    # Split on comma, semicolon, newline, OR a period followed by a space and a word char
+    # (handles G-Sheet cells like "tag1=val. tag2=val" where period is used as separator)
+    parts = _re.split(r"[,\n;]+|\.\s+(?=\w)", str(s or ""))
     cleaned = []
     for p in parts:
         p = p.strip().replace(" = ", "=").replace("= ", "=").replace(" =", "=")
@@ -431,7 +432,7 @@ def _norm_tags(s: str) -> str:
 def _norm_tags_list(s: str) -> list:
     """Same as _norm_tags but returns a list for membership testing."""
     import re as _re
-    parts = _re.split(r"[,\n;]+", str(s or ""))
+    parts = _re.split(r"[,\n;]+|\.\s+(?=\w)", str(s or ""))
     cleaned = []
     for p in parts:
         p = p.strip().replace(" = ", "=").replace("= ", "=").replace(" =", "=")
@@ -1022,12 +1023,43 @@ def _compute_cta_button_verdict(jira_btn: str, tmpl_buttons: list[str]) -> dict:
     }
 
 
+def _detect_is_carousel(api_data: dict, dma_carousel_texts=None) -> bool:
+    """
+    Reliably detect whether a DMA sendout is a carousel, covering both WABA and RCS.
+    - WABA carousel: component_parameters has type='carousel' or 'custom_cards',
+                     OR template has a CAROUSEL component type.
+    - RCS carousel:  google_rcs_content.richCard.carouselCard exists with cards.
+    - RCS standalone (not carousel): google_rcs_content.richCard.standaloneCard.
+    Also accepts pre-computed dma_carousel_texts as a shortcut.
+    """
+    if dma_carousel_texts:
+        return True
+    if not isinstance(api_data, dict):
+        return False
+    # RCS carousel
+    rcs_rich = api_data.get("google_rcs_content", {}).get("richCard", {})
+    if rcs_rich.get("carouselCard", {}).get("cardContents"):
+        return True
+    # RCS standalone = NOT a carousel
+    if rcs_rich.get("standaloneCard"):
+        return False
+    # WABA carousel via component_parameters
+    if any(
+        cp.get("type") in ("carousel", "custom_cards") or cp.get("source") == "custom_cards"
+        for cp in api_data.get("component_parameters", [])
+        if isinstance(cp, dict)
+    ):
+        return True
+    return False
+
+
 def _pick_filter_set(
     filters_cfg: dict,
     *,
     api_date: str = "",
     is_carousel: bool = False,
     segment: str = "",
+    request_type: str = "",
 ) -> tuple[str, list]:
     """
     Select the best-matching filter set from a client's ``filters`` config dict.
@@ -1036,9 +1068,10 @@ def _pick_filter_set(
     - ``list``  — plain rules with no conditions (used as explicit fallback).
     - ``dict``  — must have ``"rules": [...]`` and optionally ``"when": {...}``
                   with one or more condition keys:
-                    * ``"day_of_week"`` : "sunday" | "monday" | … | "saturday"
-                    * ``"is_carousel"`` : True | False
-                    * ``"segment"``     : str (case-insensitive substring of segment)
+                    * ``"day_of_week"``   : "sunday" | "monday" | … | "saturday"
+                    * ``"is_carousel"``   : True | False
+                    * ``"segment"``       : str (case-insensitive substring of segment)
+                    * ``"request_type"``  : str (case-insensitive substring of request_type)
 
     Selection algorithm:
     1. Evaluate every dict-typed entry whose ``when`` conditions ALL match the
@@ -1056,9 +1089,10 @@ def _pick_filter_set(
         dow = ""
 
     ctx: dict = {
-        "day_of_week": dow,
-        "is_carousel": is_carousel,
-        "segment": segment.lower(),
+        "day_of_week":  dow,
+        "is_carousel":  is_carousel,
+        "segment":      segment.lower(),
+        "request_type": request_type.lower(),
     }
 
     best_name: str = "Standard"
@@ -1092,6 +1126,9 @@ def _pick_filter_set(
             elif k == "segment":
                 if str(v).lower() not in ctx["segment"]:
                     matched = False; break
+            elif k == "request_type":
+                if str(v).lower() not in ctx["request_type"]:
+                    matched = False; break
             else:
                 matched = False; break  # unknown condition key → skip
             score += 1
@@ -1111,7 +1148,7 @@ def _pick_filter_set(
     return "Standard", []
 
 
-def _get_client_mandatory_filters(client_name: str, api_date: str = "", dma_carousel_texts=None) -> str:
+def _get_client_mandatory_filters(client_name: str, api_date: str = "", dma_carousel_texts=None, request_type: str = "") -> str:
     """
     Derive mandatory system filters for a client from CLIENT_CONFIGS.
     Returns a human-readable string for injection into the comparison data.
@@ -1127,11 +1164,12 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "", dma_caro
     if not filters_cfg:
         return ""
 
-    _is_carousel = bool(dma_carousel_texts)
+    _is_carousel = _detect_is_carousel({}, dma_carousel_texts)
     _set_name, cf = _pick_filter_set(
         filters_cfg,
         api_date=api_date,
         is_carousel=_is_carousel,
+        request_type=request_type,
     )
 
     if not cf:
@@ -1149,7 +1187,8 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "", dma_caro
         if ftype == "leaflet_tag" and od is not None:
             parts.append(f"leaflet_tag={od} ({mode})")
         elif ftype == "shop_number" and values:
-            parts.append(f"shop_number ({mode}, {len(values)} shop IDs)")
+            vals_str = ", ".join(str(v) for v in values)
+            parts.append(f"shop_number=[{vals_str}] ({mode})")
         elif ftype == "locale" and val:
             parts.append(f"locale={val} ({mode})")
         elif name and val:
@@ -1157,20 +1196,12 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "", dma_caro
         elif name:
             parts.append(f"{name} ({mode})")
 
-    # Kaufland RCS/WABA: always has a permanent DMA-managed store exclusion list
-    # (exclude_shop_number) for closed / special stores — must never be flagged.
-    if "kaufland" in client_lower:
-        parts.append(
-            "exclude_shop_number (permanent DMA-managed list of closed/special stores — "
-            "always present, NEVER flag as unexpected)"
-        )
-
     return ", ".join(parts) if parts else ""
 
 
 def _compute_mandatory_filters_present(
     client_name: str, api_date: str, api_tag_str: str,
-    dma_carousel_texts=None,
+    dma_carousel_texts=None, request_type: str = "",
 ) -> dict:
     """
     Deterministic check that every MANDATORY system filter for this client is
@@ -1195,11 +1226,12 @@ def _compute_mandatory_filters_present(
         return {"pre_verdict": "NA", "missing": [], "checked": [],
                 "note": "No mandatory filters defined for this client"}
 
-    _is_carousel = bool(dma_carousel_texts)  # non-empty list = carousel sendout
+    _is_carousel = _detect_is_carousel({}, dma_carousel_texts)
     _set_name, cf = _pick_filter_set(
         filters_cfg,
         api_date=api_date,
         is_carousel=_is_carousel,
+        request_type=request_type,
     )
 
     if not cf:
@@ -1224,8 +1256,20 @@ def _compute_mandatory_filters_present(
             tokens = [f"leaflet_tag={od}", f"offset_days={od}", f"offset days={od}"]
             label = f"leaflet_tag={od}"
         elif ftype == "shop_number" or name == "shop_number":
-            tokens = ["shop_number"]
-            label = "shop_number"
+            if values:
+                # Verify each specific shop number value is present in the API tag string
+                def _norm(s): return str(s).replace(" ", "").lower()
+                norm_hay = _norm(hay)
+                missing_vals = [str(v) for v in values if _norm(v) not in norm_hay]
+                short = ", ".join(str(v) for v in values[:3]) + ("…" if len(values) > 3 else "")
+                label = f"shop_number=[{short}]"
+                checked.append(label)
+                if missing_vals:
+                    missing.append(f"shop_number missing values: {', '.join(missing_vals[:5])}" + ("…" if len(missing_vals) > 5 else ""))
+                continue
+            else:
+                tokens = ["shop_number"]
+                label = "shop_number"
         elif ftype == "locale" and val:
             tokens = [f"locale={val}".lower()]
             label = f"locale={val}"
@@ -1343,7 +1387,8 @@ def build_comparison_data(
     # For clients where G-Sheet tags are not reliable, derive expected tags from config
     from config import CLIENT_CONFIGS
     _client_lower = client_name.lower()
-    _cfg_client = CLIENT_CONFIGS.get(client_name, {})
+    _cfg_client   = CLIENT_CONFIGS.get(client_name, {})
+    _req_type     = str(jira.get("request_type", "") or "")
 
     # ── Per-client structural flags ───────────────────────────────────────────
     # cta_in_template: CTA button/URL is embedded in the DMA template — JIRA
@@ -1354,6 +1399,9 @@ def build_comparison_data(
     # description_is_brief: JIRA description is an internal 360Dialog briefing to
     #   the team, not the campaign copy.  Copy check should be NA.
     _desc_is_brief = _cfg_client.get("description_is_brief", False)
+    # first_card_is_leaflet: carousel slide 1 is always a leaflet image from the
+    #   Leaflets API — never present in JIRA attachments. JIRA images = slides 2+.
+    _first_card_is_leaflet = _cfg_client.get("first_card_is_leaflet", False)
 
     # Auto-detect whether this ticket needs freestyle — score-based, checks multiple signals
     _raw_desc = str(jira.get("description", "") or "").strip()
@@ -1392,12 +1440,14 @@ def build_comparison_data(
                 api_date=api_date,
                 is_carousel=bool(dma_carousel_texts),
                 segment=_aldi_pt_segment,
+                request_type=_req_type,
             )
         else:
             _set_name_gs, _cf = _pick_filter_set(
                 _all_cf,
                 api_date=api_date,
                 is_carousel=bool(dma_carousel_texts),
+                request_type=_req_type,
             )
 
         _filter_parts = []
@@ -1463,9 +1513,9 @@ def build_comparison_data(
         if _cta_in_template
         else _compute_cta_button_verdict(str(jira.get("cta_button", "")), tmpl_buttons)
     )
-    _mandatory_filters = _get_client_mandatory_filters(client_name, api_date, dma_carousel_texts=dma_carousel_texts)
+    _mandatory_filters = _get_client_mandatory_filters(client_name, api_date, dma_carousel_texts=dma_carousel_texts, request_type=_req_type)
     _mandatory_present = _compute_mandatory_filters_present(
-        client_name, api_date, api_tag_str, dma_carousel_texts=dma_carousel_texts
+        client_name, api_date, api_tag_str, dma_carousel_texts=dma_carousel_texts, request_type=_req_type
     )
 
     # ALDI Portugal: dedicated shop count check (Regular vs Northern store list)
@@ -1563,6 +1613,13 @@ def build_comparison_data(
                 "regardless of JIRA/G-Sheet content. Do NOT flag them as unexpected. "
                 "Only flag filters that are extra AND not listed here."
             ) if _mandatory_filters else "",
+            **({"Carousel_Slide_1_Note": (
+                "Carousel slide 1 is always a leaflet image sourced automatically from the "
+                "Leaflets API — it is never specified in the JIRA ticket and never attached "
+                "as an image. Do NOT compare or check slide 1 image content. "
+                "JIRA attachments correspond to slides 2, 3, 4, … only. "
+                "Set the images check for slide 1 to NA."
+            )} if _first_card_is_leaflet else {}),
         },
         "Precomputed_Diffs": {
             "scheduling":  _sched_diff,
@@ -1723,7 +1780,16 @@ def assess_freestyle_signals(jira: dict, client_cfg: dict | None = None) -> tupl
         score += 2
         reasons.append("description is a 360Dialog internal briefing (addressed to team member)")
 
-    if desc and _re.match(r'^\s*https?://\S+\s*$|\[.*?\]\(https?://\S+\)', desc):
+    _url_only_re = _re.compile(
+        r'^\s*(?:'
+        r'https?://\S+'                   # plain URL
+        r'|\[.*?\|https?://\S+\]'         # JIRA wiki smart-link: [text|url]
+        r'|\[https?://\S+\]'              # JIRA wiki bare link: [url]
+        r'|\[.*?\]\(https?://\S+\)'       # Markdown link: [text](url)
+        r')\s*$',
+        _re.DOTALL,
+    )
+    if desc and _url_only_re.match(desc):
         score += 2
         reasons.append("description contains only a URL/smart link — no copy text")
 
@@ -1747,8 +1813,11 @@ def assess_freestyle_signals(jira: dict, client_cfg: dict | None = None) -> tupl
         score += 1
         reasons.append("description contains unstripped JIRA wiki markup")
 
-    has_doc_attachment = any(
-        str(a.get("name", "")).lower().rsplit(".", 1)[-1] in ("xlsx", "xls", "pdf", "csv", "docx")
+    # Also check _doc_attachments (dedicated list of non-image docs, always dicts)
+    doc_attachments = jira.get("_doc_attachments", []) or []
+    has_doc_attachment = bool(doc_attachments) or any(
+        str(getattr(a, "filename", "") or a.get("name", "") if not isinstance(a, dict) else a.get("name", "")).lower().rsplit(".", 1)[-1]
+        in ("xlsx", "xls", "pdf", "csv", "docx")
         for a in attachments
     )
     if has_doc_attachment:
@@ -1843,7 +1912,11 @@ def check_audit_preconditions(
     desc = str(jira.get("description", "") or "").strip()
 
     # 1. JIRA description is only a URL (smart link / Google Sheet / etc.)
-    if desc and _re.match(r'^https?://\S+$|\[.*?\]\(https?://\S+\)', desc):
+    _desc_url_only = bool(desc and _re.match(
+        r'^\s*(?:https?://\S+|\[.*?\|https?://\S+\]|\[https?://\S+\]|\[.*?\]\(https?://\S+\))\s*$',
+        desc, _re.DOTALL,
+    ))
+    if _desc_url_only:
         blockers.append({
             "code": "desc_url_only",
             "message": (
@@ -2253,7 +2326,30 @@ INVESTIGATION INSTRUCTIONS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 STEP 1 — FIND THE COPY.
-Search ALL JIRA fields for campaign message text. It may appear as:
+Search ALL JIRA fields AND external documents for campaign message text.
+
+CRITICAL — EXTERNAL DOCUMENTS AND SMART LINKS:
+If the description field contains a URL or smart link pointing to Google Sheets,
+Google Docs, or any external file, that URL is the COPY SOURCE — not a CTA button
+or destination link.  Treat it as a pointer to the campaign content, not as copy
+itself and not as a CTA link.
+
+• If "_external_documents" is present in the JIRA fields: the file was fetched
+  successfully.  Use its content as the primary copy source for all checks.
+  State which document and which row/cell/section you used.
+
+• If "_inaccessible_document_urls" is present: the file exists but could not be
+  read (access-restricted).  In this case:
+  - Copy check → set verdict to NA, note the file is referenced but unreadable
+  - CTA check  → do NOT treat the document URL as a CTA link; compare only
+    actual button texts and destination URLs from the DMA against any CTA fields
+    in JIRA (cta_link, cta_button).  If those are also empty, set CTA to NA.
+  - Do NOT FAIL any check solely because the document URL was not readable.
+
+• A Google Sheets / Google Docs URL in the description is NEVER a CTA button URL.
+  Never compare it against DMA button URLs or destination links.
+
+Copy may also appear as:
   • Plain copy in the description (even after an internal greeting like "Hi Gleb,")
   • "Intro: Hallo x, ..." — the part after "Intro:" is the campaign copy
   • Copy pasted in additional_comments or a comments thread entry
@@ -2292,6 +2388,7 @@ def run_ai_audit_freestyle(
     freestyle_reason: str = "",
     jira_images=None,
     dma_images=None,
+    precomputed_diffs: dict | None = None,
 ) -> dict:
     """
     Freestyle AI audit for non-standard tickets.
@@ -2308,8 +2405,8 @@ def run_ai_audit_freestyle(
     # ── Fetch external documents that may contain campaign copy ───────────────
     doc_texts: list[str] = []   # extracted text from attachments / linked docs
 
-    # 1. JIRA non-image attachments (xlsx, pdf, csv, docx)
-    for att in (jira.get("_img_attachments") or []):
+    # 1. JIRA document attachments (xlsx, pdf, csv, docx) — stored as dicts by api_client
+    for att in (jira.get("_doc_attachments") or []):
         fname = str(att.get("name", "")).lower()
         ext   = fname.rsplit(".", 1)[-1] if "." in fname else ""
         raw_bytes = att.get("bytes", b"")
@@ -2348,35 +2445,100 @@ def run_ai_audit_freestyle(
         except Exception as _exc:
             logger.warning("freestyle: could not parse attachment %s: %s", att.get("name"), _exc)
 
-    # 2. Google Sheets / Google Docs public export URLs found anywhere in the ticket
-    all_ticket_text = " ".join(filter(None, [
-        str(jira.get("description", "")),
-        str(jira.get("additional_comments", "")),
-        str(jira.get("comments", "")),
-        str(jira.get("cta_link", "")),
-    ]))
+    # 2. Google Sheets / Google Docs public export URLs found anywhere in the ticket.
+    # Scan ALL string values in the jira dict recursively — the URL may be in an
+    # unmapped custom field, a smart link, or any nested structure.
+    def _collect_strings(obj, depth=0) -> list[str]:
+        if depth > 5:
+            return []
+        if isinstance(obj, str):
+            return [obj]
+        if isinstance(obj, dict):
+            out = []
+            for v in obj.values():
+                out.extend(_collect_strings(v, depth + 1))
+            return out
+        if isinstance(obj, (list, tuple)):
+            out = []
+            for v in obj:
+                out.extend(_collect_strings(v, depth + 1))
+            return out
+        return []
+
+    all_ticket_text = " ".join(_collect_strings(jira))
     import urllib.request as _ur_doc
-    for _gurl in _re.findall(r'https?://docs\.google\.com/\S+', all_ticket_text):
-        _gurl = _gurl.rstrip(".,;)")
+
+    # Extract all Google URLs — from plain text AND from JIRA wiki markup [text|url]
+    _google_url_pattern = _re.compile(
+        r'https?://(?:docs|drive|sheets)\.google\.com/[^\s\|\]\)\>\"\']+',
+        _re.IGNORECASE,
+    )
+    _found_gurls: list[str] = []
+    for _m in _google_url_pattern.finditer(all_ticket_text):
+        _u = _m.group(0).rstrip(".,;)>\"'")
+        if _u not in _found_gurls:
+            _found_gurls.append(_u)
+
+    # Track URLs that were found but couldn't be fetched (so prompt can say NA not FAIL)
+    _inaccessible_doc_urls: list[str] = []
+
+    for _gurl in _found_gurls:
         try:
-            # Google Sheets: convert to CSV export
-            if "spreadsheets" in _gurl:
-                _csv_url = _re.sub(r'/edit.*$', '/export?format=csv', _gurl)
-                if "export" not in _csv_url:
-                    _csv_url = _gurl.split("?")[0] + "/export?format=csv"
-                with _ur_doc.urlopen(_csv_url, timeout=8) as _resp:
-                    _content = _resp.read().decode("utf-8", errors="replace")[:4000]
-                doc_texts.append(f"[Google Sheet: {_gurl[:60]}]\n{_content}")
-            # Google Docs: export as plain text
-            elif "document" in _gurl:
-                _doc_id = _re.search(r'/d/([a-zA-Z0-9_-]+)', _gurl)
-                if _doc_id:
-                    _txt_url = f"https://docs.google.com/document/d/{_doc_id.group(1)}/export?format=txt"
-                    with _ur_doc.urlopen(_txt_url, timeout=8) as _resp:
-                        _content = _resp.read().decode("utf-8", errors="replace")[:4000]
-                    doc_texts.append(f"[Google Doc: {_gurl[:60]}]\n{_content}")
+            _sheet_id = _re.search(r'/spreadsheets/d/([a-zA-Z0-9_-]+)', _gurl)
+            _doc_id   = _re.search(r'/document/d/([a-zA-Z0-9_-]+)', _gurl)
+
+            if _sheet_id or ("spreadsheet" in _gurl):
+                # Build clean export URL from sheet ID, preserving gid (tab) if present
+                _sid = (_sheet_id.group(1) if _sheet_id
+                        else _re.search(r'/d/([a-zA-Z0-9_-]+)', _gurl))
+                if _sid:
+                    _sid = _sid if isinstance(_sid, str) else _sid.group(1)
+                    # Extract gid from query string (?gid=...) or fragment (#gid=...)
+                    _gid_m = _re.search(r'[?&#]gid=(\d+)', _gurl)
+                    _gid_param = f"&gid={_gid_m.group(1)}" if _gid_m else ""
+                    _csv_url = (
+                        f"https://docs.google.com/spreadsheets/d/{_sid}"
+                        f"/export?format=csv{_gid_param}"
+                    )
+                else:
+                    _csv_url = _re.sub(r'/(edit|view|pub)[^/]*$', '', _gurl.split("?")[0])
+                    _csv_url += "/export?format=csv"
+                logger.info("freestyle: fetching Google Sheet CSV from %s", _csv_url)
+                with _ur_doc.urlopen(_csv_url, timeout=10) as _resp:
+                    _ctype = _resp.headers.get("Content-Type", "")
+                    _raw = _resp.read()
+                if "text/html" in _ctype or _raw[:5] == b"<!DOC":
+                    logger.warning(
+                        "freestyle: Google Sheet at %s returned HTML — "
+                        "sheet requires login or is org-restricted",
+                        _csv_url,
+                    )
+                    _inaccessible_doc_urls.append(_gurl)
+                else:
+                    _content = _raw.decode("utf-8", errors="replace")[:5000]
+                    doc_texts.append(f"[Google Sheet: {_gurl[:80]}]\n{_content}")
+                    logger.info("freestyle: loaded Google Sheet (%d chars)", len(_content))
+
+            elif _doc_id:
+                _txt_url = f"https://docs.google.com/document/d/{_doc_id.group(1)}/export?format=txt"
+                logger.info("freestyle: fetching Google Doc from %s", _txt_url)
+                with _ur_doc.urlopen(_txt_url, timeout=10) as _resp:
+                    _ctype = _resp.headers.get("Content-Type", "")
+                    _raw = _resp.read()
+                if "text/html" in _ctype or _raw[:5] == b"<!DOC":
+                    logger.warning(
+                        "freestyle: Google Doc at %s returned HTML — may require login",
+                        _txt_url,
+                    )
+                    _inaccessible_doc_urls.append(_gurl)
+                else:
+                    _content = _raw.decode("utf-8", errors="replace")[:5000]
+                    doc_texts.append(f"[Google Doc: {_gurl[:80]}]\n{_content}")
+                    logger.info("freestyle: loaded Google Doc (%d chars)", len(_content))
+
         except Exception as _exc:
-            logger.debug("freestyle: could not fetch Google URL %s: %s", _gurl[:60], _exc)
+            logger.warning("freestyle: could not fetch Google URL %s: %s", _gurl[:80], _exc)
+            _inaccessible_doc_urls.append(_gurl)
 
     # ── Build the prompt ──────────────────────────────────────────────────────
     # Collect all JIRA fields that might contain useful content
@@ -2397,37 +2559,83 @@ def run_ai_audit_freestyle(
     jira_fields = {k: v for k, v in jira_fields.items() if v}
     if doc_texts:
         jira_fields["_external_documents"] = doc_texts
+    if _inaccessible_doc_urls:
+        jira_fields["_inaccessible_document_urls"] = _inaccessible_doc_urls
+
+    # Inject pre-computed scheduling diff so AI doesn't redo timezone math itself.
+    # The DMA stores local wall-clock time tagged with Z — NOT UTC. Our diff function
+    # already accounts for this by comparing wall-clock times only.
+    _sched_diff = (precomputed_diffs or {}).get("scheduling", {})
+    _precomputed_note = ""
+    if _sched_diff and _sched_diff.get("pre_verdict"):
+        _precomputed_note = (
+            f"\n\n━━━ PRE-COMPUTED SCHEDULING RESULT (USE THIS — DO NOT RECALCULATE) ━━━\n"
+            f"The system already compared dates stripping timezone labels (DMA stores\n"
+            f"local time with a Z suffix, NOT UTC). Result:\n"
+            f"  JIRA wall-clock : {_sched_diff.get('jira_local_clock', '?')}\n"
+            f"  DMA wall-clock  : {_sched_diff.get('api_local_clock', '?')}\n"
+            f"  Diff            : {_sched_diff.get('diff_minutes', '?')} minutes\n"
+            f"  Verdict         : {_sched_diff.get('pre_verdict', '?')}\n"
+            f"  Note            : {_sched_diff.get('note', '')}\n"
+            f"Use this verdict directly for CHECK 1 (scheduling). Do not convert timezones."
+        )
 
     prompt = _FREESTYLE_PROMPT.format(
         client_name=client_name,
         freestyle_reason=freestyle_reason or "key structured fields are missing or non-standard",
         jira_fields_json=json.dumps(jira_fields, indent=2, ensure_ascii=False),
         dma_config_json=json.dumps(dma_setup, indent=2, ensure_ascii=False),
-    )
+    ) + _precomputed_note
 
     contents: list = [prompt]
 
     # PDF attachments passed as binary parts directly to Gemini
     from google.genai import types as _gt_fs
-    for att in (jira.get("_img_attachments") or []):
-        if att.get("_is_pdf") and att.get("bytes"):
+    for att in (jira.get("_doc_attachments") or []):
+        fname = att.get("name", "")
+        if fname.lower().endswith(".pdf") and att.get("bytes"):
             try:
                 contents.append(_gt_fs.Part.from_bytes(
                     data=att["bytes"], mime_type="application/pdf"
                 ))
-                contents.append(f"(PDF above: {att.get('name','?')})")
+                contents.append(f"(PDF above: {fname})")
             except Exception as _exc:
-                logger.debug("freestyle: could not add PDF %s: %s", att.get("name"), _exc)
+                logger.debug("freestyle: could not add PDF %s: %s", fname, _exc)
 
+    # If no DMA images were pre-downloaded, extract image URLs from dma_setup and fetch them
+    if not dma_images:
+        import urllib.request as _ur_dma_img
+        _dma_img_url_re = _re.compile(r'https?://\S+\.(?:jpg|jpeg|png|webp|gif)', _re.IGNORECASE)
+        _dma_setup_str = json.dumps(dma_setup)
+        _dma_img_urls = list(dict.fromkeys(_dma_img_url_re.findall(_dma_setup_str)))[:6]
+        if _dma_img_urls:
+            _fetched_dma: list[bytes | None] = []
+            for _durl in _dma_img_urls:
+                try:
+                    with _ur_dma_img.urlopen(_durl, timeout=8) as _r:
+                        _fetched_dma.append(_r.read())
+                    logger.info("freestyle: fetched DMA image from %s", _durl[:80])
+                except Exception as _de:
+                    logger.warning("freestyle: could not fetch DMA image %s: %s", _durl[:80], _de)
+                    _fetched_dma.append(None)
+            if any(_fetched_dma):
+                dma_images = _fetched_dma
+
+    _jira_img_count = 0
     if jira_images:
         contents.append("\n--- JIRA IMAGES ---")
         for img_dict in (jira_images or []):
             try:
                 img = Image.open(io.BytesIO(img_dict["bytes"]))
                 contents.extend([f"JIRA image ({img_dict.get('name','?')}):", img])
-            except Exception:
-                pass
+                _jira_img_count += 1
+            except Exception as _img_exc:
+                logger.warning("freestyle: could not load JIRA image %s: %s",
+                               img_dict.get("name", "?"), _img_exc)
+    logger.info("freestyle: passed %d JIRA image(s) and %d DMA image(s) to Gemini",
+                _jira_img_count, sum(1 for b in (dma_images or []) if b))
 
+    _dma_img_count = 0
     if dma_images:
         contents.append("\n--- DMA CONFIGURED IMAGES ---")
         for i, img_bytes in enumerate(dma_images or []):
@@ -2435,15 +2643,35 @@ def run_ai_audit_freestyle(
                 try:
                     img = Image.open(io.BytesIO(img_bytes))
                     contents.extend([f"DMA Slide {i+1}:", img])
-                except Exception:
-                    pass
+                    _dma_img_count += 1
+                except Exception as _img_exc:
+                    logger.warning("freestyle: could not load DMA image %d: %s", i+1, _img_exc)
 
     _tc = _thinking_config_for(model_name, gemini3_level="medium")   # higher reasoning for freestyle
     _cfg = _gt_fs.GenerateContentConfig(
         system_instruction=(
-            "You are a senior QA auditor for WhatsApp marketing campaigns. "
-            "ABSOLUTE RULE: Respond ONLY in English. "
-            "Output ONLY valid JSON matching the AuditOutput schema."
+            "You are a senior QA auditor for WhatsApp marketing campaigns operating in "
+            "FREESTYLE INVESTIGATIVE MODE. "
+            "RULE 1: Respond ONLY in English. "
+            "RULE 2: Output ONLY valid JSON matching the AuditOutput schema. "
+            "RULE 3 — OVERRIDE ALL PRIOR KNOWLEDGE: In freestyle mode the normal "
+            "'URL-only description = FAIL' rule does NOT apply. A URL in the JIRA "
+            "description is a pointer to an external document containing the campaign copy. "
+            "If the document content is provided in the prompt under _external_documents, "
+            "use it as the copy source. If it is listed under _inaccessible_document_urls, "
+            "set the copy check verdict to NA (cannot verify) — NEVER to FAIL. "
+            "Do NOT apply any rule that treats a document link as missing copy. "
+            "RULE 4 — IMAGE RE-HOSTING: Images are routinely re-hosted by the DMA platform "
+            "from their original source URLs to its own CDN (e.g. storage.googleapis.com). "
+            "NEVER fail the images check solely because the URL domains differ. "
+            "Compare images VISUALLY using the image bytes provided — if the visual content "
+            "matches, it is PASS. If no images are provided for visual comparison, set "
+            "images to NA. URL domain differences alone are never a FAIL. "
+            "RULE 5 — LEAFLET CARD: If DMA_API_Setup contains a 'Carousel_Slide_1_Note' key, "
+            "card/slide 1 is automatically populated from the Leaflets API and is NEVER "
+            "present in the JIRA attachments. Do NOT fail the images check because slide 1 "
+            "has no matching JIRA image — set slide 1 image verdict to NA and evaluate "
+            "only the remaining cards (slides 2+)."
         ),
         response_mime_type="application/json",
         response_schema=AuditOutput,
@@ -2461,11 +2689,18 @@ def run_ai_audit_freestyle(
             audit = AuditOutput.model_validate_json(raw_text)
         except Exception:
             audit = AuditOutput.model_validate_json(_repair_json(raw_text))
-        result = audit.model_dump()
-        # Tag as freestyle so the UI/report can surface this clearly
-        result["_freestyle"] = True
-        result["_freestyle_reason"] = freestyle_reason
-        return {"audit_report": result}
+        structured = audit.model_dump()
+        structured["_freestyle"] = True
+        structured["_freestyle_reason"] = freestyle_reason
+        report = _build_report_from_structured(audit, [])
+        return {
+            "audit_report":      report,
+            "structured":        structured,
+            "confidence":        audit.confidence,
+            "confidence_reason": audit.confidence_reason,
+            "jira_extracted_urls": [],
+            "api_extracted_urls":  [],
+        }
     except Exception as exc:
         logger.error("run_ai_audit_freestyle failed: %s", exc)
         return {"audit_report": f"FREESTYLE_ERROR: {exc}\n\nRaw:\n{raw_text[:500]}"}
