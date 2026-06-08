@@ -28,7 +28,7 @@ GSHEET_COLS = {
 
 CLIENT_ALIASES: dict[str, list[str]] = {
     "ALDI Italy":   ["ALDI S.R.L.", "ALDI SRL", "ALDI S.r.l."],
-    "ALDI Sued":    ["ALDI Sud", "ALDI SÜD", "ALDI Sued"],
+    "ALDI Sued":    ["ALDI Sud", "ALDI SÜD", "ALDI Sued", "Aldi Süd", "Aldi Sud", "aldi sued", "aldi süd"],
     "ALDI Suisse":  ["ALDI Schweiz", "ALDI CH", "Aldi Suisse"],
     "Kaufland WABA": ["Kaufland (für WhatsApp)", "Kaufland (fur WhatsApp)", "Kaufland WhatsApp"],
     "ALDI Portugal": ["ALDI Portugal", "ALDI PT", "ALDI Portugal Regular", "ALDI Portugal Northern", "ALDI PT Regular", "ALDI PT Northern"],

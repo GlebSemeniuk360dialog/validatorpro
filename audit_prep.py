@@ -286,7 +286,26 @@ def extract_dma_components(
     # ── 8. Tag summary ────────────────────────────────────────────────────
     api_tags   = extract_all_tags(api)
     tag_parts: list[str] = []
+
+    # Group postalcode values into a single compact entry to avoid 60+ individual lines
+    _postal_inc: list[str] = []
+    _postal_exc: list[str] = []
+    _non_postal_tags: list[dict] = []
     for tg in api_tags:
+        if tg.get("type") == "postalcode":
+            if tg.get("mode") == "exclude":
+                _postal_exc.append(tg.get("exclude_value") or tg.get("value", ""))
+            else:
+                _postal_inc.append(tg.get("value", ""))
+        else:
+            _non_postal_tags.append(tg)
+
+    if _postal_inc:
+        tag_parts.append(f"[Include] postalcode=[{', '.join(_postal_inc)}] ({len(_postal_inc)} values)")
+    if _postal_exc:
+        tag_parts.append(f"[Exclude] postalcode=[{', '.join(_postal_exc)}] ({len(_postal_exc)} values)")
+
+    for tg in _non_postal_tags:
         key_name = tg.get("name") or tg.get("type") or "filter"
         raw_val  = (tg.get("value") or tg.get("exclude_value")
                     or tg.get("values") or tg.get("exclude_values")

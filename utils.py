@@ -234,6 +234,13 @@ def extract_all_tags(api_data) -> list[dict]:
                     tags.append({"type": "shop_number", "value": sn, "mode": "include"})
         if node.get("exclude_shop_number"):
             tags.append({"type": "shop_number", "exclude_value": str(node["exclude_shop_number"]), "mode": "exclude"})
+        # Postal codes (comma-separated string inside a filter object)
+        if node.get("postalcode"):
+            raw_pc = str(node["postalcode"])
+            for pc in raw_pc.split(","):
+                pc = pc.strip()
+                if pc:
+                    tags.append({"type": "postalcode", "value": pc, "mode": "include"})
         # Generic tag list (e.g. leaflet_filter.tags, filters[].tags)
         for t in node.get("tags", []):
             if isinstance(t, dict):
