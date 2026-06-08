@@ -301,9 +301,9 @@ def extract_dma_components(
             _non_postal_tags.append(tg)
 
     if _postal_inc:
-        tag_parts.append(f"[Include] postalcode=[{', '.join(_postal_inc)}] ({len(_postal_inc)} values)")
+        tag_parts.append(f"[Include] postalcode={','.join(_postal_inc)} ({len(_postal_inc)} postal codes)")
     if _postal_exc:
-        tag_parts.append(f"[Exclude] postalcode=[{', '.join(_postal_exc)}] ({len(_postal_exc)} values)")
+        tag_parts.append(f"[Exclude] postalcode={','.join(_postal_exc)} ({len(_postal_exc)} postal codes)")
 
     for tg in _non_postal_tags:
         key_name = tg.get("name") or tg.get("type") or "filter"
