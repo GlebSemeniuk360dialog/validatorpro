@@ -3092,7 +3092,7 @@ function AddFieldInline({ onAdd }) {
 function FilterRulesEditor({ setName, rules, onChangeRules, onDeleteSet }) {
   const [open, setOpen] = useState(false);
   function addRule() {
-    onChangeRules([...rules, { type:'tag', name:'', mode:'include', value:'' }]);
+    onChangeRules([...rules, { type:'exact', value:'' }]);
     setOpen(true);
   }
   function addScheduledDayRule() {
