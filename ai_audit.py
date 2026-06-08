@@ -546,14 +546,46 @@ def _compute_scheduling_diff(jira_date_str: str, api_date_str: str,
 
     diff_min = round(abs((api_dt - jira_dt).total_seconds()) / 60, 1)
     within   = diff_min <= 40
+
+    # Day-of-week check from client config
+    _day_note = ""
+    _day_fail = False
+    if client_name:
+        from config import CLIENT_CONFIGS as _CC
+        _cfg_sched = _CC.get(client_name, {})
+        _day_filters = [
+            f for fs in _cfg_sched.get("filters", {}).values()
+            for f in fs if f.get("type") == "scheduled_day"
+        ]
+        if _day_filters and api_dt:
+            _DAYS = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+            _api_day = _DAYS[api_dt.weekday()]
+            for _df in _day_filters:
+                _mode = _df.get("mode", "include")
+                _vals = [v.lower() for v in (
+                    _df.get("values") or ([_df["value"]] if _df.get("value") else [])
+                )]
+                if _mode == "exclude" and _api_day in _vals:
+                    _day_note = f" | ❌ Day-of-week FAIL: sendout is on {_api_day.capitalize()} which is excluded by config ({', '.join(_vals)})"
+                    _day_fail = True
+                elif _mode == "include" and _vals and _api_day not in _vals:
+                    _day_note = f" | ❌ Day-of-week FAIL: sendout is on {_api_day.capitalize()} which is not in allowed days ({', '.join(_vals)})"
+                    _day_fail = True
+                elif _mode == "exclude":
+                    _day_note = f" | ✅ Day-of-week OK: {_api_day.capitalize()} is not in excluded days ({', '.join(_vals)})"
+                elif _mode == "include" and _vals:
+                    _day_note = f" | ✅ Day-of-week OK: {_api_day.capitalize()} is in allowed days ({', '.join(_vals)})"
+
+    pre_verdict = "FAIL" if (not within or _day_fail) else "PASS"
     return {
         "jira_local_clock":      jira_dt.strftime("%Y-%m-%d %H:%M"),
         "api_local_clock":       api_dt.strftime("%Y-%m-%d %H:%M"),
         "diff_minutes":          diff_min,
         "within_40min_tolerance": within,
-        "pre_verdict":           "PASS" if within else "FAIL",
+        "pre_verdict":           pre_verdict,
         "note": (f"Diff = {diff_min} min — "
-                 f"{'✅ PASS (≤40 min tolerance)' if within else '❌ FAIL (>40 min tolerance)'}"),
+                 f"{'✅ PASS (≤40 min tolerance)' if within else '❌ FAIL (>40 min tolerance)'}"
+                 f"{_day_note}"),
     }
 
 
@@ -1191,6 +1223,14 @@ def _get_client_mandatory_filters(client_name: str, api_date: str = "", dma_caro
             parts.append(f"shop_number=[{vals_str}] ({mode})")
         elif ftype == "locale" and val:
             parts.append(f"locale={val} ({mode})")
+        elif ftype == "scheduled_day":
+            day_vals = values or ([val] if val else [])
+            if day_vals:
+                days_str = ", ".join(day_vals)
+                if mode == "exclude":
+                    parts.append(f"scheduled_day NOT IN [{days_str}]")
+                else:
+                    parts.append(f"scheduled_day IN [{days_str}]")
         elif name and val:
             parts.append(f"{name}={val} ({mode})")
         elif name:
