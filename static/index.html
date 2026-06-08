@@ -3037,9 +3037,9 @@ function ScheduledDayRuleRow({ rule, onChange, onDelete }) {
           const active = dayVals.includes(day);
           return (
             <button key={day} onClick={()=>toggleDay(day)}
-              style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${active?(mode==='exclude'?t.danger.base:t.success.base):t.border.input}`,
-                background: active?(mode==='exclude'?t.danger.muted:t.success.muted):'transparent',
-                color: active?(mode==='exclude'?t.danger.base:t.success.base):t.fg[2],
+              style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${active?(mode==='exclude'?t.danger.base:t.ok.base):t.border.input}`,
+                background: active?(mode==='exclude'?t.danger.soft:t.ok.soft):'transparent',
+                color: active?(mode==='exclude'?t.danger.base:t.ok.base):t.fg[2],
                 fontSize:12, cursor:'pointer', textTransform:'capitalize' }}>
               {day}
             </button>
