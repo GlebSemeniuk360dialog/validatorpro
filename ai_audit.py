@@ -2461,26 +2461,20 @@ def run_ai_audit_freestyle(
             logger.warning("freestyle: could not parse attachment %s: %s", att.get("name"), _exc)
 
     # 2. Google Sheets / Google Docs public export URLs found anywhere in the ticket.
-    # Scan ALL string values in the jira dict recursively — the URL may be in an
-    # unmapped custom field, a smart link, or any nested structure.
-    def _collect_strings(obj, depth=0) -> list[str]:
-        if depth > 5:
-            return []
-        if isinstance(obj, str):
-            return [obj]
-        if isinstance(obj, dict):
-            out = []
-            for v in obj.values():
-                out.extend(_collect_strings(v, depth + 1))
-            return out
-        if isinstance(obj, (list, tuple)):
-            out = []
-            for v in obj:
-                out.extend(_collect_strings(v, depth + 1))
-            return out
-        return []
+    # Scan standard text fields only — exclude _raw_fields (internal JIRA metadata /
+    # custom config fields like customfield_15869 that contain shared internal URLs
+    # unrelated to this specific sendout's campaign copy).
+    _TEXT_FIELDS = ("description", "additional_comments", "comments", "cta_link",
+                    "footer_text", "gsheet_tags", "gsheet_exclude_tags")
+    _scan_parts: list[str] = []
+    for _tf in _TEXT_FIELDS:
+        v = jira.get(_tf)
+        if isinstance(v, list):
+            _scan_parts.extend(str(x) for x in v if x)
+        elif v:
+            _scan_parts.append(str(v))
 
-    all_ticket_text = " ".join(_collect_strings(jira))
+    all_ticket_text = " ".join(_scan_parts)
     import urllib.request as _ur_doc
 
     # Extract all Google URLs — from plain text AND from JIRA wiki markup [text|url]
