@@ -234,6 +234,9 @@ def extract_all_tags(api_data) -> list[dict]:
                     tags.append({"type": "shop_number", "value": sn, "mode": "include"})
         if node.get("exclude_shop_number"):
             tags.append({"type": "shop_number", "exclude_value": str(node["exclude_shop_number"]), "mode": "exclude"})
+        # Locale filter
+        if node.get("locale"):
+            tags.append({"type": "locale", "value": str(node["locale"]), "mode": "include"})
         # Postal codes (comma-separated string inside a filter object)
         if node.get("postalcode"):
             raw_pc = str(node["postalcode"])
