@@ -3003,8 +3003,59 @@ function AliasEditor({ aliases, onChange }) {
   );
 }
 
+const DAYS_OF_WEEK = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+
+/** Smart UI for scheduled_day filter rule */
+function ScheduledDayRuleRow({ rule, onChange, onDelete }) {
+  const mode = rule.mode || 'exclude';
+  const dayVals = Array.isArray(rule.values) ? rule.values
+    : rule.value ? [rule.value] : [];
+  function toggleDay(day) {
+    const next = dayVals.includes(day) ? dayVals.filter(d=>d!==day) : [...dayVals, day];
+    const base = { type:'scheduled_day', mode };
+    if (next.length === 1) onChange({...base, value: next[0]});
+    else onChange({...base, values: next});
+  }
+  function setMode(m) {
+    const base = { type:'scheduled_day', mode: m };
+    if (dayVals.length === 1) onChange({...base, value: dayVals[0]});
+    else if (dayVals.length > 1) onChange({...base, values: dayVals});
+    else onChange(base);
+  }
+  return (
+    <div style={{ background:t.bg.surface2, border:`1px solid ${t.border.input}`, borderRadius:4, padding:'10px 12px', position:'relative' }}>
+      <button onClick={onDelete} title="Remove rule"
+        style={{ position:'absolute', top:6, right:8, background:'none', border:'none', cursor:'pointer', color:t.danger.base, fontSize:16, lineHeight:1 }}>×</button>
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+        <span style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3] }}>📅 Scheduled Day</span>
+        <Select value={mode} onChange={setMode}
+          options={[{value:'exclude',label:'Must NOT be on'},{value:'include',label:'Must be on'}]}
+          style={{ fontSize:12, width:160 }} />
+      </div>
+      <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+        {DAYS_OF_WEEK.map(day=>{
+          const active = dayVals.includes(day);
+          return (
+            <button key={day} onClick={()=>toggleDay(day)}
+              style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${active?(mode==='exclude'?t.danger.base:t.success.base):t.border.input}`,
+                background: active?(mode==='exclude'?t.danger.muted:t.success.muted):'transparent',
+                color: active?(mode==='exclude'?t.danger.base:t.success.base):t.fg[2],
+                fontSize:12, cursor:'pointer', textTransform:'capitalize' }}>
+              {day}
+            </button>
+          );
+        })}
+      </div>
+      {dayVals.length === 0 && <div style={{ fontSize:11, color:t.fg[4], marginTop:6 }}>Select at least one day</div>}
+    </div>
+  );
+}
+
 /** One filter rule row inside a filter set */
 function FilterRuleRow({ rule, onChange, onDelete }) {
+  if (rule.type === 'scheduled_day') {
+    return <ScheduledDayRuleRow rule={rule} onChange={onChange} onDelete={onDelete} />;
+  }
   const fields = Object.keys(rule);
   return (
     <div style={{ background:t.bg.surface2, border:`1px solid ${t.border.input}`, borderRadius:4, padding:'10px 12px', display:'flex', flexDirection:'column', gap:8, position:'relative' }}>
@@ -3041,7 +3092,11 @@ function AddFieldInline({ onAdd }) {
 function FilterRulesEditor({ setName, rules, onChangeRules, onDeleteSet }) {
   const [open, setOpen] = useState(false);
   function addRule() {
-    onChangeRules([...rules, { type:'exact', value:'' }]);
+    onChangeRules([...rules, { type:'tag', name:'', mode:'include', value:'' }]);
+    setOpen(true);
+  }
+  function addScheduledDayRule() {
+    onChangeRules([...rules, { type:'scheduled_day', mode:'exclude', value:'wednesday' }]);
     setOpen(true);
   }
   return (
@@ -3060,7 +3115,10 @@ function FilterRulesEditor({ setName, rules, onChangeRules, onDeleteSet }) {
               onChange={r=>{ const next=[...rules]; next[i]=r; onChangeRules(next); }}
               onDelete={()=>onChangeRules(rules.filter((_,j)=>j!==i))} />
           ))}
-          <Button variant="ghost" onClick={addRule} style={{ alignSelf:'flex-start', fontSize:12 }}>+ Add rule</Button>
+          <div style={{ display:'flex', gap:8 }}>
+            <Button variant="ghost" onClick={addRule} style={{ fontSize:12 }}>+ Add tag rule</Button>
+            <Button variant="ghost" onClick={addScheduledDayRule} style={{ fontSize:12 }}>📅 + Scheduled day rule</Button>
+          </div>
         </div>
       )}
     </div>

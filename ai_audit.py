@@ -116,7 +116,8 @@ N/A rules: use "NA" ONLY when the check genuinely cannot be evaluated (no images
 ⚠️ DETERMINISTICALLY ENFORCED PRE-VERDICTS — these are pure math/counting and CANNOT be
 overridden by your judgement. If any of the following pre-verdicts is FAIL, the corresponding
 check WILL be forced to FAIL regardless of what you output, so you should also mark it FAIL:
-  • Precomputed_Diffs.scheduling.pre_verdict = FAIL (diff > 40 min)  → CHECK 1 FAIL
+  • Precomputed_Diffs.scheduling.pre_verdict = FAIL (diff > 40 min OR day-of-week violation)  → CHECK 1 FAIL
+    Note: scheduling.note may contain a "Day-of-week FAIL/OK" line — if it says ❌ Day-of-week FAIL, CHECK 1 is FAIL regardless of timing.
   • JIRA description is only a URL/link (no copy text) [standard mode only — freestyle handles separately] → CHECK 2 FAIL
   • Precomputed_Diffs.carousel.pre_verdict = FAIL (card count mismatch) → CHECK 2 FAIL
   • Precomputed_Diffs.aldi_portugal_shop_list.pre_verdict = FAIL (wrong store count) → CHECK 5 FAIL
