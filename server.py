@@ -88,7 +88,30 @@ _USERS = {
 _sessions: dict[str, dict] = {}
 SESSION_TTL = 8 * 3600
 
-_validation_log: list[dict] = []
+def _seed_validation_log_from_db(limit: int = 500) -> list[dict]:
+    """Seed the in-memory validation log from the SQLite audit_log DB on startup."""
+    try:
+        rows = _al.list_audits(limit=limit)
+        log: list[dict] = []
+        for r in reversed(rows):  # oldest first
+            log.append({
+                "ticket_key":    r.get("ticket_key", ""),
+                "client":        r.get("client", ""),
+                "status":        "passed" if r.get("overall") == "PASS" else "failed" if r.get("overall") == "FAIL" else "error",
+                "mode":          r.get("triggered_by", "ai") if r.get("triggered_by") in ("ai", "bulk_ai", "auto") else "regular",
+                "issues":        0,
+                "timestamp":     r.get("created_at", ""),
+                "approved":      False,
+                "user":          "",
+                "failed_checks": [k for k in ("scheduling","copy","footer","cta","tags","images") if r.get(k) == "FAIL"],
+                "confidence":    r.get("confidence"),
+            })
+        return log
+    except Exception as exc:
+        logger.warning("Could not seed validation log from DB: %s", exc)
+        return []
+
+_validation_log: list[dict] = _seed_validation_log_from_db()
 _gsheet_cache: list[dict] = []
 _gsheet_fetched_at: float = 0.0
 _queue_cache: list[dict] = []
