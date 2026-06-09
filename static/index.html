@@ -656,6 +656,7 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
   const [selected, setSelected] = useState(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkError, setBulkError] = useState('');
+  const [bulkProgress, setBulkProgress] = useState(null); // {done,total,current}
 
   // Sort ascending — earliest sendout date first
   const sorted = [...rows].sort((a,b) => (a.date||'').localeCompare(b.date||''));
@@ -699,13 +700,49 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
   };
 
   const runBulk = async (mode) => {
-    setBulkLoading(true); setBulkError('');
+    setBulkLoading(true); setBulkError(''); setBulkProgress(null);
     try {
-      const endpoint = mode==='ai' ? '/api/bulk-ai-audit' : '/api/bulk-validate';
-      const data = await api('POST', endpoint, { ticket_keys: selKeys }, token);
-      onBulkResult(data, mode);
+      if (mode === 'regular') {
+        const data = await api('POST', '/api/bulk-validate', { ticket_keys: selKeys }, token);
+        onBulkResult(Array.isArray(data) ? data : [], mode);
+        return;
+      }
+      // AI mode — SSE streaming
+      const res = await fetch('/api/bulk-ai-audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ ticket_keys: selKeys }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || res.statusText);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const chunks = buf.split('\n\n');
+        buf = chunks.pop();
+        for (const chunk of chunks) {
+          const line = chunk.trim();
+          if (!line.startsWith('data:')) continue;
+          try {
+            const evt = JSON.parse(line.slice(5).trim());
+            if (evt.type === 'progress') {
+              setBulkProgress({ done: evt.index + 1, total: evt.total, current: evt.result?.ticket_key || '' });
+            } else if (evt.type === 'done') {
+              onBulkResult(Array.isArray(evt.results) ? evt.results : [], mode);
+            } else if (evt.type === 'error') {
+              throw new Error(evt.detail || 'Bulk AI audit failed');
+            }
+          } catch(parseErr) { /* incomplete chunk */ }
+        }
+      }
     } catch(e) { setBulkError(e.message); }
-    finally { setBulkLoading(false); }
+    finally { setBulkLoading(false); setBulkProgress(null); }
   };
 
   return (
@@ -729,7 +766,10 @@ function Queue({ rows: rowsProp, onLoad, loading: queueLoading, onRefresh, token
         {multiSel && (
           <>
             {bulkLoading
-              ? <span style={{ display:'inline-flex', alignItems:'center', gap:8, fontSize:13, color:t.fg[2] }}><span className="vp-spinner" /> Running…</span>
+              ? <span style={{ display:'inline-flex', alignItems:'center', gap:8, fontSize:13, color:t.fg[2] }}>
+                  <span className="vp-spinner" />
+                  {bulkProgress ? `${bulkProgress.done}/${bulkProgress.total} — ${bulkProgress.current}` : 'Running…'}
+                </span>
               : <>
                   <Button onClick={()=>runBulk('regular')} style={{flexShrink:0}}>⚡ Bulk Check ({selKeys.length})</Button>
                   <Button onClick={()=>runBulk('ai')} style={{flexShrink:0}}>🤖 AI Bulk ({selKeys.length})</Button>
