@@ -53,10 +53,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
     cta          TEXT    NOT NULL DEFAULT '',
     tags         TEXT    NOT NULL DEFAULT '',
     images       TEXT    NOT NULL DEFAULT '',
-    confidence   INTEGER NOT NULL DEFAULT -1,
-    triggered_by TEXT    NOT NULL DEFAULT 'manual',
-    user         TEXT    NOT NULL DEFAULT '',
-    created_at   TEXT    NOT NULL
+    confidence      INTEGER NOT NULL DEFAULT -1,
+    triggered_by    TEXT    NOT NULL DEFAULT 'manual',
+    user            TEXT    NOT NULL DEFAULT '',
+    failed_checks_json TEXT NOT NULL DEFAULT '[]',
+    created_at      TEXT    NOT NULL
 );
 """
 
@@ -99,12 +100,16 @@ def init_db() -> None:
             con.execute(_CREATE_PREFLIGHT)
             for idx in _INDEXES:
                 con.execute(idx)
-            # Migration: add user column if missing (safe to run repeatedly)
-            try:
-                con.execute("ALTER TABLE audit_log ADD COLUMN user TEXT NOT NULL DEFAULT ''")
-                logger.info("audit_log: migrated — added 'user' column")
-            except Exception:
-                pass  # column already exists
+            # Migrations: add columns if missing (safe to run repeatedly)
+            for _col_sql in [
+                "ALTER TABLE audit_log ADD COLUMN user TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE audit_log ADD COLUMN failed_checks_json TEXT NOT NULL DEFAULT '[]'",
+            ]:
+                try:
+                    con.execute(_col_sql)
+                    logger.info("audit_log: migrated — %s", _col_sql.split("ADD COLUMN")[1].strip())
+                except Exception:
+                    pass  # column already exists
         logger.info("audit_log: DB ready at %s", DB_PATH)
     except Exception as exc:
         logger.error("audit_log: init failed: %s", exc)
@@ -113,14 +118,15 @@ def init_db() -> None:
 # ── audit_log write ───────────────────────────────────────────────────────────
 
 def record_audit(
-    ticket_key:   str,
-    client:       str,
-    sendout_id:   str,
-    overall:      str,
-    structured:   Optional[dict] = None,
-    confidence:   int = -1,
-    triggered_by: str = "manual",
-    user:         str = "",
+    ticket_key:    str,
+    client:        str,
+    sendout_id:    str,
+    overall:       str,
+    structured:    Optional[dict] = None,
+    confidence:    int = -1,
+    triggered_by:  str = "manual",
+    user:          str = "",
+    failed_checks: list | None = None,
 ) -> int:
     """
     Persist one audit result. `structured` is the AuditOutput.model_dump() dict
@@ -133,19 +139,21 @@ def record_audit(
         chk = s.get(key, {})
         return chk.get("verdict", "") if isinstance(chk, dict) else ""
 
+    import json as _json
+    fc_json = _json.dumps(failed_checks or [])
     now = _now()
     with _conn() as con:
         cur = con.execute(
             """INSERT INTO audit_log
                (ticket_key, client, sendout_id, overall,
                 scheduling, copy, footer, cta, tags, images,
-                confidence, triggered_by, user, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                confidence, triggered_by, user, failed_checks_json, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 ticket_key, client, sendout_id, overall,
                 _v("scheduling"), _v("copy"), _v("footer"),
                 _v("cta"), _v("tags"), _v("images"),
-                confidence, triggered_by, user, now,
+                confidence, triggered_by, user, fc_json, now,
             ),
         )
         return cur.lastrowid
@@ -170,7 +178,16 @@ def list_audits(
             f"SELECT * FROM audit_log {clause} ORDER BY created_at DESC LIMIT ?",
             (*params, limit),
         ).fetchall()
-    return [dict(r) for r in rows]
+    import json as _json
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["failed_checks_json_parsed"] = _json.loads(d.get("failed_checks_json") or "[]")
+        except Exception:
+            d["failed_checks_json_parsed"] = []
+        result.append(d)
+    return result
 
 
 def was_audited(sendout_id: str = "", ticket_key: str = "") -> Optional[dict]:

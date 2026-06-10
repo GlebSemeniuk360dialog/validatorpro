@@ -98,12 +98,12 @@ def _seed_validation_log_from_db(limit: int = 500) -> list[dict]:
                 "ticket_key":    r.get("ticket_key", ""),
                 "client":        r.get("client", ""),
                 "status":        "passed" if r.get("overall") == "PASS" else "failed" if r.get("overall") == "FAIL" else "error",
-                "mode":          r.get("triggered_by", "ai") if r.get("triggered_by") in ("ai", "bulk_ai", "auto") else "regular",
+                "mode":          "ai" if r.get("triggered_by") in ("ai", "bulk_ai", "auto") else "regular",
                 "issues":        0,
                 "timestamp":     r.get("created_at", ""),
                 "approved":      False,
                 "user":          r.get("user") or ("🤖 Auto-Audit" if r.get("triggered_by") == "auto" else ""),
-                "failed_checks": [k for k in ("scheduling","copy","footer","cta","tags","images") if r.get(k) == "FAIL"],
+                "failed_checks": r.get("failed_checks_json_parsed") or [k for k in ("scheduling","copy","footer","cta","tags","images") if r.get(k) == "FAIL"],
                 "confidence":    r.get("confidence"),
             })
         return log
@@ -1254,6 +1254,7 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         confidence=result.get("confidence", -1),
         triggered_by="manual",
         user=user_name,
+        failed_checks=_ai_failed_checks,
     )
     if req.sendout_id:
         _audited_sendouts[req.sendout_id] = {
@@ -1807,6 +1808,18 @@ async def bulk_validate(req: BulkRequest, authorization: Optional[str] = Header(
             status=r.status, mode="regular",
             issues=r.issues_found, approved=False,
             log=_validation_log,
+            user=bulk_user,
+            failed_checks=_fc,
+        )
+        # Persist rule-based checks to DB so they survive restarts
+        _al.record_audit(
+            ticket_key=r.ticket_key,
+            client=r.client,
+            sendout_id=getattr(r, "sendout_id", "") or "",
+            overall="FAIL" if r.issues_found > 0 else "PASS",
+            structured=None,
+            confidence=-1,
+            triggered_by="manual_rule",
             user=bulk_user,
             failed_checks=_fc,
         )
@@ -2589,6 +2602,7 @@ async def _job_auto_audit() -> None:
             confidence=confidence,
             triggered_by="auto",
             user="🤖 Auto-Audit",
+            failed_checks=[c["label"] for c in (getattr(result, "checks", None) or []) if not c.get("ok")],
         )
         # Also record in in-memory log so dashboard reflects auto-audit results
         _auto_failed_checks = [c["label"] for c in (getattr(result, "checks", None) or []) if not c.get("ok")]
