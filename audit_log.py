@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     images       TEXT    NOT NULL DEFAULT '',
     confidence   INTEGER NOT NULL DEFAULT -1,
     triggered_by TEXT    NOT NULL DEFAULT 'manual',
+    user         TEXT    NOT NULL DEFAULT '',
     created_at   TEXT    NOT NULL
 );
 """
@@ -98,6 +99,12 @@ def init_db() -> None:
             con.execute(_CREATE_PREFLIGHT)
             for idx in _INDEXES:
                 con.execute(idx)
+            # Migration: add user column if missing (safe to run repeatedly)
+            try:
+                con.execute("ALTER TABLE audit_log ADD COLUMN user TEXT NOT NULL DEFAULT ''")
+                logger.info("audit_log: migrated — added 'user' column")
+            except Exception:
+                pass  # column already exists
         logger.info("audit_log: DB ready at %s", DB_PATH)
     except Exception as exc:
         logger.error("audit_log: init failed: %s", exc)
@@ -113,6 +120,7 @@ def record_audit(
     structured:   Optional[dict] = None,
     confidence:   int = -1,
     triggered_by: str = "manual",
+    user:         str = "",
 ) -> int:
     """
     Persist one audit result. `structured` is the AuditOutput.model_dump() dict
@@ -131,13 +139,13 @@ def record_audit(
             """INSERT INTO audit_log
                (ticket_key, client, sendout_id, overall,
                 scheduling, copy, footer, cta, tags, images,
-                confidence, triggered_by, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                confidence, triggered_by, user, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 ticket_key, client, sendout_id, overall,
                 _v("scheduling"), _v("copy"), _v("footer"),
                 _v("cta"), _v("tags"), _v("images"),
-                confidence, triggered_by, now,
+                confidence, triggered_by, user, now,
             ),
         )
         return cur.lastrowid

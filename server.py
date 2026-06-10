@@ -102,7 +102,7 @@ def _seed_validation_log_from_db(limit: int = 500) -> list[dict]:
                 "issues":        0,
                 "timestamp":     r.get("created_at", ""),
                 "approved":      False,
-                "user":          "",
+                "user":          r.get("user") or ("🤖 Auto-Audit" if r.get("triggered_by") == "auto" else ""),
                 "failed_checks": [k for k in ("scheduling","copy","footer","cta","tags","images") if r.get(k) == "FAIL"],
                 "confidence":    r.get("confidence"),
             })
@@ -1253,6 +1253,7 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         structured=result.get("structured"),
         confidence=result.get("confidence", -1),
         triggered_by="manual",
+        user=user_name,
     )
     if req.sendout_id:
         _audited_sendouts[req.sendout_id] = {
@@ -2587,6 +2588,7 @@ async def _job_auto_audit() -> None:
             structured=result.structured or None,
             confidence=confidence,
             triggered_by="auto",
+            user="🤖 Auto-Audit",
         )
         # Also record in in-memory log so dashboard reflects auto-audit results
         _auto_failed_checks = [c["label"] for c in (getattr(result, "checks", None) or []) if not c.get("ok")]
