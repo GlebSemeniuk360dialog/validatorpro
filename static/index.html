@@ -1611,13 +1611,62 @@ function Dashboard({ token }) {
       {/* ── AI Audit Stats ────────────────────────────────────────────────── */}
       <div>
         <SectionHeader style={{ marginTop:0 }}>🤖 AI Audit Stats</SectionHeader>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
-          <DashMini label="AI Audits Run"      value={spin?'…':fmt(d.ai_total)}           icon="🤖" />
-          <DashMini label="Avg Confidence"     value={spin?'…':d.ai_avg_confidence!=null?`${d.ai_avg_confidence}%`:'—'}
+        {/* Row 1: overview */}
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10, marginBottom:10 }}>
+          <DashMini label="AI Audits Run"   value={spin?'…':fmt(d.ai_total)}         icon="🤖" />
+          <DashMini label="Passed"          value={spin?'…':fmt(d.ai_passed)}         kind="ok"     icon="✅" />
+          <DashMini label="Failed"          value={spin?'…':fmt(d.ai_failed)}         kind={d.ai_failed>0?'danger':'neutral'} icon="❌" />
+          <DashMini label="AI Pass Rate"    value={spin?'…':d.ai_total>0?`${d.ai_pass_rate}%`:'—'} kind={d.ai_pass_rate>=80?'ok':d.ai_pass_rate>0?'warn':'neutral'} icon="📊" />
+          <DashMini label="Avg Confidence"  value={spin?'…':d.ai_avg_confidence!=null?`${d.ai_avg_confidence}%`:'—'}
             kind={d.ai_avg_confidence>=80?'ok':d.ai_avg_confidence>=60?'warn':'neutral'} icon="🎯" sub="gemini-2.5-pro" />
-          <DashMini label="Low Confidence (<60%)" value={spin?'…':fmt(d.ai_low_confidence)}
-            kind={d.ai_low_confidence>0?'danger':'neutral'} icon="⚠️" />
         </div>
+        {/* Row 2: auto vs manual + confidence distribution */}
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+          {/* Auto vs Manual */}
+          <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'14px 18px' }}>
+            <div style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'.07em', color:t.fg[3], marginBottom:10 }}>🔄 Auto vs Manual</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+              <DashMini label="🤖 Auto-Audit" value={spin?'…':fmt(d.ai_auto)}   kind="accent" />
+              <DashMini label="👤 Manual"     value={spin?'…':fmt(d.ai_manual)} kind="neutral" />
+            </div>
+          </div>
+          {/* Confidence distribution */}
+          <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'14px 18px' }}>
+            <div style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'.07em', color:t.fg[3], marginBottom:10 }}>🎯 Confidence Distribution</div>
+            {spin ? <div style={{color:t.fg[3],fontSize:12}}>Loading…</div> : (() => {
+              const total = (d.conf_90plus||0)+(d.conf_70_89||0)+(d.conf_60_69||0)+(d.conf_below60||0);
+              const bars = [
+                {label:'≥90%',  count:d.conf_90plus||0,  color:t.ok.base},
+                {label:'70-89%',count:d.conf_70_89||0,   color:t.ok.base+'aa'},
+                {label:'60-69%',count:d.conf_60_69||0,   color:t.warn.base},
+                {label:'<60%',  count:d.conf_below60||0, color:t.danger.base},
+              ];
+              return total===0
+                ? <div style={{color:t.fg[3],fontSize:12,fontFamily:t.font.mono}}>No data yet.</div>
+                : bars.map((b,i) => (
+                  <div key={i} style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
+                    <span style={{fontSize:11,fontFamily:t.font.mono,color:t.fg[2],minWidth:44}}>{b.label}</span>
+                    <div style={{flex:1,height:7,borderRadius:4,background:t.bg.surface3,overflow:'hidden'}}>
+                      <div style={{height:'100%',width:`${total?Math.round(b.count/total*100):0}%`,background:b.color,borderRadius:4}} />
+                    </div>
+                    <span style={{fontSize:11,fontFamily:t.font.mono,color:t.fg[2],minWidth:20,textAlign:'right'}}>{b.count}</span>
+                  </div>
+                ));
+            })()}
+          </div>
+        </div>
+        {/* Row 3: Top AI failed checks */}
+        {!spin && (d.top_ai_failed_checks||[]).length > 0 && (
+          <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, padding:'14px 18px', marginTop:10 }}>
+            <div style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'.07em', color:t.fg[3], marginBottom:10 }}>❌ Most Failed AI Checks</div>
+            {(() => {
+              const max = Math.max(1, ...(d.top_ai_failed_checks||[]).map(c=>c.count));
+              return (d.top_ai_failed_checks||[]).map((c,i)=>(
+                <DashBar key={i} label={c.label} value={c.count} max={max} kind="danger" count={c.count} />
+              ));
+            })()}
+          </div>
+        )}
       </div>
 
       {/* ── Team Activity ─────────────────────────────────────────────────── */}

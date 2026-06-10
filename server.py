@@ -2588,6 +2588,18 @@ async def _job_auto_audit() -> None:
             confidence=confidence,
             triggered_by="auto",
         )
+        # Also record in in-memory log so dashboard reflects auto-audit results
+        _auto_failed_checks = [c["label"] for c in (getattr(result, "checks", None) or []) if not c.get("ok")]
+        global _validation_log
+        _validation_log = record_validation(
+            ticket_key=ticket_key, client=client,
+            status="failed" if issues > 0 else "passed",
+            mode="ai", issues=issues, approved=False,
+            log=_validation_log,
+            user="🤖 Auto-Audit",
+            failed_checks=_auto_failed_checks,
+            confidence=confidence if confidence >= 0 else None,
+        )
         audited_count += 1
         already_audited_keys.add(ticket_key)
 

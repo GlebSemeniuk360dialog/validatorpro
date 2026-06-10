@@ -360,7 +360,11 @@ def build_dashboard_data(validation_log: list[dict]) -> dict:
         "total": 0, "passed": 0, "failed": 0, "errors": 0, "pass_rate": 0.0,
         "today_total": 0, "today_passed": 0, "today_failed": 0, "today_pass_rate": 0.0, "today_ai": 0,
         "week_total": 0, "week_passed": 0, "week_failed": 0, "week_pass_rate": 0.0,
-        "ai_total": 0, "ai_avg_confidence": None, "ai_low_confidence": 0,
+        "ai_total": 0, "ai_passed": 0, "ai_failed": 0, "ai_pass_rate": 0.0,
+        "ai_auto": 0, "ai_manual": 0,
+        "ai_avg_confidence": None, "ai_low_confidence": 0,
+        "conf_90plus": 0, "conf_70_89": 0, "conf_60_69": 0, "conf_below60": 0,
+        "top_ai_failed_checks": [],
         "top_failed_checks": [],
         "by_client": {}, "by_user": {},
         "recent": [], "daily_counts": {},
@@ -390,11 +394,28 @@ def build_dashboard_data(validation_log: list[dict]) -> dict:
     w_rate    = round(w_passed / w_total * 100, 1) if w_total else 0.0
 
     # ── AI audit stats ────────────────────────────────────────────────────────
-    ai_log  = [e for e in validation_log if e.get("mode") == "ai"]
-    ai_total = len(ai_log)
+    ai_log    = [e for e in validation_log if e.get("mode") == "ai"]
+    ai_total  = len(ai_log)
+    ai_passed = sum(1 for e in ai_log if e.get("status") == "passed")
+    ai_failed = sum(1 for e in ai_log if e.get("status") == "failed")
+    ai_pass_rate = round(ai_passed / ai_total * 100, 1) if ai_total else 0.0
+    ai_auto   = sum(1 for e in ai_log if (e.get("user") or "") == "🤖 Auto-Audit")
+    ai_manual = ai_total - ai_auto
     confidences = [e["confidence"] for e in ai_log if e.get("confidence") is not None]
     ai_avg_conf = round(sum(confidences) / len(confidences), 1) if confidences else None
     ai_low_conf = sum(1 for c in confidences if c < 60)
+    # Confidence distribution buckets
+    conf_90plus  = sum(1 for c in confidences if c >= 90)
+    conf_70_89   = sum(1 for c in confidences if 70 <= c < 90)
+    conf_60_69   = sum(1 for c in confidences if 60 <= c < 70)
+    conf_below60 = sum(1 for c in confidences if c < 60)
+    # Top AI-specific failed checks
+    ai_check_counter: Counter = Counter()
+    for e in ai_log:
+        for chk in e.get("failed_checks", []):
+            if chk:
+                ai_check_counter[chk] += 1
+    top_ai_failed = [{"label": k, "count": v} for k, v in ai_check_counter.most_common(6)]
 
     # ── Most common failed checks ─────────────────────────────────────────────
     check_counter: Counter = Counter()
@@ -439,7 +460,13 @@ def build_dashboard_data(validation_log: list[dict]) -> dict:
         "today_total": t_total, "today_passed": t_passed, "today_failed": t_failed,
         "today_pass_rate": t_rate, "today_ai": t_ai,
         "week_total": w_total, "week_passed": w_passed, "week_failed": w_failed, "week_pass_rate": w_rate,
-        "ai_total": ai_total, "ai_avg_confidence": ai_avg_conf, "ai_low_confidence": ai_low_conf,
+        "ai_total": ai_total, "ai_passed": ai_passed, "ai_failed": ai_failed,
+        "ai_pass_rate": ai_pass_rate,
+        "ai_auto": ai_auto, "ai_manual": ai_manual,
+        "ai_avg_confidence": ai_avg_conf, "ai_low_confidence": ai_low_conf,
+        "conf_90plus": conf_90plus, "conf_70_89": conf_70_89,
+        "conf_60_69": conf_60_69, "conf_below60": conf_below60,
+        "top_ai_failed_checks": top_ai_failed,
         "top_failed_checks": top_failed,
         "by_client": by_client, "by_user": by_user,
         "recent": recent, "daily_counts": daily,
