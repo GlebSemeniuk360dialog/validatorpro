@@ -561,9 +561,12 @@ def _compute_scheduling_diff(jira_date_str: str, api_date_str: str,
     if client_name:
         from config import CLIENT_CONFIGS as _CC
         _cfg_sched = _CC.get(client_name, {})
+        # Filter sets are either plain lists or dicts {"rules": [...], "when": {...}}
         _day_filters = [
-            f for fs in _cfg_sched.get("filters", {}).values()
-            for f in fs if f.get("type") == "scheduled_day"
+            f
+            for fs in _cfg_sched.get("filters", {}).values()
+            for f in (fs.get("rules", []) if isinstance(fs, dict) else (fs or []))
+            if isinstance(f, dict) and f.get("type") == "scheduled_day"
         ]
         if _day_filters and api_dt:
             _DAYS = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
