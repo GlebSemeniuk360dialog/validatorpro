@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # ── Structured output schema ───────────────────────────────────────────────────
 
 class CheckVerdict(BaseModel):
-    verdict:  Literal["PASS", "FAIL", "NA"]
+    verdict:  Literal["PASS", "FAIL", "NA", "NO_DATA"]
     reason:   str   # one sentence, English only
     expected: str   # exact value from JIRA / G-Sheet
     actual:   str   # exact value from DMA API
@@ -70,7 +70,10 @@ Pre-computed diffs use simple string/set matching and can miss:
 Your job is to determine whether the INTENT matches, not whether raw strings are identical.
 
 FOR EACH OF THE SIX CHECKS, produce a JSON field:
-  verdict:  "PASS", "FAIL", or "NA" (exact string — no emoji, no extra text)
+  verdict:  "PASS", "FAIL", "NA", or "NO_DATA" (exact string — no emoji, no extra text)
+  NO_DATA = the reference data needed to verify this check is missing (e.g. no G-Sheet
+  row exists for this sendout). It means "could not verify — needs manual review",
+  NOT a failure. Use it ONLY when Precomputed_Diffs explicitly says NO_DATA.
   reason:   One or two sentences explaining your conclusion based on the actual data
   expected: brief exact value from JIRA / G-Sheet (≤80 chars)
   actual:   brief exact value from DMA API / Template (≤80 chars)
@@ -106,12 +109,16 @@ CHECK 5 — TAGS:
   differences (e.g. "62" in G-Sheet vs "shop_number=62" in DMA API) are the SAME value.
   Apply: mandatory filter rules, ALDI Portugal shop list rule, all tag rules below.
   Tags check ALWAYS has a verdict — never "NA" even if G-Sheet tags are empty.
+  EXCEPTION: if Precomputed_Diffs.tags.pre_verdict = NO_DATA (no G-Sheet row found for
+  this sendout), set CHECK 5 verdict to "NO_DATA" — do NOT guess PASS or FAIL.
 
 CHECK 6 — IMAGES:
   Evaluate visually if images are attached. Otherwise "NA".
 
-overall = "PASS" only if every check is "PASS" or "NA". If ANY check is "FAIL" → overall = "FAIL".
+overall = "PASS" only if every check is "PASS", "NA", or "NO_DATA". If ANY check is "FAIL" → overall = "FAIL".
 N/A rules: use "NA" ONLY when the check genuinely cannot be evaluated (no images = CHECK 6 NA).
+NO_DATA does not fail the audit, but mention it in confidence_reason and lower confidence
+accordingly (an unverified tags check warrants confidence below the auto-approve threshold).
 
 ⚠️ DETERMINISTICALLY ENFORCED PRE-VERDICTS — these are pure math/counting and CANNOT be
 overridden by your judgement. If any of the following pre-verdicts is FAIL, the corresponding
@@ -1348,7 +1355,7 @@ def _compute_mandatory_filters_present(
 
 def _build_report_from_structured(audit: "AuditOutput", overrides: list[str] | None = None) -> str:
     """Generate a human-readable markdown report from structured AuditOutput."""
-    EMOJI = {"PASS": "✅", "FAIL": "❌", "NA": "🔕"}
+    EMOJI = {"PASS": "✅", "FAIL": "❌", "NA": "🔕", "NO_DATA": "❓"}
     NAMES = {
         "scheduling": "CHECK 1 — SCHEDULING",
         "copy":       "CHECK 2 — COPY",
@@ -1526,6 +1533,15 @@ def build_comparison_data(
         expected_excl = _norm_tags(str(jira.get("gsheet_exclude_tags", "")))
         _expected_incl_display = expected_incl
 
+    # No G-Sheet row matched and client is not config-driven → tags cannot be
+    # verified. Mark NO_DATA instead of letting empty expectations produce
+    # false FAILs ("unexpected exclude tags", wids hard-fail).
+    _tags_no_data = (
+        not any(s in _client_lower for s in _SKIP_GSHEET_TAGS)
+        and not expected_incl.strip()
+        and not expected_excl.strip()
+    )
+
     # ── Pre-compute diffs so AI confirms results rather than discovering them ──
     _jira_url_list  = extract_urls(jira_all_text)
     _sched_diff     = _compute_scheduling_diff(
@@ -1538,7 +1554,13 @@ def build_comparison_data(
         if _desc_is_brief
         else _compute_text_similarity(str(jira.get("description", "")), tmpl_body)
     )
-    _tag_diff       = _compute_tag_diff(expected_incl, expected_excl, api_tag_str)
+    _tag_diff       = (
+        {"pre_verdict": "NO_DATA",
+         "note": "⚠️ No G-Sheet row found for this sendout — expected tags unknown. "
+                 "Tags cannot be verified automatically; flag for manual review."}
+        if _tags_no_data
+        else _compute_tag_diff(expected_incl, expected_excl, api_tag_str)
+    )
     _url_diff       = (
         {"pre_verdict": "NA", "note": f"CTA URL is embedded in the DMA template for {client_name} — JIRA cta_link field not required."}
         if (_cta_in_template or _cta_link_optional)
@@ -1596,7 +1618,7 @@ def build_comparison_data(
         **({"⚠️_WIDS_FILTER": (
             f"CRITICAL — DMA payload contains a wids filter restricting the sendout to specific contacts. "
             f"API tags: {api_tag_str[:200] if 'wids' in api_tag_str.lower() else ''}. "
-            f"G-Sheet has {'a wids tag — verify counts match' if 'wids' in expected_incl.lower() else 'NO wids tag — THIS IS UNEXPECTED. CHECK 5 must be FAIL.'}."
+            f"G-Sheet has {'a wids tag — verify counts match' if 'wids' in expected_incl.lower() else ('no row at all — tags unverifiable, CHECK 5 must be NO_DATA.' if _tags_no_data else 'NO wids tag — THIS IS UNEXPECTED. CHECK 5 must be FAIL.')}."
         )} if "wids" in api_tag_str.lower() else {}),
         # URL-only JIRA description warning
         **({"⚠️_JIRA_DESC_URL_ONLY": (
@@ -2295,6 +2317,28 @@ def _enforce_precomputed_verdicts(
             expected="no wids filter (G-Sheet has no wids tag)",
             actual=_wids_tag,
         )
+
+    # ── 7. Tags NO_DATA — no G-Sheet row, tags unverifiable ────────────────────
+    # Force the verdict to NO_DATA whatever the AI guessed, and cap confidence
+    # below the auto-approve threshold so a human always reviews these.
+    if _api_tags_all.get("pre_verdict") == "NO_DATA" and "tags" not in updates:
+        if audit.tags.verdict != "NO_DATA":
+            overrides.append(
+                f"tags: no G-Sheet row found — verdict {audit.tags.verdict} replaced with NO_DATA"
+            )
+            updates["tags"] = CheckVerdict(
+                verdict="NO_DATA",
+                reason="No G-Sheet row found for this sendout — expected tags unknown. "
+                       "Tags could not be verified; manual review required.",
+                expected="(no G-Sheet row)",
+                actual=audit.tags.actual or "",
+            )
+        if audit.confidence > 60:
+            updates["confidence"] = 60
+            updates["confidence_reason"] = (
+                f"Capped at 60% — tags check is NO_DATA (no G-Sheet row to verify against). "
+                f"Original: {audit.confidence_reason}"
+            )
 
     # Apply updates, then always recompute overall for consistency
     if updates:

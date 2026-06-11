@@ -975,6 +975,7 @@ function AiAuditReport({ structured, confidence, confidenceReason, issues, onSav
     PASS: { bg:t.ok.soft,     bd:t.ok.ring,     fg:t.ok.base,     icon:'✅', label:'PASS' },
     FAIL: { bg:t.danger.soft, bd:t.danger.ring,  fg:t.danger.base, icon:'❌', label:'FAIL' },
     NA:   { bg:t.bg.surface3, bd:t.border.base,  fg:t.fg[4],       icon:'—',  label:'N/A'  },
+    NO_DATA: { bg:t.warn.soft, bd:t.warn.ring,   fg:t.warn.base,   icon:'❓', label:'NO DATA' },
     '':   { bg:t.bg.surface3, bd:t.border.base,  fg:t.fg[4],       icon:'—',  label:'—'    },
   };
 
@@ -2484,7 +2485,7 @@ function SendoutForm({ token, clients }) {
    ═════════════════════════════════════════════════════════════════════════ */
 function ExamplesManager({ token }) {
   const CHECK_KEYS  = ['scheduling','copy','footer','cta','tags','images'];
-  const VERDICT_OPT = ['PASS','FAIL','NA'];
+  const VERDICT_OPT = ['PASS','FAIL','NA','NO_DATA'];
 
   const [examples, setExamples] = useState([]);
   const [loading,  setLoading]  = useState(false);
@@ -2827,9 +2828,9 @@ function AuditHistory({ token }) {
       .then(setRows).catch(()=>{}).finally(()=>setLoading(false));
   }, [token]);
 
-  const VERDICT_COLOR = { PASS: t.ok.base, FAIL: t.danger.base, NA: t.fg[4], '': t.fg[4] };
-  const VERDICT_BG    = { PASS: t.ok.soft, FAIL: t.danger.soft, NA: t.bg.surface3, '': t.bg.surface3 };
-  const VERDICT_BD    = { PASS: t.ok.ring, FAIL: t.danger.ring, NA: t.border.base, '': t.border.base };
+  const VERDICT_COLOR = { PASS: t.ok.base, FAIL: t.danger.base, NA: t.fg[4], NO_DATA: t.warn.base, '': t.fg[4] };
+  const VERDICT_BG    = { PASS: t.ok.soft, FAIL: t.danger.soft, NA: t.bg.surface3, NO_DATA: t.warn.soft, '': t.bg.surface3 };
+  const VERDICT_BD    = { PASS: t.ok.ring, FAIL: t.danger.ring, NA: t.border.base, NO_DATA: t.warn.ring, '': t.border.base };
 
   function VerdictDot({ v }) {
     return <span style={{ display:'inline-block', width:7, height:7, borderRadius:'50%',
