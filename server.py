@@ -2647,6 +2647,10 @@ async def _job_auto_audit() -> None:
         app_link  = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
         jira_link = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket_key}"
 
+        # NOTE: JIRA AI status is written by _validate_single_ticket_ai itself
+        # (Rejected / Approved / nothing-on-low-confidence-review). Do NOT write
+        # again here — a duplicate write based only on issue count would stamp
+        # "Approved" on low-confidence passes the pipeline left for human review.
         conf_str = f" {confidence}%" if confidence >= 0 else ""
         if issues > 0:
             failed_labels = [c["label"] for c in (result.checks or []) if not c.get("ok")]
@@ -2655,19 +2659,16 @@ async def _job_auto_audit() -> None:
                 f"❌{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
                 f"  _{checks_str}_  <{app_link}|Open>"
             )
-            try:
-                write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Rejected")
-            except Exception:
-                pass
+        elif result.status == "review":
+            passed_rows.append(
+                f"⚠️{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
+                f"  _low confidence — manual review needed_  <{app_link}|Open>"
+            )
         else:
             passed_rows.append(
                 f"✅{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
                 f"  <{app_link}|Open>"
             )
-            try:
-                write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Approved")
-            except Exception:
-                pass
 
     # Single combined summary message
     if failed_rows or passed_rows:
