@@ -918,13 +918,29 @@ async def ticket_enrich(req: EnrichRequest, authorization: Optional[str] = Heade
     gsheet = _gsheet()
     if gsheet and req.client:
         schedule = get_client_schedule_wide(gsheet, req.client)
-        # Match by JIRA ticket key first, then by date
+        # Match by JIRA ticket key first, then by date.
+        # Recurring sendouts can have the same ticket linked in several rows
+        # (old weeks + current) — prefer the row whose date is closest to the
+        # JIRA sendout date instead of the first hit.
         matched_row = None
+        _tk_rows = []
         for row in schedule:
             jira_link = str(row.get(GSHEET_COLS.get("jira_link", ""), "")).strip()
             if req.ticket_key and (req.ticket_key == jira_link or req.ticket_key in jira_link):
-                matched_row = row
-                break
+                _tk_rows.append(row)
+        if len(_tk_rows) == 1 or (_tk_rows and not jira_date_str):
+            matched_row = _tk_rows[0]
+        elif _tk_rows:
+            def _row_date_dist(row):
+                raw = str(row.get(GSHEET_COLS.get("date", ""), "")).strip()[:10]
+                if len(raw) == 10 and raw[2] == "/" and raw[5] == "/":
+                    raw = f"{raw[6:10]}-{raw[3:5]}-{raw[0:2]}"
+                try:
+                    from datetime import date as _d
+                    return abs((_d.fromisoformat(raw) - _d.fromisoformat(jira_date_str[:10])).days)
+                except Exception:
+                    return 9999
+            matched_row = sorted(_tk_rows, key=_row_date_dist)[0]
         if not matched_row and jira_date_str:
             for row in schedule:
                 try:

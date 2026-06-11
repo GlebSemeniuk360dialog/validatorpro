@@ -762,6 +762,23 @@ def _fetch_and_enrich(
         for row in schedule:
             if ticket_key in str(row.get(GSHEET_COLS["jira_link"], "")):
                 candidate_rows.append(row)
+        # Date-less fallback can return rows from old weeks for recurring
+        # sendouts — sort by date proximity to the sendout date so we never
+        # compare against a stale row.
+        _target_date = api_date_short or jira_date_short
+        if len(candidate_rows) > 1 and _target_date:
+            def _row_date_distance(row):
+                raw = str(row.get(GSHEET_COLS["date"], "")).strip()[:10]
+                if len(raw) == 10 and raw[2] == "/" and raw[5] == "/":
+                    raw = f"{raw[6:10]}-{raw[3:5]}-{raw[0:2]}"
+                try:
+                    from datetime import date as _d
+                    rd = _d.fromisoformat(raw)
+                    td = _d.fromisoformat(_target_date)
+                    return abs((rd - td).days)
+                except Exception:
+                    return 9999
+            candidate_rows.sort(key=_row_date_distance)
 
     def _best_gsheet_row(rows, jira_segment=""):
         """Pick the correct G-Sheet row using JIRA segment field (primary) for ALDI Sued.
