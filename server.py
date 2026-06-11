@@ -1040,6 +1040,7 @@ class AuditRequest(BaseModel):
     leaflet_url: Optional[str] = ""
     gsheet_tags: Optional[str] = ""
     exclude_tags: Optional[str] = ""
+    gsheet_row_found: Optional[bool] = None  # from enrich: a row matched (even with empty tag cells)
 
 
 @app.post("/api/ai-audit")
@@ -1055,6 +1056,11 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=_friendly_exc(exc))
+
+    # Row-found flag from enrich (frontend) — tags supplied also imply a row
+    j_data["gsheet_row_found"] = bool(
+        req.gsheet_row_found or req.gsheet_tags or req.exclude_tags
+    )
 
     # Prepare all data needed for build_comparison_data
     (tmpl_body, tmpl_footer, tmpl_buttons,

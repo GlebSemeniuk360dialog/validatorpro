@@ -837,6 +837,9 @@ def _fetch_and_enrich(
         best = _best_gsheet_row(candidate_rows, _jira_segment)
         matched_gsheet_row = dict(best) if best else dict(candidate_rows[0])
 
+    # Distinguish "row matched but tag cells empty" (no tags required → normal
+    # check) from "no row at all" (tags unverifiable → NO_DATA verdict).
+    j_data["gsheet_row_found"] = bool(matched_gsheet_row)
     if matched_gsheet_row:
         for key, col in (("leaflet_url", GSHEET_COLS["leaflet"]),
                          ("gsheet_tags", GSHEET_COLS["include_tags"]),

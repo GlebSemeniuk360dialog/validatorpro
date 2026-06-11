@@ -686,7 +686,9 @@ def _compute_tag_diff(expected_incl: str, expected_excl: str, api_tag_str: str) 
     missing_inc = sorted(exp_inc - actual_inc)
     extra_inc   = sorted(actual_inc - exp_inc) if exp_inc else []
     missing_exc = sorted(exp_exc - actual_exc)
-    extra_exc   = sorted(actual_exc - exp_exc)
+    # Extra excludes are only a deviation when the sheet documents excludes at
+    # all — undocumented API excludes are suppression/system filters, not errors.
+    extra_exc   = sorted(actual_exc - exp_exc) if exp_exc else []
     all_match   = not (missing_inc or missing_exc or extra_exc)
 
     issues = []
@@ -1539,10 +1541,13 @@ def build_comparison_data(
     # No G-Sheet row matched and client is not config-driven → tags cannot be
     # verified. Mark NO_DATA instead of letting empty expectations produce
     # false FAILs ("unexpected exclude tags", wids hard-fail).
+    # A row that matched but has empty tag cells means "no tags required" —
+    # that is verifiable data, NOT NO_DATA (jira["gsheet_row_found"]).
     _tags_no_data = (
         not any(s in _client_lower for s in _SKIP_GSHEET_TAGS)
         and not expected_incl.strip()
         and not expected_excl.strip()
+        and not jira.get("gsheet_row_found")
     )
 
     # ── Pre-compute diffs so AI confirms results rather than discovering them ──

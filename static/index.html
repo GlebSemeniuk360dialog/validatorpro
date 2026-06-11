@@ -1200,6 +1200,7 @@ function TicketPanel({ ticket, clients, token, onBack, initialSendout }) {
     gsheet_tags:  dedup(enrichData.tags_source === 'registry' ? enrichData.gsheet_tags : enrichData.gsheet_tags),
     exclude_tags: dedup(enrichData.tags_source === 'registry' ? enrichData.gsheet_exclude_tags : enrichData.gsheet_exclude_tags),
     leaflet_url:  enrichData.leaflet_url || '',
+    gsheet_row_found: !!(enrichData.tags_source && enrichData.tags_source !== 'none'),
   } : {};
 
   const runValidate = async () => {
