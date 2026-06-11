@@ -126,7 +126,7 @@ def record_audit(
     confidence:    int = -1,
     triggered_by:  str = "manual",
     user:          str = "",
-    failed_checks: list | None = None,
+    failed_checks: Optional[list] = None,
 ) -> int:
     """
     Persist one audit result. `structured` is the AuditOutput.model_dump() dict
@@ -227,13 +227,32 @@ def get_audited_ticket_keys() -> set[str]:
     return {r[0] for r in rows}
 
 
-def get_audit_for_ticket(ticket_key: str) -> Optional[dict]:
-    """Return the most recent audit for a ticket (used by preflight job)."""
+def get_audit_for_ticket(
+    ticket_key:   str,
+    max_age_days: Optional[int] = None,
+    ai_only:      bool = False,
+) -> Optional[dict]:
+    """
+    Return the most recent audit for a ticket (used by preflight job).
+
+    max_age_days — ignore audits older than N days. Recurring tickets reuse the
+        same key across weekly sendouts; an unbounded lookup returns last week's
+        audit for this week's sendout (stale status).
+    ai_only — exclude rule-based bulk rows (triggered_by='manual_rule'), which
+        carry no AI verdicts/confidence and must not appear as "AI status".
+    """
+    q = "SELECT * FROM audit_log WHERE ticket_key = ?"
+    params: list = [ticket_key]
+    if ai_only:
+        q += " AND triggered_by != 'manual_rule'"
+    if max_age_days is not None:
+        from datetime import timedelta as _td
+        cutoff = (datetime.now(_utc.utc) - _td(days=max_age_days)).isoformat()
+        q += " AND created_at >= ?"
+        params.append(cutoff)
+    q += " ORDER BY created_at DESC LIMIT 1"
     with _conn() as con:
-        row = con.execute(
-            "SELECT * FROM audit_log WHERE ticket_key = ? ORDER BY created_at DESC LIMIT 1",
-            (ticket_key,),
-        ).fetchone()
+        row = con.execute(q, params).fetchone()
     return dict(row) if row else None
 
 

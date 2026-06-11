@@ -2431,7 +2431,9 @@ async def _job_preflight_alert() -> None:
         client    = t.get("client", "")
         status    = t.get("status", "")
 
-        audited = _al.get_audit_for_ticket(ticket)
+        # Only AI audits from the last 5 days count — older results belong to a
+        # previous sendout of the same recurring ticket and would show stale status.
+        audited = _al.get_audit_for_ticket(ticket, max_age_days=5, ai_only=True)
         if not audited:
             audited = next((v for v in _audited_sendouts.values() if v.get("ticket_key") == ticket), None)
         if audited:
@@ -2476,7 +2478,7 @@ async def _job_preflight_alert() -> None:
     pf_tickets = []
     for t in upcoming[:15]:
         tk = t["key"]
-        audited = _al.get_audit_for_ticket(tk)
+        audited = _al.get_audit_for_ticket(tk, max_age_days=5, ai_only=True)
         pf_tickets.append({
             "key":        tk,
             "client":     t.get("client", ""),
@@ -2550,8 +2552,8 @@ async def _job_auto_audit() -> None:
             _delta = 99
         if _delta == 0:
             _today_keys.add(_tk)   # always re-audit today's tickets
-        elif _tk and _al.get_audit_for_ticket(_tk):
-            _already_audited_keys.add(_tk)   # skip tomorrow+ if already done
+        elif _tk and _al.get_audit_for_ticket(_tk, max_age_days=3, ai_only=True):
+            _already_audited_keys.add(_tk)   # skip tomorrow+ only if AI-audited recently
 
     gsheet_data   = _gsheet()
     audited_count = 0
@@ -2559,7 +2561,7 @@ async def _job_auto_audit() -> None:
     passed_rows: list[str] = []   # collected for single summary message
     failed_rows: list[str] = []   # collected for single summary message
 
-    for issue in imminent[:5]:   # cap at 5 to respect Gemini rate limits
+    for issue in imminent[:10]:   # cap at 10 to respect Gemini rate limits (sequential)
         norm       = _normalize_issue(issue)
         ticket_key = norm["key"]
         client     = norm.get("client", "")
