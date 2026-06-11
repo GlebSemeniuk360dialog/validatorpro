@@ -476,7 +476,7 @@ def _normalize_issue(issue: dict) -> dict:
     else:
         _ai_status = None
     if not _ai_status:
-        _db = _al.get_audit_for_ticket(issue["key"])
+        _db = _al.get_audit_for_ticket(issue["key"], max_age_days=5, ai_only=True)
         if _db:
             _ai_status = _db.get("overall")
     return {
@@ -2431,22 +2431,28 @@ async def _job_preflight_alert() -> None:
         client    = t.get("client", "")
         status    = t.get("status", "")
 
-        # Only AI audits from the last 5 days count — older results belong to a
-        # previous sendout of the same recurring ticket and would show stale status.
+        # Primary source: the JIRA AI-status field (customfield_16417) — it is
+        # overwritten by every audit path (manual / bulk / auto) and can be
+        # corrected by a human directly in JIRA, so it is always current.
+        # The local DB (recent AI audits only) adds detail: confidence + failed checks.
+        jira_ai = str(t.get("ai_status") or "").strip().lower()
         audited = _al.get_audit_for_ticket(ticket, max_age_days=5, ai_only=True)
         if not audited:
             audited = next((v for v in _audited_sendouts.values() if v.get("ticket_key") == ticket), None)
-        if audited:
+
+        conf     = (audited or {}).get("confidence", -1)
+        conf_str = f" {conf}%" if conf and conf >= 0 else ""
+        _check_names = ["scheduling", "copy", "footer", "cta", "tags", "images"]
+        _failed = [c.upper() for c in _check_names if (audited or {}).get(c, "").upper() == "FAIL"]
+        _fail_str = f" — _{', '.join(_failed)}_" if _failed else ""
+
+        if jira_ai in ("approved", "pass"):
+            audit_str = f"✅{conf_str}"
+        elif jira_ai in ("rejected", "fail"):
+            audit_str = f"❌{conf_str}{_fail_str}"
+        elif audited:
             overall = audited.get("overall", "")
-            conf    = audited.get("confidence", -1)
-            conf_str = f" {conf}%" if conf and conf >= 0 else ""
-            if overall == "FAIL":
-                _check_names = ["scheduling", "copy", "footer", "cta", "tags", "images"]
-                _failed = [c.upper() for c in _check_names if audited.get(c, "").upper() == "FAIL"]
-                _fail_str = f" — _{', '.join(_failed)}_" if _failed else ""
-                audit_str = f"❌{conf_str}{_fail_str}"
-            else:
-                audit_str = f"✅{conf_str}"
+            audit_str = f"❌{conf_str}{_fail_str}" if overall == "FAIL" else f"✅{conf_str}"
         else:
             audit_str = "⏳"
 
