@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     triggered_by    TEXT    NOT NULL DEFAULT 'manual',
     user            TEXT    NOT NULL DEFAULT '',
     failed_checks_json TEXT NOT NULL DEFAULT '[]',
+    reporter        TEXT    NOT NULL DEFAULT '',
     created_at      TEXT    NOT NULL
 );
 """
@@ -104,6 +105,7 @@ def init_db() -> None:
             for _col_sql in [
                 "ALTER TABLE audit_log ADD COLUMN user TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE audit_log ADD COLUMN failed_checks_json TEXT NOT NULL DEFAULT '[]'",
+                "ALTER TABLE audit_log ADD COLUMN reporter TEXT NOT NULL DEFAULT ''",
             ]:
                 try:
                     con.execute(_col_sql)
@@ -127,6 +129,7 @@ def record_audit(
     triggered_by:  str = "manual",
     user:          str = "",
     failed_checks: Optional[list] = None,
+    reporter:      str = "",
 ) -> int:
     """
     Persist one audit result. `structured` is the AuditOutput.model_dump() dict
@@ -147,13 +150,13 @@ def record_audit(
             """INSERT INTO audit_log
                (ticket_key, client, sendout_id, overall,
                 scheduling, copy, footer, cta, tags, images,
-                confidence, triggered_by, user, failed_checks_json, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                confidence, triggered_by, user, failed_checks_json, reporter, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 ticket_key, client, sendout_id, overall,
                 _v("scheduling"), _v("copy"), _v("footer"),
                 _v("cta"), _v("tags"), _v("images"),
-                confidence, triggered_by, user, fc_json, now,
+                confidence, triggered_by, user, fc_json, reporter, now,
             ),
         )
         return cur.lastrowid
@@ -188,6 +191,54 @@ def list_audits(
             d["failed_checks_json_parsed"] = []
         result.append(d)
     return result
+
+
+def client_request_stats(days: int = 30) -> list[dict]:
+    """
+    Per-client breakdown for the dashboard: how many sendouts each client
+    requested (distinct tickets), who requested them (JIRA reporters) and
+    who on the team checked them. Window is the last `days` days.
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(_utc.utc) - timedelta(days=days)).isoformat()
+    with _conn() as con:
+        rows = con.execute(
+            """SELECT client, ticket_key, reporter, user, overall
+               FROM audit_log WHERE created_at >= ? AND client != ''""",
+            (cutoff,),
+        ).fetchall()
+
+    by_client: dict = {}
+    for r in rows:
+        c = by_client.setdefault(r["client"], {
+            "client": r["client"], "tickets": set(),
+            "checks": 0, "passed": 0, "failed": 0,
+            "reporters": {}, "checkers": {},
+        })
+        c["tickets"].add(r["ticket_key"])
+        c["checks"] += 1
+        if r["overall"] == "PASS":
+            c["passed"] += 1
+        elif r["overall"] == "FAIL":
+            c["failed"] += 1
+        if r["reporter"]:
+            c["reporters"][r["reporter"]] = c["reporters"].get(r["reporter"], 0) + 1
+        if r["user"]:
+            c["checkers"][r["user"]] = c["checkers"].get(r["user"], 0) + 1
+
+    out = []
+    for c in by_client.values():
+        out.append({
+            "client":    c["client"],
+            "sendouts":  len(c["tickets"]),
+            "checks":    c["checks"],
+            "passed":    c["passed"],
+            "failed":    c["failed"],
+            "reporters": [k for k, _ in sorted(c["reporters"].items(), key=lambda kv: -kv[1])],
+            "checkers":  [k for k, _ in sorted(c["checkers"].items(), key=lambda kv: -kv[1])],
+        })
+    out.sort(key=lambda d: -d["sendouts"])
+    return out
 
 
 def was_audited(sendout_id: str = "", ticket_key: str = "") -> Optional[dict]:

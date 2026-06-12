@@ -1520,6 +1520,7 @@ function Dashboard({ token }) {
   const topFailed = d.top_failed_checks || [];
   const byClient = d.by_client || {};
   const byUser = d.by_user || {};
+  const clientReqs = d.client_requests || [];
   const daily = d.daily_counts || {};
   const maxFailed = topFailed.length > 0 ? topFailed[0].count : 1;
   const clientsByFail = Object.entries(byClient).sort((a,b)=>b[1].failed-a[1].failed).slice(0,6);
@@ -1696,6 +1697,32 @@ function Dashboard({ token }) {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Client Requests (last 30 days) ───────────────────────────────── */}
+      {clientReqs.length > 0 && (
+        <div>
+          <SectionHeader style={{ marginTop:0 }}>🏢 Client Requests · last 30 days</SectionHeader>
+          <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 80px 70px 70px 1.2fr 1.2fr', gap:0, padding:'8px 16px', borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.07em', color:t.fg[3] }}>
+              <span>Client</span><span style={{textAlign:'right'}}>Sendouts</span><span style={{textAlign:'right'}}>Passed</span><span style={{textAlign:'right'}}>Failed</span><span>Requested by</span><span>Checked by</span>
+            </div>
+            {clientReqs.map((c, i) => (
+              <div key={c.client} style={{ display:'grid', gridTemplateColumns:'1fr 80px 70px 70px 1.2fr 1.2fr', gap:0, padding:'9px 16px', borderBottom: i<clientReqs.length-1?`1px solid ${t.border.base}`:'none', fontSize:13, alignItems:'center', background: i%2===0?'transparent':t.bg.surface2 }}>
+                <span style={{ fontWeight:600, color:t.fg[1] }}>{c.client}</span>
+                <span style={{ textAlign:'right', fontFamily:t.font.mono, color:t.fg[2] }}>{c.sendouts}</span>
+                <span style={{ textAlign:'right', fontFamily:t.font.mono, color:t.ok.base }}>{c.passed}</span>
+                <span style={{ textAlign:'right', fontFamily:t.font.mono, color:c.failed>0?t.danger.base:t.fg[3] }}>{c.failed}</span>
+                <span style={{ fontSize:11, color:t.fg[2], overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', paddingLeft:10 }} title={(c.reporters||[]).join(', ')}>
+                  {(c.reporters||[]).slice(0,2).join(', ') || '—'}{(c.reporters||[]).length>2 ? ` +${c.reporters.length-2}` : ''}
+                </span>
+                <span style={{ fontSize:11, color:t.fg[2], overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', paddingLeft:10 }} title={(c.checkers||[]).join(', ')}>
+                  {(c.checkers||[]).slice(0,2).join(', ') || '—'}{(c.checkers||[]).length>2 ? ` +${c.checkers.length-2}` : ''}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       )}

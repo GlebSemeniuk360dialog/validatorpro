@@ -1267,6 +1267,7 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         logger.info("JIRA AI status → %s for %s", jira_status, req.ticket_key)
 
     # Record audit result so scheduled jobs can skip already-audited sendouts
+    _reporter = ((j_data.get("_raw_fields") or {}).get("reporter") or {}).get("displayName", "")
     _al.record_audit(
         ticket_key=req.ticket_key,
         client=req.client,
@@ -1277,6 +1278,7 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
         triggered_by="manual",
         user=user_name,
         failed_checks=_ai_failed_checks,
+        reporter=_reporter,
     )
     if req.sendout_id:
         _audited_sendouts[req.sendout_id] = {
@@ -1321,6 +1323,13 @@ async def dashboard(authorization: Optional[str] = Header(None)):
     try:
         data = build_dashboard_data(_validation_log)
         data["log"] = list(reversed(_validation_log[-50:]))
+
+        # Per-client request stats (last 30 days, from audit DB)
+        try:
+            data["client_requests"] = _al.client_request_stats(days=30)
+        except Exception as _cre:
+            logger.warning("dashboard: client_request_stats failed: %s", _cre)
+            data["client_requests"] = []
 
         # ── Queue health (live from cache) ────────────────────────────────────
         from datetime import datetime as _dti, timedelta as _tdi
@@ -1822,6 +1831,10 @@ async def bulk_validate(req: BulkRequest, authorization: Optional[str] = Header(
 
     session = _sessions.get((authorization or "").split(" ", 1)[-1], {})
     bulk_user = session.get("name", "")
+    _key2reporter = {
+        i["key"]: ((i.get("fields", {}).get("reporter") or {}).get("displayName") or "")
+        for i in issues
+    }
     global _validation_log
     for r in results:
         _fc = [c["label"] for c in (r.checks or []) if not c.get("ok")]
@@ -1844,6 +1857,7 @@ async def bulk_validate(req: BulkRequest, authorization: Optional[str] = Header(
             triggered_by="manual_rule",
             user=bulk_user,
             failed_checks=_fc,
+            reporter=_key2reporter.get(r.ticket_key, ""),
         )
 
     return [_serialize_result(r) for r in results]
@@ -1920,9 +1934,13 @@ async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(
 
             results = results_collector
 
-            # Post-process: validation log + Slack
+            # Post-process: validation log + DB + Slack
             global _validation_log
             _slack_failed: list[dict] = []
+            _key2reporter = {
+                i["key"]: ((i.get("fields", {}).get("reporter") or {}).get("displayName") or "")
+                for i in issues
+            }
             for r in results:
                 try:
                     _ai_fc = [c["label"] for c in (r.checks or []) if not c.get("ok")]
@@ -1935,6 +1953,21 @@ async def bulk_ai_audit(req: BulkRequest, authorization: Optional[str] = Header(
                         failed_checks=_ai_fc,
                         confidence=getattr(r, "confidence", None),
                     )
+                    # Persist to DB (was previously in-memory only, so bulk AI
+                    # results vanished on restart and never reached preflight)
+                    if r.status not in ("error", "skipped"):
+                        _al.record_audit(
+                            ticket_key=r.ticket_key,
+                            client=r.client,
+                            sendout_id=r.sendout_id or "",
+                            overall="FAIL" if r.issues_found > 0 else "PASS",
+                            structured=getattr(r, "structured", None) or None,
+                            confidence=getattr(r, "confidence", -1) if getattr(r, "confidence", None) is not None else -1,
+                            triggered_by="ai",
+                            user=user_name,
+                            failed_checks=_ai_fc,
+                            reporter=_key2reporter.get(r.ticket_key, ""),
+                        )
                     if r.status == "failed" and r.issues_found > 0:
                         failed_checks = [c["label"] for c in (r.checks or []) if not c.get("ok")]
                         if not failed_checks and r.report:
@@ -2633,6 +2666,7 @@ async def _job_auto_audit() -> None:
             triggered_by="auto",
             user="🤖 Auto-Audit",
             failed_checks=[c["label"] for c in (getattr(result, "checks", None) or []) if not c.get("ok")],
+            reporter=((issue.get("fields", {}).get("reporter") or {}).get("displayName") or ""),
         )
         # Also record in in-memory log so dashboard reflects auto-audit results
         _auto_failed_checks = [c["label"] for c in (getattr(result, "checks", None) or []) if not c.get("ok")]
