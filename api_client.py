@@ -571,18 +571,24 @@ def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str)
 
         # Build a normalised dict with the same shape as parse_jira_carousel_form
         # so callers can set data["parsed_carousel"] directly — no regex needed.
-        def _get(label_kws: list[str]) -> str:
-            for item in answers:
-                lbl = item.get("label", "").lower()
-                if any(kw in lbl for kw in label_kws):
-                    return str(item.get("answer", "")).strip()
+        def _get(label_kws: list[str], exclude_kws: tuple = ()) -> str:
+            # Keyword-priority match: try each keyword (most specific first)
+            # against ALL labels before falling back to more generic keywords.
+            # Answer-order matching grabbed "Card Button Texts" for the generic
+            # "text" keyword before "Main Body Text:" was ever considered.
+            for kw in label_kws:
+                for item in answers:
+                    lbl = item.get("label", "").lower()
+                    if kw in lbl and not any(x in lbl for x in exclude_kws):
+                        return str(item.get("answer", "")).strip()
             return ""
 
         # Log all labels so we can debug new form layouts
         all_labels = [item.get("label", "") for item in answers]
         logger.info("fetch_jira_form_answers: %s form labels: %s", issue_key, all_labels)
 
-        intro = _get(["main body text", "body text", "intro", "message", "text"])
+        intro = _get(["main body text", "body text", "intro", "message", "text"],
+                     exclude_kws=("button", "url", "card", "image", "video"))
 
         # Parse per-card sections from "Card N: text" format
         def _parse_cards(raw: str) -> list[str]:
@@ -592,9 +598,12 @@ def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str)
             parts = _re.split(r'(?:Card|Karte|Slide)\s*\d+\s*[:\-]', raw, flags=_re.IGNORECASE)
             return [p.strip() for p in parts if p.strip()]
 
-        bodies_raw = _get(["card body texts", "card bodies", "card text", "body", "text", "copy", "content"])
-        btns_raw   = _get(["card button texts", "button texts", "button text", "cta text", "button", "cta", "call to action"])
-        urls_raw   = _get(["card button urls", "button urls", "card urls", "url", "link", "cta url", "cta link"])
+        bodies_raw = _get(["card body texts", "card bodies", "card text", "body", "text", "copy", "content"],
+                          exclude_kws=("button", "url", "image", "video", "number"))
+        btns_raw   = _get(["card button texts", "button texts", "button text", "cta text", "button", "cta", "call to action"],
+                          exclude_kws=("url", "image", "video"))
+        urls_raw   = _get(["card button urls", "button urls", "card urls", "cta url", "cta link", "url", "link"],
+                          exclude_kws=("image", "video"))
 
         bodies = _parse_cards(bodies_raw)
         btns   = _parse_cards(btns_raw)
@@ -619,11 +628,15 @@ def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str)
             logger.warning("fetch_jira_form_answers: %s — could not parse any cards from labels %s", issue_key, all_labels)
             return None
 
+        # A single button text with multiple cards = same CTA on every card
+        if len(btns) == 1 and n > 1:
+            btns = btns * n
+
         cards = [
             {
                 "body": bodies[i] if i < len(bodies) else "",
                 "btn":  btns[i]   if i < len(btns)   else "",
-                "url":  urls[i]   if i < len(urls)    else "",
+                "url":  (urls[i] if i < len(urls) else "").rstrip(";").strip(),
             }
             for i in range(n)
         ]
