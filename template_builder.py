@@ -22,6 +22,7 @@ from typing import Optional
 
 # WhatsApp / RCS field limits (deterministic validation, not AI)
 _WA_BODY_MAX   = 1024
+_CARD_BODY_MAX = 160   # carousel card body (Meta limit, stricter than top-level body)
 _WA_FOOTER_MAX = 60
 _BTN_TEXT_MAX  = 25
 _CARD_MIN      = 2
@@ -116,23 +117,38 @@ def _build_waba(parsed: dict, jira: dict, warnings: list, notes: list) -> dict:
             intro_body["example"] = {"body_text": [["Example"] * nph]}
         components.append(intro_body)
 
+        # Meta rule: every card must share the SAME component structure (same
+        # components, order, and number/type of buttons). So if any card has a
+        # button, every card gets a BUTTONS component.
+        any_button = any((c.get("btn") or c.get("url")) for c in cards)
         card_comps = []
         for i, c in enumerate(cards):
             cc = []
             cc.append(_wa_header(c.get("media", "")))
             cbody = (c.get("body") or "").strip()
             cc.append({"type": "BODY", "text": cbody})
-            btn = _wa_buttons(c.get("btn", ""), c.get("url", ""))
-            if btn:
-                cc.append(btn)
+            if any_button:
+                btn = _wa_buttons(c.get("btn", ""), c.get("url", ""))
+                if btn:
+                    cc.append(btn)
+                else:
+                    warnings.append(f"Card {i+1} has no button while others do — carousel cards must all share the same buttons.")
             card_comps.append({"components": cc})
             # per-card validation
             if c.get("btn") and len(c["btn"]) > _BTN_TEXT_MAX:
                 warnings.append(f"Card {i+1} button text '{c['btn']}' is {len(c['btn'])} chars (max {_BTN_TEXT_MAX}).")
-            if len(cbody) > _WA_BODY_MAX:
-                warnings.append(f"Card {i+1} body is {len(cbody)} chars (max {_WA_BODY_MAX}).")
+            if not cbody:
+                warnings.append(f"Card {i+1} has no body text — required on every carousel card.")
+            elif len(cbody) > _CARD_BODY_MAX:
+                warnings.append(f"Card {i+1} body is {len(cbody)} chars (carousel card max {_CARD_BODY_MAX}).")
             if not c.get("media"):
-                warnings.append(f"Card {i+1} has no media — a carousel card HEADER image is required; upload the asset.")
+                warnings.append(f"Card {i+1} has no media — a carousel card HEADER (IMAGE/VIDEO) is required; upload the asset.")
+            elif str(c.get("media")).startswith("form-file:"):
+                warnings.append(f"Card {i+1} media is a form upload — it must be uploaded to a header_handle (resumable upload) before the template can be created.")
+
+        # Consistency: all cards must have the same number of components.
+        if len({len(cc["components"]) for cc in card_comps}) > 1:
+            warnings.append("Carousel cards have inconsistent structure — every card must have the same components (HEADER + BODY + matching buttons).")
         components.append({"type": "CAROUSEL", "cards": card_comps})
 
         n = len(cards)
