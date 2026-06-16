@@ -480,6 +480,7 @@ def clone_and_patch_event(
     new_date: str,
     timezone: str = "CET",
     media: Optional[list] = None,
+    tag_overrides: Optional[dict] = None,
     campaign_name: str = "",
     action_name: str = "Sendout",
     recurrence: str = "one_off",
@@ -519,6 +520,21 @@ def clone_and_patch_event(
         body["component_parameters"] = cp
 
     body["filters"] = copy.deepcopy(prev_sendout.get("filters", []) or [])
+    # Patch weekly-drifting tag values (e.g. this week's topic) by tag name.
+    if tag_overrides:
+        for f in body["filters"]:
+            for tag in f.get("tags", []) or []:
+                nm = tag.get("name")
+                if nm in tag_overrides and "value" in tag:
+                    old = tag.get("value", "")
+                    new = tag_overrides[nm]
+                    if new != old:
+                        tag["value"] = new
+                        changed.append(f"tag {nm}: {old or '(none)'} → {new}")
+        seen = {t.get("name") for f in body["filters"] for t in (f.get("tags") or [])}
+        for nm in tag_overrides:
+            if nm not in seen:
+                warnings.append(f"tag_override '{nm}' not present in cloned filters — not applied.")
     body["sendout_date"] = new_date
     if (prev_sendout.get("sendout_date") or "") != new_date:
         changed.append(f"sendout_date: {prev_sendout.get('sendout_date','(none)')} → {new_date}")
