@@ -54,6 +54,8 @@ import tag_registry as _reg
 import client_config as _cfg
 import audit_log as _al
 import user_db as _udb
+import app_settings as _settings
+import api_client as _ac
 from ui_renderer import build_results_html
 from utils import (
     check_tags,
@@ -594,6 +596,16 @@ _cfg.apply_to_memory(CLIENT_CONFIGS, CLIENT_ALIASES)
 # Initialise audit log and user DB
 _al.init_db()
 _udb.init_db(_USERS)
+
+# Initialise app-settings store and push the persisted form-fetcher flag into
+# api_client. If the admin has never set it, fall back to the env default by
+# leaving the override unset (None).
+_settings.init_db()
+_FORM_V2_SETTING_KEY = "form_fetcher_v2"
+_v2_persisted = _settings.get(_FORM_V2_SETTING_KEY, None)
+if _v2_persisted is not None:
+    _ac.set_form_fetcher_v2(_v2_persisted.strip().lower() in ("1", "true", "yes", "on"))
+logger.info("form-fetcher v2 at startup: %s", _ac.form_fetcher_v2_enabled())
 
 # Initialise few-shot examples library
 _examples_lib = ExamplesLibrary()
@@ -1719,6 +1731,36 @@ async def preflight_run_now(authorization: Optional[str] = Header(None)):
     await _aio.get_event_loop().run_in_executor(None, lambda: None)  # yield
     await _job_preflight_alert()
     return {"ok": True}
+
+
+# ── App settings (admin) ──────────────────────────────────────────────────────
+
+class FormFetcherSetting(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/settings")
+async def settings_get(authorization: Optional[str] = Header(None)):
+    """Current runtime app settings (any logged-in user may read)."""
+    _get_session(authorization)
+    return {
+        "form_fetcher_v2": _ac.form_fetcher_v2_enabled(),
+        "form_fetcher_v2_env_default": _ac._FORM_V2_ENV_DEFAULT,
+    }
+
+
+@app.post("/api/settings/form-fetcher")
+async def settings_form_fetcher(body: FormFetcherSetting, authorization: Optional[str] = Header(None)):
+    """Flip the v1/v2 form fetcher live (admin only). Persisted across restarts.
+
+    Applies globally to single AI, bulk AI, and the auto-audit scheduler, since
+    all three fetch through fetch_ticket_data which reads this flag live.
+    """
+    session = _require_admin(authorization)
+    _settings.set_bool(_FORM_V2_SETTING_KEY, body.enabled)
+    _ac.set_form_fetcher_v2(body.enabled)
+    logger.info("form-fetcher v2 set to %s by %s", body.enabled, session.get("user"))
+    return {"form_fetcher_v2": _ac.form_fetcher_v2_enabled()}
 
 
 # ── User management ───────────────────────────────────────────────────────────

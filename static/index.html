@@ -2945,6 +2945,9 @@ function UsersPanel({ token }) {
   const [form,    setForm]    = useState({ username:'', display_name:'', password:'', is_admin:false });
   const [saving,  setSaving]  = useState(false);
   const [editPwd, setEditPwd] = useState({});   // {username: newPwd}
+  const [v2,      setV2]      = useState(null);   // form-fetcher v2 enabled
+  const [v2Env,   setV2Env]   = useState(false);  // env default (for context)
+  const [v2Saving,setV2Saving]= useState(false);
 
   async function load() {
     try {
@@ -2954,7 +2957,25 @@ function UsersPanel({ token }) {
     finally { setLoading(false); }
   }
 
-  useEffect(() => { load(); }, []);
+  async function loadSettings() {
+    try {
+      const s = await api('GET', '/api/settings', null, token);
+      setV2(!!s.form_fetcher_v2);
+      setV2Env(!!s.form_fetcher_v2_env_default);
+    } catch(e) { /* non-fatal */ }
+  }
+
+  async function toggleV2() {
+    const next = !v2;
+    setV2Saving(true); setErr('');
+    try {
+      const r = await api('POST', '/api/settings/form-fetcher', { enabled: next }, token);
+      setV2(!!r.form_fetcher_v2);
+    } catch(e) { setErr(e.message); }
+    finally { setV2Saving(false); }
+  }
+
+  useEffect(() => { load(); loadSettings(); }, []);
 
   async function createUser() {
     if (!form.username.trim() || !form.password.trim() || !form.display_name.trim()) {
@@ -3008,6 +3029,34 @@ function UsersPanel({ token }) {
       </div>
 
       {err && <div style={{ color:t.danger.base, fontSize:13, marginBottom:12 }}>{err}</div>}
+
+      {/* System settings */}
+      <SectionHeader style={{ marginTop:0 }}>System Settings</SectionHeader>
+      <div style={{ display:'flex', alignItems:'center', gap:16, padding:'14px 16px', marginBottom:24,
+        background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6 }}>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:t.fg[1] }}>
+            New form parser (v2)
+            <Badge kind={v2 ? 'ok' : 'info'} style={{ fontSize:10, marginLeft:8 }}>
+              {v2===null ? '…' : v2 ? 'ON' : 'OFF'}
+            </Badge>
+          </div>
+          <div style={{ fontSize:11, color:t.fg[3], marginTop:3, lineHeight:1.5 }}>
+            Parses the new questionKey-based sendout form (WABA + RCS, basic + carousel).
+            Applies to single AI, bulk AI and auto-audit. Falls back to v1 per-ticket if a
+            ticket has no new-form fields, so enabling it is safe.
+            <span style={{ color:t.fg[4] }}> (.env default: {v2Env ? 'on' : 'off'})</span>
+          </div>
+        </div>
+        <button onClick={toggleV2} disabled={v2===null || v2Saving}
+          style={{ position:'relative', width:46, height:26, borderRadius:13, border:'none', flexShrink:0,
+            cursor: (v2===null||v2Saving) ? 'default' : 'pointer',
+            background: v2 ? t.ok.base : t.bg.surface3, transition:'background .15s',
+            opacity: v2Saving ? 0.6 : 1 }}>
+          <span style={{ position:'absolute', top:3, left: v2 ? 23 : 3, width:20, height:20, borderRadius:'50%',
+            background:'#fff', transition:'left .15s', boxShadow:'0 1px 2px rgba(0,0,0,.3)' }} />
+        </button>
+      </div>
 
       {/* User list */}
       <SectionHeader style={{ marginTop:0 }}>Team Members</SectionHeader>
@@ -3266,8 +3315,15 @@ function FilterRulesEditor({ setName, entry, onChangeEntry, onDeleteSet }) {
                   style={{ fontSize:12 }} />
               </div>
               <div>
-                <label style={{ fontSize:11, color:t.fg[4], display:'block', marginBottom:3 }}>request_type (substring)</label>
-                <Input value={when.request_type||''} onChange={v=>setWhen({...when, request_type:v||undefined})} style={{ fontSize:12, fontFamily:t.font.mono }} placeholder="e.g. carousel" />
+                <label style={{ fontSize:11, color:t.fg[4], display:'block', marginBottom:3 }}>Sendout Request Type</label>
+                <Select value={when.request_type||''}
+                  onChange={v=>setWhen({...when, request_type: v||undefined})}
+                  options={[
+                    {value:'',        label:'— any —'},
+                    {value:'regular', label:'Update the regular sendout time/date'},
+                    {value:'special', label:'Request an special sendout'},
+                  ]}
+                  style={{ fontSize:12 }} />
               </div>
               <div>
                 <label style={{ fontSize:11, color:t.fg[4], display:'block', marginBottom:3 }}>segment (substring)</label>

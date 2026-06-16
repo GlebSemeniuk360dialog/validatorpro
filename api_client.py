@@ -660,10 +660,28 @@ def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str)
 #   rcs_carousel_{N}_cards_{ord}_{title,media,text,button_name,button_link}
 # Keying off questionKey avoids the duplicate-label problem entirely.
 #
-# Toggle with env var FORM_FETCHER_V2=1. When ON, fetch_ticket_data tries v2 and
-# falls back to v1 if v2 returns nothing, so enabling it cannot break old tickets.
+# Toggle with env var FORM_FETCHER_V2=1 (startup default) OR at runtime via
+# set_form_fetcher_v2() — the admin UI flips it live, persisted by the server.
+# When ON, fetch_ticket_data tries v2 and falls back to v1 if v2 returns nothing,
+# so enabling it cannot break old tickets.
 
-USE_FORM_FETCHER_V2 = os.getenv("FORM_FETCHER_V2", "0").strip() in ("1", "true", "yes", "on")
+_FORM_V2_ENV_DEFAULT = os.getenv("FORM_FETCHER_V2", "0").strip() in ("1", "true", "yes", "on")
+_FORM_V2_OVERRIDE: "bool | None" = None  # set by server from persisted setting
+
+
+def set_form_fetcher_v2(enabled: "bool | None") -> None:
+    """Override the v2 flag at runtime (None → fall back to env default)."""
+    global _FORM_V2_OVERRIDE
+    _FORM_V2_OVERRIDE = None if enabled is None else bool(enabled)
+
+
+def form_fetcher_v2_enabled() -> bool:
+    """Live value: runtime override if set, else the env-var startup default."""
+    return _FORM_V2_ENV_DEFAULT if _FORM_V2_OVERRIDE is None else _FORM_V2_OVERRIDE
+
+
+# Back-compat module attribute (read-only snapshot of the startup default).
+USE_FORM_FETCHER_V2 = _FORM_V2_ENV_DEFAULT
 
 _CARD_ORDINALS = (
     "first", "second", "third", "fourth", "fifth",
@@ -879,7 +897,7 @@ def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch
         # Returns a parsed dict {intro, cards, urls} — set parsed_carousel directly,
         # no regex needed. Also set description to the intro so copy checks have text.
         form_data = None
-        if USE_FORM_FETCHER_V2:
+        if form_fetcher_v2_enabled():
             form_data = fetch_jira_form_answers_v2(server, email, token, issue.key)
             if form_data:
                 data["form_version"] = "v2"
