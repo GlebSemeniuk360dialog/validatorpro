@@ -688,6 +688,19 @@ _CARD_ORDINALS = (
     "sixth", "seventh", "eighth", "ninth", "tenth",
 )
 
+# Reps sometimes paste the field label into the value (e.g. "Button Name: Jetzt
+# kaufen"). Strip a single leading label prefix defensively. Anchored at start,
+# case-insensitive; only these known labels so real copy with a colon is untouched.
+import re as _re_lbl
+_LABEL_PREFIX_RE = _re_lbl.compile(
+    r"^\s*(?:button\s*name|button\s*text|card\s*title|title|body\s*text|main\s*body\s*text|card\s*text|cta(?:\s*text)?)\s*:\s*",
+    _re_lbl.IGNORECASE,
+)
+
+
+def _strip_form_label_prefix(value: str) -> str:
+    return _LABEL_PREFIX_RE.sub("", value, count=1).strip()
+
 
 def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: str) -> dict | None:
     """
@@ -752,7 +765,7 @@ def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: s
             elif a.get("time"):
                 val = a["time"]
             if str(val).strip():
-                kv[qkey] = str(val).strip()
+                kv[qkey] = _strip_form_label_prefix(str(val).strip())
 
         # Must look like the new form (has at least the platform driver), else bail to v1
         platform_raw = kv.get("select_platform", "")
@@ -777,16 +790,18 @@ def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: s
         cards: list = []
         cta_button = ""
         cta_link = ""
+        basic_title = ""
 
         if is_basic or n == 0:
             # Single-message ("basic") sendout — NOT a carousel, so emit no cards
             # (an empty cards list keeps the carousel card-count check from firing).
             # The body becomes the intro/description; CTA + footer are surfaced via
             # dedicated keys that fetch_ticket_data backfills onto the standard fields.
-            intro      = kv.get(f"{pfx}_basic_sendout_text", "")
-            footer     = kv.get(f"{pfx}_basic_footer", "")
-            cta_button = kv.get(f"{pfx}_basic_button_name", "")
-            cta_link   = kv.get(f"{pfx}_basic_button_link", "").rstrip(";").strip()
+            intro       = kv.get(f"{pfx}_basic_sendout_text", "")
+            footer      = kv.get(f"{pfx}_basic_footer", "")
+            cta_button  = kv.get(f"{pfx}_basic_button_name", "")
+            cta_link    = kv.get(f"{pfx}_basic_button_link", "").rstrip(";").strip()
+            basic_title = kv.get(f"{pfx}_basic_card_title", "")   # RCS basic has a title
         else:
             # Carousel: WABA has a `_first_main` intro, RCS has none
             intro = kv.get(f"{pfx}_carousel_{n}_cards_first_main", "")
@@ -808,6 +823,7 @@ def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: s
             "urls": [c["url"] for c in cards if c.get("url")] or ([cta_link] if cta_link else []),
             "cta_button": cta_button,
             "cta_link": cta_link,
+            "title": basic_title,
             "platform": platform_raw,
             "sendout_format": fmt_raw,
             "sendout_type": type_raw,
