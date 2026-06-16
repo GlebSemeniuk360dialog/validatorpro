@@ -965,10 +965,18 @@ def _compute_carousel_diff(
     'Slide N:' / 'Card N:' labels in the raw description.
     DMA card count: number of non-empty entries in dma_carousel_texts.
     """
-    # Determine JIRA slide count
-    if parsed_carousel and isinstance(parsed_carousel, list) and len(parsed_carousel) > 0:
-        jira_count = len(parsed_carousel)
-        jira_source = f"JIRA_Parsed_Carousel list ({jira_count} items)"
+    # Determine JIRA slide count. parsed_carousel may be:
+    #   - a dict {intro, cards:[...], ...}  ← Forms API (v1 & v2 fetchers)
+    #   - a list of card dicts              ← some regex parsers
+    _pc_cards = None
+    if isinstance(parsed_carousel, dict):
+        _pc_cards = parsed_carousel.get("cards")
+    elif isinstance(parsed_carousel, list):
+        _pc_cards = parsed_carousel
+
+    if _pc_cards and len(_pc_cards) > 0:
+        jira_count = len(_pc_cards)
+        jira_source = f"JIRA_Parsed_Carousel cards ({jira_count} items)"
     else:
         slide_labels = _re.findall(
             r'(?:Slide|Slider|Card)\s*\d+\s*:', str(jira_desc or ""), _re.I

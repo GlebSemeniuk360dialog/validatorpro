@@ -757,20 +757,18 @@ def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: s
         intro = ""
         footer = ""
         cards: list = []
+        cta_button = ""
+        cta_link = ""
 
         if is_basic or n == 0:
-            # Single-message ("basic") sendout
-            intro  = kv.get(f"{pfx}_basic_sendout_text", "")
-            footer = kv.get(f"{pfx}_basic_footer", "")
-            card = {
-                "body":  kv.get(f"{pfx}_basic_sendout_text", ""),
-                "btn":   kv.get(f"{pfx}_basic_button_name", ""),
-                "url":   kv.get(f"{pfx}_basic_button_link", ""),
-                "title": kv.get(f"{pfx}_basic_card_title", ""),   # RCS only
-                "media": kv.get(f"{pfx}_basic_media", ""),
-            }
-            if any(card.values()):
-                cards = [card]
+            # Single-message ("basic") sendout — NOT a carousel, so emit no cards
+            # (an empty cards list keeps the carousel card-count check from firing).
+            # The body becomes the intro/description; CTA + footer are surfaced via
+            # dedicated keys that fetch_ticket_data backfills onto the standard fields.
+            intro      = kv.get(f"{pfx}_basic_sendout_text", "")
+            footer     = kv.get(f"{pfx}_basic_footer", "")
+            cta_button = kv.get(f"{pfx}_basic_button_name", "")
+            cta_link   = kv.get(f"{pfx}_basic_button_link", "").rstrip(";").strip()
         else:
             # Carousel: WABA has a `_first_main` intro, RCS has none
             intro = kv.get(f"{pfx}_carousel_{n}_cards_first_main", "")
@@ -789,7 +787,9 @@ def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: s
             "intro": intro,
             "footer": footer,
             "cards": cards,
-            "urls": [c["url"] for c in cards if c.get("url")],
+            "urls": [c["url"] for c in cards if c.get("url")] or ([cta_link] if cta_link else []),
+            "cta_button": cta_button,
+            "cta_link": cta_link,
             "platform": platform_raw,
             "sendout_format": fmt_raw,
             "sendout_type": type_raw,
@@ -804,6 +804,44 @@ def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: s
     except Exception as exc:
         logger.warning("form_v2: failed for %s: %s", issue_key, exc)
         return None
+
+
+def _backfill_standard_fields_from_form(data: dict, form_data: dict) -> None:
+    """
+    The new (v2) sendout form moves footer / CTA / channel into the form itself,
+    so the legacy JIRA custom fields (footer_text, cta_button, cta_link,
+    waba_or_rcs) are empty on those tickets. Backfill them from the parsed form
+    so every downstream consumer — single AI, bulk AI, UI — sees the same data
+    without each needing to know about v2.
+
+    Only fills a key when it is currently empty (never clobbers a real JIRA
+    value). No-ops for v1 form_data, which lacks these keys.
+    """
+    def _empty(key: str) -> bool:
+        v = data.get(key)
+        return v is None or (isinstance(v, str) and not v.strip()) or v == []
+
+    footer = form_data.get("footer", "")
+    if footer and _empty("footer_text"):
+        data["footer_text"] = footer
+
+    # CTA: prefer the explicit basic CTA keys; else the first card's button/url.
+    cards = form_data.get("cards") or []
+    first = cards[0] if cards else {}
+    cta_name = form_data.get("cta_button", "") or first.get("btn", "")
+    cta_link = form_data.get("cta_link", "") or first.get("url", "")
+    if cta_name and _empty("cta_button"):
+        data["cta_button"] = cta_name
+    if cta_link and _empty("cta_link"):
+        data["cta_link"] = cta_link
+
+    # Channel: map the form's Platform to the waba_or_rcs field the prompt reads.
+    platform = str(form_data.get("platform", "")).lower()
+    if platform and _empty("waba_or_rcs"):
+        if "rcs" in platform:
+            data["waba_or_rcs"] = "RCS"
+        elif "whatsapp" in platform or "waba" in platform:
+            data["waba_or_rcs"] = "WABA"
 
 
 def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch_images: bool = True, max_images: int = 10) -> dict | None:
@@ -850,6 +888,7 @@ def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch
         if form_data and isinstance(form_data, dict):
             data["parsed_carousel"] = form_data
             data["description"] = form_data.get("intro", "")
+            _backfill_standard_fields_from_form(data, form_data)
             logger.info("fetch_ticket_data: carousel form data (%s) from Forms API for %s",
                         data.get("form_version", "v1"), ticket_id)
         # Priority 2: additional_comments field (cover note — least reliable)
