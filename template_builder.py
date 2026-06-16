@@ -328,8 +328,9 @@ def build_sendout_payload(
     }
     if template_name:
         payload["template_name"] = template_name
-    else:
-        warnings.append("No template_name — required to simulate/schedule. For recurring sendouts use the client's approved template.")
+    elif not is_rcs:
+        # RCS carries content inline (google_rcs_content) and needs no template.
+        warnings.append("No template_name — WABA sendouts must reference an existing approved template (from the client's config or last week's sendout); the form doesn't carry it.")
     if schedule["raw"]:
         payload["sendout_date"] = schedule["raw"]
     else:
