@@ -1763,6 +1763,49 @@ async def settings_form_fetcher(body: FormFetcherSetting, authorization: Optiona
     return {"form_fetcher_v2": _ac.form_fetcher_v2_enabled()}
 
 
+# ── Sendout proposal (read-only preview, no campaigns-API calls) ───────────────
+
+@app.get("/api/sendout-proposal")
+async def sendout_proposal(ticket: str, authorization: Optional[str] = Header(None)):
+    """
+    Build a read-only sendout/template proposal for a ticket from its v2 form.
+    Pure preview: reads the JIRA ticket + runs the deterministic builder. Makes
+    NO calls to the DMA campaigns API and performs no writes.
+
+    Always parses with the v2 form fetcher (independent of the global toggle),
+    since this view only makes sense for the new sendout form.
+    """
+    _get_session(authorization)
+    import template_builder as _tb
+
+    j = fetch_ticket_data(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket, fetch_images=False)
+    if not j:
+        raise HTTPException(status_code=404, detail="Ticket not found in JIRA")
+
+    # Force v2 parse so the preview works even when the global v2 toggle is off.
+    v2 = _ac.fetch_jira_form_answers_v2(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket)
+    if v2:
+        j["parsed_carousel"] = v2
+        j["description"] = v2.get("intro", "") or j.get("description", "")
+        _ac._backfill_standard_fields_from_form(j, v2)
+
+    try:
+        proposal = _tb.build_sendout_proposal(j)
+        event = _tb.build_event_payload(j, template_name="")
+    except Exception as exc:
+        logger.error("sendout_proposal build failed for %s: %s", ticket, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Could not build proposal: {_friendly_exc(exc)}")
+
+    return {
+        "ticket": ticket,
+        "is_v2_form": bool(v2),
+        "proposal": proposal,
+        "event_payload": event["payload"],
+        "event_warnings": event["warnings"],
+        "event_notes": event["notes"],
+    }
+
+
 # ── User management ───────────────────────────────────────────────────────────
 
 class UserCreate(BaseModel):
