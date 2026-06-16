@@ -142,26 +142,48 @@ def _build_waba(parsed: dict, jira: dict, warnings: list, notes: list) -> dict:
     return {"components": components}
 
 
+def _rcs_suggestion(btn: str, url: str) -> Optional[dict]:
+    """A single RCS suggestion in the documented shape (action with openUrlAction)."""
+    if not (btn or url):
+        return None
+    act = {"text": (btn or "Open")[:_BTN_TEXT_MAX]}
+    if url:
+        act["openUrlAction"] = {"url": url}
+    return {"action": act}
+
+
 def _build_rcs(parsed: dict, warnings: list, notes: list) -> dict:
+    """
+    Return google_rcs_content. Per the docs:
+      - single message → {text, suggestions:[{reply|action}]}
+      - carousel       → {richCard:{carouselCard:{cardWidth, cardContents:[…]}}}
+    """
     cards = parsed.get("cards") or []
+    is_carousel = ("carousel" in str(parsed.get("sendout_format", "")).lower()) or len(cards) > 1
+
+    if not is_carousel:
+        c = cards[0] if cards else {}
+        text = (parsed.get("intro") or c.get("body") or "").strip()
+        out: dict = {"text": text}
+        sug = _rcs_suggestion(c.get("btn", ""), c.get("url", ""))
+        if sug:
+            out["suggestions"] = [sug]
+        if not text:
+            warnings.append("RCS message text is empty.")
+        return out
+
     contents = []
     for i, c in enumerate(cards):
         title = (c.get("title") or "").strip()
         desc = (c.get("body") or "").strip()
         media = (c.get("media") or "").strip()
-        suggestions = []
-        if c.get("btn") or c.get("url"):
-            sug = {"action": {"text": (c.get("btn") or "Open")[:_BTN_TEXT_MAX]}}
-            if c.get("url"):
-                sug["action"]["openUrlAction"] = {"url": c["url"]}
-            suggestions.append(sug)
         card = {"title": title, "description": desc}
         if media:
             card["media"] = {"height": "MEDIUM", "contentInfo": {"fileUrl": media}}
-        if suggestions:
-            card["suggestions"] = suggestions
+        sug = _rcs_suggestion(c.get("btn", ""), c.get("url", ""))
+        if sug:
+            card["suggestions"] = [sug]
         contents.append(card)
-        # validation
         if len(title) > _RCS_TITLE_MAX:
             warnings.append(f"RCS card {i+1} title is {len(title)} chars (max {_RCS_TITLE_MAX}).")
         if len(desc) > _RCS_DESC_MAX:
@@ -351,6 +373,82 @@ def build_sendout_payload(
         "warnings": warnings,
         "notes": notes,
     }
+
+
+_WEEKDAY_NAME = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def build_recurrence_pattern(jira: dict, recurrence: str = "one_off") -> dict:
+    """
+    Build a recurrence_pattern for sage/events/add.
+      recurrence='one_off' → {recurrence_type: ONE_OFF, start_date, timezone}
+      recurrence='weekly'  → {recurrence_type: WEEK, days_of_week, recurrence_interval, start_date, timezone}
+    start_date is naive ISO (no offset); timezone is carried separately, matching
+    the documented example.
+
+    NOTE: days_of_week index convention is assumed Monday=0 (Python weekday()).
+    Confirm against the API before scheduling recurring events.
+    """
+    sch = _split_schedule(jira)
+    raw = sch["raw"]
+    # Naive ISO: strip any timezone offset / trailing Z
+    start_naive = re.sub(r"(?:Z|[+-]\d{2}:?\d{2})$", "", raw).split(".")[0] if raw else ""
+    tz = sch["timezone"] or "CET"
+
+    if recurrence == "weekly":
+        wd = None
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})", raw)
+        if m:
+            import datetime as _d
+            wd = _d.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).weekday()
+        return {
+            "recurrence_type": "WEEK",
+            "days_of_week": [str(wd)] if wd is not None else [],
+            "recurrence_interval": "1",
+            "start_date": start_naive,
+            "timezone": tz,
+        }
+    return {
+        "recurrence_type": "ONE_OFF",
+        "start_date": start_naive,
+        "timezone": tz,
+    }
+
+
+def build_event_payload(
+    jira: dict,
+    *,
+    template_name: str = "",
+    campaign_name: str = "",
+    recurrence: str = "one_off",
+    body_binding: str = "first_name",
+) -> dict:
+    """
+    Build the full POST /sage/events/add body that wraps a sendout in an event
+    action. Returns {payload, warnings, notes}. No network calls.
+    """
+    inner = build_sendout_payload(jira, template_name=template_name, body_binding=body_binding)
+    body = inner["payload"]
+    warnings = list(inner["warnings"])
+    notes = list(inner["notes"])
+
+    name = campaign_name or (str(jira.get("key", "")) + " sendout").strip()
+    rec = build_recurrence_pattern(jira, recurrence)
+    if recurrence == "weekly":
+        wd = rec.get("days_of_week") or []
+        day = _WEEKDAY_NAME[int(wd[0])] if wd and wd[0].isdigit() else "?"
+        notes.append(f"Recurring WEEKLY on {day} (days_of_week index assumes Monday=0 — confirm with API).")
+
+    event = {
+        "name": name,
+        "event_actions": [{
+            "name": str(jira.get("key", "")) or "Sendout",
+            "action_type": "dma_sendout",
+            "data": {"body": body},
+        }],
+        "recurrence_pattern": rec,
+    }
+    return {"payload": event, "warnings": warnings, "notes": notes}
 
 
 def validate_sendout_payload(payload: dict) -> list:
