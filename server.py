@@ -1806,6 +1806,92 @@ async def sendout_proposal(ticket: str, authorization: Optional[str] = Header(No
     }
 
 
+# DMA campaigns base — production (the .env key authenticates here). The write
+# endpoint is /accounts/{id}/sage/events/add; the dry-run NEVER calls it.
+_DMA_BASE = "https://dma.360dialog.io/api/v2"
+
+
+@app.get("/api/sendout-dryrun")
+async def sendout_dryrun(
+    ticket: str,
+    template_name: str = "",
+    recurrence: str = "one_off",
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Run the full sendout pipeline for a ticket WITHOUT scheduling anything:
+    fetch ticket → v2 parse → detect client/account_id → build event payload →
+    validate → assemble the exact POST /sage/events/add request. Returns that
+    request preview plus diagnostics so bugs surface before any real write.
+
+    Hard guard: this handler makes NO POST to the campaigns API. It only reads
+    JIRA (to get the form) and assembles the request; it never sends it.
+    """
+    _get_session(authorization)
+    import template_builder as _tb
+    diagnostics: list = []
+
+    j = fetch_ticket_data(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket, fetch_images=False)
+    if not j:
+        raise HTTPException(status_code=404, detail="Ticket not found in JIRA")
+
+    v2 = _ac.fetch_jira_form_answers_v2(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket)
+    if v2:
+        j["parsed_carousel"] = v2
+        j["description"] = v2.get("intro", "") or j.get("description", "")
+        _ac._backfill_standard_fields_from_form(j, v2)
+    else:
+        diagnostics.append("No v2 form on this ticket — not a new-form sendout.")
+
+    # Client + account_id resolution (a common bug source)
+    issue_like = {"fields": j.get("_raw_fields", {})}
+    try:
+        client = _ticket_client(issue_like)
+    except Exception as exc:
+        client = "Unknown"
+        diagnostics.append(f"Client detection failed: {_friendly_exc(exc)}")
+    acct = (CLIENT_CONFIGS.get(client) or {}).get("account_id")
+    if not client or client == "Unknown":
+        diagnostics.append("Could not detect client from the ticket — account_id unknown.")
+    elif not acct:
+        diagnostics.append(f"No account_id configured for client '{client}'.")
+
+    # Build + validate the event body
+    try:
+        event = _tb.build_event_payload(j, template_name=template_name, recurrence=recurrence)
+    except Exception as exc:
+        logger.error("sendout_dryrun build failed for %s: %s", ticket, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Build failed: {_friendly_exc(exc)}")
+    body = event["payload"]
+    inner = body.get("event_actions", [{}])[0].get("data", {}).get("body", {})
+    problems = _tb.validate_sendout_payload(inner)
+
+    url = f"{_DMA_BASE}/accounts/{acct}/sage/events/add" if acct else None
+    blockers = list(problems)
+    if not acct:
+        blockers.append("no account_id — cannot build the request URL")
+
+    return {
+        "dry_run": True,
+        "would_send": False,
+        "ticket": ticket,
+        "client": client,
+        "account_id": acct,
+        "request_preview": {
+            "method": "POST",
+            "url": url or "(unresolved — missing account_id)",
+            "headers": {"Authorization": "Bearer ***", "Content-Type": "application/json"},
+            "body": body,
+        },
+        "validation_problems": problems,
+        "blockers": blockers,
+        "ready_to_schedule": not blockers,
+        "warnings": event["warnings"],
+        "notes": event["notes"],
+        "diagnostics": diagnostics,
+    }
+
+
 # ── User management ───────────────────────────────────────────────────────────
 
 class UserCreate(BaseModel):
