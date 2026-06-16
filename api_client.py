@@ -702,6 +702,33 @@ def _strip_form_label_prefix(value: str) -> str:
     return _LABEL_PREFIX_RE.sub("", value, count=1).strip()
 
 
+def _adf_to_text(adf: dict) -> str:
+    """Flatten an Atlassian Document Format (rich-text) answer to plain text.
+    Paragraphs/headings become newlines; hardBreaks too. Used for the form's
+    `rt` answer type (card text, main text, some button names)."""
+    out: list = []
+
+    def walk(node):
+        if isinstance(node, list):
+            for x in node:
+                walk(x)
+            return
+        if not isinstance(node, dict):
+            return
+        ntype = node.get("type")
+        if ntype == "text":
+            out.append(node.get("text", ""))
+        elif ntype == "hardBreak":
+            out.append("\n")
+        for child in node.get("content", []) or []:
+            walk(child)
+        if ntype in ("paragraph", "heading"):
+            out.append("\n")
+
+    walk(adf.get("content", []) if isinstance(adf, dict) else [])
+    return "".join(out).strip()
+
+
 def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: str) -> dict | None:
     """
     Parse the new sendout form strictly by questionKey (not by label).
@@ -760,6 +787,13 @@ def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: s
                 val = a["text"]
             elif a.get("choices"):
                 val = ", ".join(cmap.get(str(c), str(c)) for c in a["choices"])
+            elif a.get("adf"):                       # rich-text fields (card text, main, …)
+                val = _adf_to_text(a["adf"])
+            elif a.get("files"):                     # uploaded media (header image/video)
+                ids = [f.get("id") for f in a["files"] if isinstance(f, dict) and f.get("id")]
+                # File id, not yet a hosted URL — presence is what matters for preview;
+                # resolve to a real URL via POST /media before scheduling.
+                val = ("form-file:" + ids[0]) if ids else ""
             elif a.get("date"):
                 val = a["date"]
             elif a.get("time"):

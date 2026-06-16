@@ -342,8 +342,12 @@ def build_sendout_payload(
         card_objs = []
         for i, c in enumerate(cards):
             cp = []
-            if c.get("media"):
-                cp.append({"value": c["media"], "type": "header_image", "source": "custom"})
+            media = c.get("media") or ""
+            if media.startswith("form-file:"):
+                cp.append({"type": "header_image", "source": "custom"})  # value resolved later
+                notes.append(f"Card {i+1} media is a form upload ({media}) — resolve to a hosted URL via POST /media before scheduling.")
+            elif media:
+                cp.append({"value": media, "type": "header_image", "source": "custom"})
             else:
                 warnings.append(f"Card {i+1}: no media — header_image binding will be missing.")
             cp.append({"type": "body_text", "source": body_binding})
