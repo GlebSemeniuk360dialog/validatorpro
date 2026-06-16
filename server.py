@@ -1811,6 +1811,68 @@ async def sendout_proposal(ticket: str, authorization: Optional[str] = Header(No
 _DMA_BASE = "https://dma.360dialog.io/api/v2"
 
 
+def _plan_media_resolution(j: dict) -> dict:
+    """
+    Plan (do NOT perform) the media upload for a ticket's carousel/basic media.
+    Form images are stored as JIRA issue attachments; this matches each card's
+    form image to an attachment by order, de-dups identical files, and reports
+    what WOULD be uploaded to POST /api/v2/media. No download, no upload.
+    """
+    raw = j.get("_raw_fields", {}) or {}
+    imgs = [a for a in (raw.get("attachment") or []) if str(a.get("mimeType", "")).startswith("image/")]
+    parsed = j.get("parsed_carousel") or {}
+    cards = parsed.get("cards") or []
+    media_cards = [i for i, c in enumerate(cards) if str(c.get("media", "")).startswith("form-file:")]
+
+    # De-dup by content hash — ProForma appends a UUID to duplicate filenames, so
+    # filename/size is unreliable. Download each mapped image once and md5 it.
+    import hashlib as _hl, base64 as _b64, requests as _rq
+    _auth = _b64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
+    _hdr = {"Authorization": "Basic " + _auth}
+
+    def _md5(att):
+        url = att.get("content")
+        if not url:
+            return None
+        try:
+            rb = _rq.get(url, headers=_hdr, timeout=20)
+            return _hl.md5(rb.content).hexdigest() if rb.ok else None
+        except Exception:
+            return None
+
+    plan, warnings = [], []
+    seen: dict = {}   # md5 (or fallback key) -> card number that first uploads it
+    unique = 0
+    for idx, ci in enumerate(media_cards):
+        att = imgs[idx] if idx < len(imgs) else None
+        if not att:
+            plan.append({"card": ci + 1, "action": "missing", "filename": None})
+            continue
+        key = _md5(att) or (att.get("filename"), att.get("size"))
+        size_kb = round((att.get("size") or 0) / 1024)
+        if key in seen:
+            plan.append({"card": ci + 1, "action": "reuse", "filename": att.get("filename"),
+                         "size_kb": size_kb, "same_as_card": seen[key]})
+        else:
+            seen[key] = ci + 1
+            unique += 1
+            plan.append({"card": ci + 1, "action": "upload", "attachment_id": att.get("id"),
+                         "filename": att.get("filename"), "size_kb": size_kb})
+
+    if media_cards and len(media_cards) != len(imgs):
+        warnings.append(f"{len(media_cards)} card(s) need media but {len(imgs)} image attachment(s) on the ticket — mapping is by order; verify before scheduling.")
+
+    return {
+        "would_upload_to": f"{_DMA_BASE}/media",
+        "cards_with_media": len(media_cards),
+        "image_attachments": len(imgs),
+        "unique_uploads": unique,
+        "plan": plan,
+        "warnings": warnings,
+        "performed": False,
+    }
+
+
 @app.get("/api/sendout-dryrun")
 async def sendout_dryrun(
     ticket: str,
@@ -1904,6 +1966,7 @@ async def sendout_dryrun(
         "blockers": blockers,
         "ready_to_schedule": not blockers,
         "template_request": template_request,
+        "media_plan": _plan_media_resolution(j),
         "warnings": event["warnings"],
         "notes": event["notes"],
         "diagnostics": diagnostics,

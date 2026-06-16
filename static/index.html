@@ -2176,6 +2176,22 @@ function SendoutBuilder({ token }) {
                     {dry.diagnostics.map((d2,i)=><div key={i} style={{ fontSize:13, color:t.fg[2], padding:'2px 0' }}>• {d2}</div>)}
                   </div>
                 )}
+                {dry.media_plan && dry.media_plan.cards_with_media>0 && (
+                  <div style={{ marginBottom:14 }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:t.fg[3], textTransform:'uppercase', letterSpacing:'.06em', marginBottom:4 }}>
+                      Media — would upload {dry.media_plan.unique_uploads} file(s) to /api/v2/media
+                    </div>
+                    {(dry.media_plan.plan||[]).map((m,i)=>(
+                      <div key={i} style={{ fontSize:13, color: m.action==='missing'?t.danger.base:t.fg[2], padding:'2px 0' }}>
+                        {m.action==='upload' && <span>↑ card {m.card}: upload <b>{m.filename}</b> ({m.size_kb} KB)</span>}
+                        {m.action==='reuse'  && <span style={{color:t.fg[3]}}>↻ card {m.card}: reuse upload from card {m.same_as_card} (same file)</span>}
+                        {m.action==='missing'&& <span>✗ card {m.card}: no matching attachment found</span>}
+                      </div>
+                    ))}
+                    {(dry.media_plan.warnings||[]).map((w,i)=><div key={'mw'+i} style={{ fontSize:12, color:t.warn.base, padding:'2px 0' }}>⚠ {w}</div>)}
+                    <div style={{ fontSize:11, color:t.fg[4], marginTop:4 }}>Preview only — nothing uploaded yet.</div>
+                  </div>
+                )}
                 {dry.template_request && (
                   <div style={{ marginBottom:14 }}>
                     <div style={{ fontSize:11, fontWeight:700, color:t.fg[3], textTransform:'uppercase', letterSpacing:'.06em', marginBottom:4 }}>Step 1 — template that WOULD be created</div>
