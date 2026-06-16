@@ -1,0 +1,277 @@
+"""
+template_builder.py — Phase 0 (read-only) proposal generator.
+
+Takes the structured v2 form data already on a ticket (jira dict from
+fetch_ticket_data: parsed_carousel + date/timezone/footer/cta/channel) and
+produces a *proposed* DMA/WhatsApp template payload + sendout schedule, purely
+deterministically. NO network writes — this only assembles and previews what a
+human would otherwise type into the DMA UI, plus deterministic validation
+warnings (WhatsApp/RCS field limits, missing media, approval needs).
+
+The template payload mirrors the real 360dialog/WhatsApp schema returned by
+fetch_template_data:
+  basic    : [HEADER?, BODY, FOOTER?, BUTTONS?]
+  carousel : [BODY(intro), CAROUSEL{cards:[{components:[HEADER?, BODY, BUTTONS?]}]}]
+RCS uses the google_rcs_content richCard.carouselCard shape.
+
+This is a sketch for human review; nothing here submits to Meta or schedules.
+"""
+
+import re
+from typing import Optional
+
+# WhatsApp / RCS field limits (deterministic validation, not AI)
+_WA_BODY_MAX   = 1024
+_WA_FOOTER_MAX = 60
+_BTN_TEXT_MAX  = 25
+_CARD_MIN      = 2
+_CARD_MAX      = 10
+_RCS_TITLE_MAX = 200
+_RCS_DESC_MAX  = 2000
+
+
+def _placeholder_count(text: str) -> int:
+    return len(set(re.findall(r"\{\{\s*(\d+)\s*\}\}", text or "")))
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
+
+
+def _split_schedule(jira: dict) -> dict:
+    """Pull sendout date/time/timezone from the standard JIRA fields."""
+    raw = str(jira.get("date", "") or "")
+    tz = jira.get("timezone", "")
+    if isinstance(tz, dict):
+        tz = tz.get("value", "")
+    date_part, time_part = "", ""
+    if raw:
+        # ISO like 2026-06-19T20:00:00.000+0200
+        m = re.match(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})", raw)
+        if m:
+            date_part, time_part = m.group(1), m.group(2)
+    return {
+        "date": date_part,
+        "time": time_part,
+        "timezone": str(tz or ""),
+        "raw": raw,
+    }
+
+
+def _wa_buttons(name: str, url: str) -> Optional[dict]:
+    name = (name or "").strip()
+    url = (url or "").strip()
+    if not name and not url:
+        return None
+    btn = {"type": "URL", "text": name or "Open"}
+    if url:
+        btn["url"] = url
+    return {"type": "BUTTONS", "buttons": [btn]}
+
+
+def _wa_header(media: str) -> Optional[dict]:
+    media = (media or "").strip()
+    comp = {"type": "HEADER", "format": "IMAGE"}
+    if media:
+        comp["example"] = {"header_handle": [media]}
+    return comp
+
+
+def _build_waba(parsed: dict, jira: dict, warnings: list, notes: list) -> dict:
+    intro = (parsed.get("intro") or "").strip()
+    footer = (jira.get("footer_text") or parsed.get("footer") or "").strip()
+    cards = parsed.get("cards") or []
+    is_carousel = "carousel" in str(parsed.get("sendout_format", "")).lower() or len(cards) > 1
+
+    components: list = []
+
+    if not is_carousel:
+        # ── Basic single-message template ──
+        media = jira.get("_basic_media", "")  # rarely populated; placeholder
+        if media:
+            components.append(_wa_header(media))
+        body = {"type": "BODY", "text": intro}
+        nph = _placeholder_count(intro)
+        if nph:
+            body["example"] = {"body_text": [["Example"] * nph]}
+            notes.append(f"Body has {nph} placeholder(s) {{1}}… — example value(s) auto-filled, confirm before submit.")
+        components.append(body)
+        if footer:
+            components.append({"type": "FOOTER", "text": footer})
+        btn = _wa_buttons(jira.get("cta_button", ""), jira.get("cta_link", ""))
+        if btn:
+            components.append(btn)
+        # validation
+        if len(intro) > _WA_BODY_MAX:
+            warnings.append(f"Body is {len(intro)} chars (max {_WA_BODY_MAX}).")
+        if not intro:
+            warnings.append("Body text is empty — WhatsApp requires a BODY component.")
+        if footer and len(footer) > _WA_FOOTER_MAX:
+            warnings.append(f"Footer is {len(footer)} chars (max {_WA_FOOTER_MAX}).")
+    else:
+        # ── Carousel template ──
+        intro_body = {"type": "BODY", "text": intro}
+        nph = _placeholder_count(intro)
+        if nph:
+            intro_body["example"] = {"body_text": [["Example"] * nph]}
+        components.append(intro_body)
+
+        card_comps = []
+        for i, c in enumerate(cards):
+            cc = []
+            cc.append(_wa_header(c.get("media", "")))
+            cbody = (c.get("body") or "").strip()
+            cc.append({"type": "BODY", "text": cbody})
+            btn = _wa_buttons(c.get("btn", ""), c.get("url", ""))
+            if btn:
+                cc.append(btn)
+            card_comps.append({"components": cc})
+            # per-card validation
+            if c.get("btn") and len(c["btn"]) > _BTN_TEXT_MAX:
+                warnings.append(f"Card {i+1} button text '{c['btn']}' is {len(c['btn'])} chars (max {_BTN_TEXT_MAX}).")
+            if len(cbody) > _WA_BODY_MAX:
+                warnings.append(f"Card {i+1} body is {len(cbody)} chars (max {_WA_BODY_MAX}).")
+            if not c.get("media"):
+                warnings.append(f"Card {i+1} has no media — a carousel card HEADER image is required; upload the asset.")
+        components.append({"type": "CAROUSEL", "cards": card_comps})
+
+        n = len(cards)
+        if n < _CARD_MIN or n > _CARD_MAX:
+            warnings.append(f"Carousel has {n} card(s); WhatsApp allows {_CARD_MIN}-{_CARD_MAX}.")
+
+    return {"components": components}
+
+
+def _build_rcs(parsed: dict, warnings: list, notes: list) -> dict:
+    cards = parsed.get("cards") or []
+    contents = []
+    for i, c in enumerate(cards):
+        title = (c.get("title") or "").strip()
+        desc = (c.get("body") or "").strip()
+        media = (c.get("media") or "").strip()
+        suggestions = []
+        if c.get("btn") or c.get("url"):
+            sug = {"action": {"text": (c.get("btn") or "Open")[:_BTN_TEXT_MAX]}}
+            if c.get("url"):
+                sug["action"]["openUrlAction"] = {"url": c["url"]}
+            suggestions.append(sug)
+        card = {"title": title, "description": desc}
+        if media:
+            card["media"] = {"height": "MEDIUM", "contentInfo": {"fileUrl": media}}
+        if suggestions:
+            card["suggestions"] = suggestions
+        contents.append(card)
+        # validation
+        if len(title) > _RCS_TITLE_MAX:
+            warnings.append(f"RCS card {i+1} title is {len(title)} chars (max {_RCS_TITLE_MAX}).")
+        if len(desc) > _RCS_DESC_MAX:
+            warnings.append(f"RCS card {i+1} description is {len(desc)} chars (max {_RCS_DESC_MAX}).")
+        if not media:
+            warnings.append(f"RCS card {i+1} has no media — upload the asset.")
+    n = len(cards)
+    if n and (n < _CARD_MIN or n > _CARD_MAX):
+        warnings.append(f"RCS carousel has {n} card(s); allowed {_CARD_MIN}-{_CARD_MAX}.")
+    return {"richCard": {"carouselCard": {"cardWidth": "MEDIUM", "cardContents": contents}}}
+
+
+def build_sendout_proposal(
+    jira: dict,
+    *,
+    client: str = "",
+    language: str = "de",
+    category: str = "MARKETING",
+    template_name: Optional[str] = None,
+) -> dict:
+    """
+    Build a read-only proposal {channel, template, schedule, recipients,
+    warnings, notes} from the v2-form-enriched JIRA dict. Deterministic;
+    performs no network calls.
+    """
+    parsed = jira.get("parsed_carousel") or {}
+    warnings: list = []
+    notes: list = []
+
+    channel_raw = str(jira.get("waba_or_rcs") or parsed.get("platform") or "")
+    if isinstance(jira.get("waba_or_rcs"), list) and jira["waba_or_rcs"]:
+        channel_raw = jira["waba_or_rcs"][0]
+    is_rcs = "rcs" in channel_raw.lower()
+    channel = "RCS" if is_rcs else "WABA"
+
+    sendout_type = str(parsed.get("sendout_type") or jira.get("request_type") or "")
+    is_new_template = "special" in sendout_type.lower() or "create" in sendout_type.lower()
+
+    schedule = _split_schedule(jira)
+    if not schedule["date"]:
+        warnings.append("No sendout date found on the ticket.")
+
+    # Suggested template name (new) or reuse note (regular update)
+    fmt = "carousel" if (("carousel" in str(parsed.get("sendout_format", "")).lower())
+                         or len(parsed.get("cards") or []) > 1) else "basic"
+    if not template_name:
+        ymd = (schedule["date"] or "").replace("-", "")
+        template_name = f"{_slug(client) or 'sendout'}_{fmt}_{ymd}"
+
+    if is_new_template:
+        notes.append("Sendout Type = special/new → a NEW template must be created and APPROVED by Meta before scheduling (async, can take up to ~24h).")
+    else:
+        notes.append("Sendout Type = regular update → reuse the existing APPROVED template; only the schedule/content changes. No Meta approval wait.")
+
+    if is_rcs:
+        notes.append("RCS uses Google's pipeline (separate from WhatsApp/Meta).")
+        template = {
+            "name": template_name,
+            "language": language,
+            "channel": "RCS",
+            "content": _build_rcs(parsed, warnings, notes),
+        }
+    else:
+        wa = _build_waba(parsed, jira, warnings, notes)
+        template = {
+            "name": template_name,
+            "language": language,
+            "category": category,
+            "components": wa["components"],
+        }
+        notes.append(f"language='{language}' and category='{category}' are defaults — confirm before submit.")
+
+    return {
+        "ticket": jira.get("key", ""),
+        "channel": channel,
+        "format": fmt,
+        "sendout_type": sendout_type,
+        "new_template_required": is_new_template,
+        "template": template,
+        "schedule": schedule,
+        "recipients": {
+            "segment": str(jira.get("segment", "") or "(none specified)"),
+            "preview_numbers": parsed.get("preview_numbers", ""),
+        },
+        "warnings": warnings,
+        "notes": notes,
+    }
+
+
+def render_proposal_text(p: dict) -> str:
+    """Human-readable preview for review."""
+    import json
+    lines = []
+    lines.append(f"=== PROPOSAL · {p['ticket']} ===")
+    lines.append(f"Channel: {p['channel']} | Format: {p['format']} | Sendout type: {p['sendout_type'] or '?'}")
+    s = p["schedule"]
+    lines.append(f"Schedule: {s['date']} {s['time']} {s['timezone']}".rstrip())
+    lines.append(f"Recipients: segment={p['recipients']['segment']}")
+    lines.append(f"New template needed: {'YES (Meta approval)' if p['new_template_required'] else 'no — reuse approved template'}")
+    lines.append("")
+    lines.append("--- Proposed template payload ---")
+    lines.append(json.dumps(p["template"], indent=2, ensure_ascii=False))
+    if p["warnings"]:
+        lines.append("")
+        lines.append("⚠️  WARNINGS (fix before submit):")
+        for w in p["warnings"]:
+            lines.append(f"   • {w}")
+    if p["notes"]:
+        lines.append("")
+        lines.append("ℹ️  NOTES:")
+        for n in p["notes"]:
+            lines.append(f"   • {n}")
+    return "\n".join(lines)
