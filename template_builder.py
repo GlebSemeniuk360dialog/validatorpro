@@ -144,7 +144,7 @@ def _build_waba(parsed: dict, jira: dict, warnings: list, notes: list) -> dict:
             if not c.get("media"):
                 warnings.append(f"Card {i+1} has no media — a carousel card HEADER (IMAGE/VIDEO) is required; upload the asset.")
             elif str(c.get("media")).startswith("form-file:"):
-                warnings.append(f"Card {i+1} media is a form upload — it must be uploaded to a header_handle (resumable upload) before the template can be created.")
+                warnings.append(f"Card {i+1} media is a form upload — POST the file to DMA (/api/v2/media) and use the returned `url` as the header example before creating the template.")
 
         # Consistency: all cards must have the same number of components.
         if len({len(cc["components"]) for cc in card_comps}) > 1:
@@ -362,7 +362,7 @@ def build_sendout_payload(
             media = c.get("media") or ""
             if media.startswith("form-file:"):
                 cp.append({"type": "header_image", "source": "custom"})  # value resolved later
-                notes.append(f"Card {i+1} media is a form upload ({media}) — resolve to a hosted URL via POST /media before scheduling.")
+                notes.append(f"Card {i+1} media is a form upload ({media}) — POST the file to DMA (/api/v2/media); use the returned `url` as this header_image value before scheduling.")
             elif media:
                 cp.append({"value": media, "type": "header_image", "source": "custom"})
             else:
