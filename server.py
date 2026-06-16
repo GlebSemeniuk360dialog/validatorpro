@@ -1859,12 +1859,29 @@ async def sendout_dryrun(
     # Build + validate the event body
     try:
         event = _tb.build_event_payload(j, template_name=template_name, recurrence=recurrence)
+        proposal = _tb.build_sendout_proposal(j)
     except Exception as exc:
         logger.error("sendout_dryrun build failed for %s: %s", ticket, exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Build failed: {_friendly_exc(exc)}")
     body = event["payload"]
     inner = body.get("event_actions", [{}])[0].get("data", {}).get("body", {})
     problems = _tb.validate_sendout_payload(inner)
+
+    # New/special WABA sendouts need a template created first (POST /v1/configs/templates,
+    # WABA API, D360-API-KEY). Assemble that request too — still never sent. RCS and
+    # regular (reuse-existing) sendouts skip this.
+    template_request = None
+    if proposal.get("new_template_required") and proposal.get("channel") == "WABA":
+        tpl = dict(proposal.get("template") or {})
+        tpl["allow_category_change"] = True
+        template_request = {
+            "method": "POST",
+            "url": "https://waba-v2.360dialog.io/v1/configs/templates",
+            "headers": {"D360-API-KEY": "***", "Content-Type": "application/json"},
+            "body": tpl,
+            "note": "New/special sendout — this template must be created and APPROVED by Meta before the sendout can be scheduled.",
+        }
+        diagnostics.append("New/special sendout — a template creation request is required first (see template_request).")
 
     url = f"{_DMA_BASE}/accounts/{acct}/sage/events/add" if acct else None
     blockers = list(problems)
@@ -1886,6 +1903,7 @@ async def sendout_dryrun(
         "validation_problems": problems,
         "blockers": blockers,
         "ready_to_schedule": not blockers,
+        "template_request": template_request,
         "warnings": event["warnings"],
         "notes": event["notes"],
         "diagnostics": diagnostics,
