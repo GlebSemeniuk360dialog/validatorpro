@@ -12,6 +12,7 @@ import base64
 import functools
 import io
 import logging
+import os
 from datetime import datetime, timedelta
 
 import pytz
@@ -651,6 +652,160 @@ def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str)
         return None
 
 
+# ── New-form (questionKey-based) fetcher ───────────────────────────────────────
+# The new sendout form uses stable questionKeys instead of free-text labels, e.g.
+#   select_platform, select_sendout_format, select_number_cards, select_sendout_type
+#   waba_basic_sendout_text / waba_basic_footer / waba_basic_button_{name,link}
+#   waba_carousel_{N}_cards_{ord}_{main,media,text,button_name,button_link}
+#   rcs_carousel_{N}_cards_{ord}_{title,media,text,button_name,button_link}
+# Keying off questionKey avoids the duplicate-label problem entirely.
+#
+# Toggle with env var FORM_FETCHER_V2=1. When ON, fetch_ticket_data tries v2 and
+# falls back to v1 if v2 returns nothing, so enabling it cannot break old tickets.
+
+USE_FORM_FETCHER_V2 = os.getenv("FORM_FETCHER_V2", "0").strip() in ("1", "true", "yes", "on")
+
+_CARD_ORDINALS = (
+    "first", "second", "third", "fourth", "fifth",
+    "sixth", "seventh", "eighth", "ninth", "tenth",
+)
+
+
+def fetch_jira_form_answers_v2(server: str, email: str, token: str, issue_key: str) -> dict | None:
+    """
+    Parse the new sendout form strictly by questionKey (not by label).
+
+    Returns the same shape fetch_jira_form_answers does — {"intro", "cards", "urls"}
+    — plus harmless extra keys ("footer", "platform", "sendout_format",
+    "sendout_type", "num_cards") that downstream code ignores. Cards carry the
+    legacy keys (body/btn/url) plus title/media for the new form.
+
+    Returns None if there is no form, the fetch fails, or the form has no
+    recognisable new-form driver keys (so callers can fall back to v1).
+    """
+    try:
+        cloud_resp = requests.get(f"{server.rstrip('/')}/_edge/tenant_info", timeout=HTTP_TIMEOUT)
+        cloud_id = cloud_resp.json().get("cloudId", "") if cloud_resp.ok else ""
+        if not cloud_id:
+            logger.warning("form_v2: could not get cloudId for %s", issue_key)
+            return None
+
+        hdrs = {"Accept": "application/json", "X-ExperimentalApi": "opt-in"}
+        auth = (email, token)
+        api = f"https://api.atlassian.com/jira/forms/cloud/{cloud_id}/issue/{issue_key}/form"
+
+        forms_resp = requests.get(api, auth=auth, headers=hdrs, timeout=HTTP_TIMEOUT)
+        if not forms_resp.ok:
+            logger.debug("form_v2: no forms on %s (HTTP %s)", issue_key, forms_resp.status_code)
+            return None
+        forms = forms_resp.json()
+        if not forms:
+            return None
+        form = next((f for f in forms if f.get("submitted")), forms[0])
+        form_id = form.get("id", "")
+        if not form_id:
+            return None
+
+        # Full form: design.questions (with questionKey + choices) + state.answers
+        full = requests.get(f"{api}/{form_id}", auth=auth, headers=hdrs, timeout=HTTP_TIMEOUT)
+        if not full.ok:
+            logger.warning("form_v2: form fetch failed for %s/%s (HTTP %s)",
+                           issue_key, form_id, full.status_code)
+            return None
+        data = full.json()
+        questions = data.get("design", {}).get("questions", {}) or {}
+        answers = data.get("state", {}).get("answers", {}) or {}
+
+        # Build questionKey -> resolved value (choices decoded to their labels)
+        kv: dict = {}
+        for qid, q in questions.items():
+            qkey = q.get("questionKey")
+            if not qkey:
+                continue
+            a = answers.get(qid, {}) or {}
+            cmap = {str(c.get("id")): c.get("label", "") for c in (q.get("choices") or [])}
+            val = ""
+            if a.get("text"):
+                val = a["text"]
+            elif a.get("choices"):
+                val = ", ".join(cmap.get(str(c), str(c)) for c in a["choices"])
+            elif a.get("date"):
+                val = a["date"]
+            elif a.get("time"):
+                val = a["time"]
+            if str(val).strip():
+                kv[qkey] = str(val).strip()
+
+        # Must look like the new form (has at least the platform driver), else bail to v1
+        platform_raw = kv.get("select_platform", "")
+        if not platform_raw and not any(k.startswith(("waba_", "rcs_")) for k in kv):
+            logger.debug("form_v2: %s has no new-form keys — defer to v1", issue_key)
+            return None
+
+        fmt_raw   = kv.get("select_sendout_format", "")
+        type_raw  = kv.get("select_sendout_type", "")
+        ncard_raw = kv.get("select_number_cards", "")
+        pfx = "waba" if "whatsapp" in platform_raw.lower() else ("rcs" if "rcs" in platform_raw.lower() else "")
+        is_basic = "basic" in fmt_raw.lower()
+
+        import re as _re
+        n = 0
+        m = _re.search(r"\d+", ncard_raw)
+        if m:
+            n = int(m.group())
+
+        intro = ""
+        footer = ""
+        cards: list = []
+
+        if is_basic or n == 0:
+            # Single-message ("basic") sendout
+            intro  = kv.get(f"{pfx}_basic_sendout_text", "")
+            footer = kv.get(f"{pfx}_basic_footer", "")
+            card = {
+                "body":  kv.get(f"{pfx}_basic_sendout_text", ""),
+                "btn":   kv.get(f"{pfx}_basic_button_name", ""),
+                "url":   kv.get(f"{pfx}_basic_button_link", ""),
+                "title": kv.get(f"{pfx}_basic_card_title", ""),   # RCS only
+                "media": kv.get(f"{pfx}_basic_media", ""),
+            }
+            if any(card.values()):
+                cards = [card]
+        else:
+            # Carousel: WABA has a `_first_main` intro, RCS has none
+            intro = kv.get(f"{pfx}_carousel_{n}_cards_first_main", "")
+            for i in range(min(n, len(_CARD_ORDINALS))):
+                o = _CARD_ORDINALS[i]
+                base = f"{pfx}_carousel_{n}_cards_{o}_"
+                cards.append({
+                    "body":  kv.get(base + "text", ""),
+                    "btn":   kv.get(base + "button_name", ""),
+                    "url":   kv.get(base + "button_link", "").rstrip(";").strip(),
+                    "title": kv.get(base + "title", ""),   # RCS only
+                    "media": kv.get(base + "media", ""),
+                })
+
+        result = {
+            "intro": intro,
+            "footer": footer,
+            "cards": cards,
+            "urls": [c["url"] for c in cards if c.get("url")],
+            "platform": platform_raw,
+            "sendout_format": fmt_raw,
+            "sendout_type": type_raw,
+            "num_cards": n,
+        }
+        logger.info(
+            "form_v2: parsed %s — platform=%s format=%s type=%s cards=%d intro=%dch",
+            issue_key, platform_raw, fmt_raw, type_raw, len(cards), len(intro),
+        )
+        return result
+
+    except Exception as exc:
+        logger.warning("form_v2: failed for %s: %s", issue_key, exc)
+        return None
+
+
 def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch_images: bool = True, max_images: int = 10) -> dict | None:
     """
     Return a normalised dict of JIRA ticket data including attachments.
@@ -685,11 +840,18 @@ def fetch_ticket_data(server: str, email: str, token: str, ticket_id: str, fetch
         # Priority 1: Atlassian Forms API (ProForma / JSM native forms)
         # Returns a parsed dict {intro, cards, urls} — set parsed_carousel directly,
         # no regex needed. Also set description to the intro so copy checks have text.
-        form_data = fetch_jira_form_answers(server, email, token, issue.key)
+        form_data = None
+        if USE_FORM_FETCHER_V2:
+            form_data = fetch_jira_form_answers_v2(server, email, token, issue.key)
+            if form_data:
+                data["form_version"] = "v2"
+        if not form_data:  # v2 disabled, or returned nothing → legacy parser
+            form_data = fetch_jira_form_answers(server, email, token, issue.key)
         if form_data and isinstance(form_data, dict):
             data["parsed_carousel"] = form_data
             data["description"] = form_data.get("intro", "")
-            logger.info("fetch_ticket_data: carousel form data from Forms API for %s", ticket_id)
+            logger.info("fetch_ticket_data: carousel form data (%s) from Forms API for %s",
+                        data.get("form_version", "v1"), ticket_id)
         # Priority 2: additional_comments field (cover note — least reliable)
         elif data.get("additional_comments"):
             data["description"] = str(data["additional_comments"])
