@@ -251,6 +251,129 @@ def build_sendout_proposal(
     }
 
 
+# ── Sendout payload (campaigns API: /sendout/simulate | /schedule | /execute) ──
+# The campaigns API body (Api_v2_SendoutRequest) is the INVERSE of what
+# fetch_api_data reads: a template_name + component_parameters that BIND the
+# template's slots (header_image→custom URL, body_text→first_name, …) + filters
+# (tags / shop_number / locale …) + google_rcs_content for RCS.
+#
+# Real examples observed:
+#   basic    : [{value:<img>, type:header_image, source:custom},
+#               {type:body_text, source:first_name}]
+#   carousel : [{type:carousel, source:custom_cards, cards:[{component_parameters:[…]}]}]
+#   filters  : [{tags:[{name:leaflet_accepted, value:true}, …]}] | [{shop_number:"3691"}]
+#
+# NOTE: body_text bindings (first_name / shop_address / …) are template-specific
+# and cannot be fully inferred from the form. For RECURRING sendouts the robust
+# path is clone-and-patch: take last week's sendout (fetch_api_data) and update
+# only the deltas (this week's media + date). This builder reconstructs a
+# best-effort payload from the form for review/simulate; it flags what needs the
+# template's real variable map.
+
+_SENDOUT_ACTION = "weekly_notifications"  # ActionEnum value used for notification campaigns
+
+
+def build_sendout_payload(
+    jira: dict,
+    *,
+    template_name: str = "",
+    body_binding: str = "first_name",
+) -> dict:
+    """
+    Build a campaigns-API sendout payload (Api_v2_SendoutRequest) from the
+    v2-form-enriched JIRA dict. Deterministic; performs no network calls.
+    Suitable as the body for POST /sendout/simulate (dry-run).
+
+    Returns {payload, warnings, notes, account_hint}. `template_name` should be
+    the client's approved template (known for recurring sendouts).
+    """
+    parsed = jira.get("parsed_carousel") or {}
+    warnings: list = []
+    notes: list = []
+
+    channel_raw = str(jira.get("waba_or_rcs") or parsed.get("platform") or "")
+    if isinstance(jira.get("waba_or_rcs"), list) and jira["waba_or_rcs"]:
+        channel_raw = jira["waba_or_rcs"][0]
+    is_rcs = "rcs" in channel_raw.lower()
+
+    cards = parsed.get("cards") or []
+    is_carousel = ("carousel" in str(parsed.get("sendout_format", "")).lower()) or len(cards) > 1
+
+    schedule = _split_schedule(jira)
+    payload: dict = {
+        "action": _SENDOUT_ACTION,
+        "sendout_type": "google_rcs" if is_rcs else "meta_waba",
+    }
+    if template_name:
+        payload["template_name"] = template_name
+    else:
+        warnings.append("No template_name — required to simulate/schedule. For recurring sendouts use the client's approved template.")
+    if schedule["raw"]:
+        payload["sendout_date"] = schedule["raw"]
+    else:
+        warnings.append("No sendout_date on the ticket.")
+
+    if is_rcs:
+        payload["google_rcs_content"] = _build_rcs(parsed, warnings, notes)
+        notes.append("RCS sendout — content carried in google_rcs_content (no component_parameters).")
+    elif is_carousel:
+        card_objs = []
+        for i, c in enumerate(cards):
+            cp = []
+            if c.get("media"):
+                cp.append({"value": c["media"], "type": "header_image", "source": "custom"})
+            else:
+                warnings.append(f"Card {i+1}: no media — header_image binding will be missing.")
+            cp.append({"type": "body_text", "source": body_binding})
+            if c.get("url"):
+                cp.append({"value": c["url"], "type": "button_cta", "source": "custom"})
+            card_objs.append({"component_parameters": cp})
+        payload["component_parameters"] = [
+            {"type": "carousel", "source": "custom_cards", "cards": card_objs}
+        ]
+    else:
+        cp = []
+        media = jira.get("_basic_media", "") or ""
+        if media:
+            cp.append({"value": media, "type": "header_image", "source": "custom"})
+        cp.append({"type": "body_text", "source": body_binding})
+        if jira.get("cta_link"):
+            cp.append({"value": jira["cta_link"], "type": "button_cta", "source": "custom"})
+        payload["component_parameters"] = cp
+
+    # Audience filters are not in the form — they come from config / G-Sheet.
+    payload["filters"] = []
+    notes.append("filters[] is empty — attach audience tags/shop filters from client config / G-Sheet before scheduling.")
+    notes.append(f"body_text bound to source='{body_binding}' by default — verify against the template's real variable map (clone-and-patch from last week's sendout is more reliable for recurring).")
+
+    return {
+        "payload": payload,
+        "warnings": warnings,
+        "notes": notes,
+    }
+
+
+def validate_sendout_payload(payload: dict) -> list:
+    """Offline schema sanity-check (required fields). Returns list of problems."""
+    problems = []
+    if not payload.get("action"):
+        problems.append("missing required: action")
+    for i, cp in enumerate(payload.get("component_parameters", []) or []):
+        if not cp.get("type"):
+            problems.append(f"component_parameters[{i}] missing required: type")
+        if not cp.get("source"):
+            problems.append(f"component_parameters[{i}] missing required: source")
+        for j, card in enumerate(cp.get("cards", []) or []):
+            for k, ccp in enumerate(card.get("component_parameters", []) or []):
+                if not ccp.get("type") or not ccp.get("source"):
+                    problems.append(f"component_parameters[{i}].cards[{j}].component_parameters[{k}] missing type/source")
+    for i, f in enumerate(payload.get("filters", []) or []):
+        for j, tag in enumerate(f.get("tags", []) or []):
+            if not tag.get("name"):
+                problems.append(f"filters[{i}].tags[{j}] missing required: name")
+    return problems
+
+
 def render_proposal_text(p: dict) -> str:
     """Human-readable preview for review."""
     import json
