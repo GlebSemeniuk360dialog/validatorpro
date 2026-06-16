@@ -451,6 +451,102 @@ def build_event_payload(
     return {"payload": event, "warnings": warnings, "notes": notes}
 
 
+_HEADER_MEDIA_TYPES = ("header_image", "header_video", "header_document")
+
+
+def _patch_media_in_params(params: list, media: list, changed: list, path: str = "") -> None:
+    """Replace custom header-media `value`s positionally with `media`, recording diffs."""
+    idx = 0
+    for cp in params:
+        t = cp.get("type", "")
+        if t == "carousel":
+            for ci, card in enumerate(cp.get("cards", []) or []):
+                _patch_media_in_params(
+                    card.get("component_parameters", []) or [], media, changed,
+                    path=f"{path}card[{ci}].",
+                )
+        elif t in _HEADER_MEDIA_TYPES and cp.get("source") == "custom":
+            if idx < len(media) and media[idx]:
+                old = cp.get("value", "")
+                if media[idx] != old:
+                    cp["value"] = media[idx]
+                    changed.append(f"{path}{t}: {old or '(none)'} → {media[idx]}")
+            idx += 1
+
+
+def clone_and_patch_event(
+    prev_sendout: dict,
+    *,
+    new_date: str,
+    timezone: str = "CET",
+    media: Optional[list] = None,
+    campaign_name: str = "",
+    action_name: str = "Sendout",
+    recurrence: str = "one_off",
+) -> dict:
+    """
+    Build a fresh /sage/events/add body by cloning a previous executed sendout
+    (dict from fetch_api_data) and patching only the deltas: sendout_date and,
+    optionally, custom header-media URLs (positional). Keeps the template,
+    component_parameters bindings and audience filters intact — the reliable
+    path for recurring sendouts. Pure; no network calls.
+
+    Defensively drops credential / bot_id fields so nothing sensitive is copied.
+    Returns {payload, changed, warnings, notes}.
+    """
+    import copy
+    warnings: list = []
+    notes: list = []
+    changed: list = []
+
+    sendout_type = prev_sendout.get("sendout_type") or (
+        "google_rcs" if prev_sendout.get("google_rcs_content") else "meta_waba"
+    )
+    body: dict = {"action": _SENDOUT_ACTION, "sendout_type": sendout_type}
+
+    tmpl = prev_sendout.get("template_name")
+    if tmpl:
+        body["template_name"] = tmpl
+
+    # Clone the content (component_parameters or RCS), never the credentials.
+    if sendout_type == "google_rcs":
+        if prev_sendout.get("google_rcs_content"):
+            body["google_rcs_content"] = copy.deepcopy(prev_sendout["google_rcs_content"])
+    else:
+        cp = copy.deepcopy(prev_sendout.get("component_parameters", []) or [])
+        if media:
+            _patch_media_in_params(cp, media, changed)
+        body["component_parameters"] = cp
+
+    body["filters"] = copy.deepcopy(prev_sendout.get("filters", []) or [])
+    body["sendout_date"] = new_date
+    if (prev_sendout.get("sendout_date") or "") != new_date:
+        changed.append(f"sendout_date: {prev_sendout.get('sendout_date','(none)')} → {new_date}")
+
+    # Safety: never carry credentials/bot ids forward
+    for k in ("credential", "bot_id", "credential_value", "auth_token"):
+        body.pop(k, None)
+
+    if not tmpl and sendout_type != "google_rcs":
+        warnings.append("Previous sendout had no template_name — cannot clone a WABA sendout without it.")
+    if media and not changed:
+        notes.append("Media supplied but no custom header-media slots matched — nothing patched.")
+
+    jira_like = {"date": new_date, "timezone": timezone, "key": campaign_name}
+    rec = build_recurrence_pattern(jira_like, recurrence)
+    event = {
+        "name": campaign_name or "Sendout",
+        "event_actions": [{
+            "name": action_name,
+            "action_type": "dma_sendout",
+            "data": {"body": body},
+        }],
+        "recurrence_pattern": rec,
+    }
+    notes.append("Cloned from last sendout — template, bindings and filters reused; only date/media patched.")
+    return {"payload": event, "changed": changed, "warnings": warnings, "notes": notes}
+
+
 def validate_sendout_payload(payload: dict) -> list:
     """Offline schema sanity-check (required fields). Returns list of problems."""
     problems = []
