@@ -81,8 +81,10 @@ function toggleVis(uid) {
 <!-- Babel standalone for JSX -->
 <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
 
-<script type="text/babel" data-type="script">
+<script type="text/babel">
 /* @jsxRuntime classic */
+/* @jsx React.createElement */
+/* @jsxFrag React.Fragment */
 /* ─────────────────────────────────────────────────────────────────────────────
    ALL JSX — tokens already on window, React/ReactDOM loaded above
    ───────────────────────────────────────────────────────────────────────── */

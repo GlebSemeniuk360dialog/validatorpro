@@ -1,0 +1,103 @@
+{
+  "examples": [
+    {
+      "id": "790d00d5",
+      "active": true,
+      "added_at": "2026-05-23",
+      "client": "Nahkauf",
+      "check": "copy",
+      "scenario": "Carousel Texts",
+      "verdict": "PASS",
+      "added_by": "",
+      "input_snippet": {
+        "JIRA_Intent": {
+          "Text_Description": "Intro: Hallo x, \nZeit für frische Ideen auf dem Grill! Mit unseren Top-Angeboten und Bonus-Aktionen wird dein Grill-Erlebnis ein echtes Highlight!",
+          "JIRA_Parsed_Carousel": {
+            "intro": "Intro: Hallo x, \nZeit für frische Ideen auf dem Grill! Mit unseren Top-Angeboten und Bonus-Aktionen wird dein Grill-Erlebnis ein echtes Highlight!",
+            "cards": [
+              {
+                "body": "Entdecke die Knaller-Angebote aus deinem nahkauf {{1}}, {{2}}.🛒 \nCTA: Zum Prospekt",
+                "btn": "Zum Prospekt"
+              },
+              {
+                "body": "Schneller Genuss für zu Hause🍕: Wagner Pizza in versch. Sorten für nur 1,99€!\nCTA: Zum Prospekt",
+                "btn": "Zum Prospekt"
+              },
+              {
+                "body": "Starte in die Erdbeersaison mit unseren aromatischen Erdbeeren und zusätzlich 20% Bonus-Guthaben! Einfach den Coupon aktivieren und genießen!🍓 \nCTA: Zum Prospekt",
+                "btn": "Zum Prospekt"
+              }
+            ]
+          }
+        },
+        "DMA_API_Setup": {
+          "Template_Body_Intro": "Hallo {{1}},\nZeit für frische Ideen auf dem Grill! Mit unseren Top-Angeboten und Bonus-Aktionen wird dein Grill-Erlebnis ein echtes Highlight!",
+          "Template_Carousel_Cards": [
+            "Card 1 Body: 'Entdecke die Knaller-Angebote aus deinem nahkauf {{1}}, {{2}}. 🛒' | Buttons: ['Zum Prospekt']",
+            "Card 2 Body: 'Schneller Genuss für zu Hause🍕: Wagner Pizza in versch. Sorten für nur 1,99€!' | Buttons: ['Zum Prospekt']",
+            "Card 3 Body: 'Starte in die Erdbeersaison mit unseren aromatischen Erdbeeren und zusätzlich 20% Bonus-Guthaben! Einfach den Coupon aktivieren und genießen!🍓 ' | Buttons: ['Zum Prospekt']"
+          ]
+        },
+        "Precomputed_Diffs": {
+          "copy_text": {
+            "similarity_ratio": 0.955,
+            "pre_verdict": "PASS",
+            "assessment": "✅ Texts are nearly identical",
+            "diff_preview": "--- \n+++ \n@@ -1,2 +1,2 @@\n-intro: hallo x, zeit für frische ideen auf dem grill! mit unseren top-angeboten und bonus-aktionen w\n-ird dein grill-erlebnis ein echtes highlight!\n+hallo {{1}}, zeit für frische ideen auf dem grill! mit unseren top-angeboten und bonus-aktionen wird\n+ dein grill-erlebnis ein echtes highlight!"
+          }
+        }
+      },
+      "correct_output": {
+        "verdict": "PASS",
+        "reason": "The introductory text and all three carousel card bodies in the DMA template accurately reflect the content and intent described in the JIRA, including variable placeholders.",
+        "expected": "Intro: Hallo x, Zeit für frische Ideen auf dem Grill! Mit unseren Top-Angeboten und Bonus-Aktionen wird dein Grill-Erlebnis ein echtes Highlight! Card 1: Entdecke die Knaller-Angebote aus deinem nahkauf {{1}}, {{2}}.🛒 Card 2: Schneller Genuss für zu Hause🍔: Wagner Pizza in versch. Sorten für nur 1,99€! Card 3: Starte in die Erdbeersaison mit unseren aromatischen Erdbeeren und zusätzlich 20% Bonus-Guthaben! Einfach den Coupon aktivieren und genießen!🍓",
+        "actual": "Intro: Hallo {{1}}, Zeit für frische Ideen auf dem Grill! Mit unseren Top-Angeboten und Bonus-Aktionen wird dein Grill-Erlebnis ein echtes Highlight! Card 1: Entdecke die Knaller-Angebote aus deinem nahkauf {{1}}, {{2}}. 🛒 Card 2: Schneller Genuss für zu Hause🍔: Wagner Pizza in versch. Sorten für nur 1,99€! Card 3: Starte in die Erdbeersaison mit unseren aromatischen Erdbeeren und zusätzlich 20% Bonus-Guthaben! Einfach den Coupon aktivieren und genießen!🍓"
+      }
+    },
+    {
+      "id": "a382964c",
+      "active": true,
+      "added_at": "2026-06-15",
+      "client": "ALDI Sued",
+      "check": "tags",
+      "scenario": "Correct segment checking",
+      "verdict": "PASS",
+      "added_by": "",
+      "input_snippet": {
+        "G_Sheet_Intent": {
+          "Include_Tags": "leaflet_accepted=true, alditopics_042025=clothing",
+          "Exclude_Tags": ""
+        },
+        "DMA_API_Setup": {
+          "API_Tags_And_Filters": "[Include] leaflet_accepted=true, [Include] alditopics_042025=clothing"
+        },
+        "Precomputed_Diffs": {
+          "tags": {
+            "expected_include": [
+              "alditopics_042025=clothing",
+              "leaflet_accepted=true"
+            ],
+            "expected_exclude": [],
+            "actual_include": [
+              "alditopics_042025=clothing",
+              "leaflet_accepted=true"
+            ],
+            "actual_exclude": [],
+            "missing_include": [],
+            "extra_include": [],
+            "missing_exclude": [],
+            "extra_exclude": [],
+            "pre_verdict": "PASS",
+            "note": "✅ All tags match"
+          }
+        }
+      },
+      "correct_output": {
+        "verdict": "PASS",
+        "reason": "The target audience filters align perfectly. All expected tags including the mandatory leaflet_accepted filter are correctly set up.",
+        "expected": "leaflet_accepted=true, alditopics_042025=clothing",
+        "actual": "[Include] leaflet_accepted=true, [Include] alditopics_042025=clothing"
+      }
+    }
+  ]
+}

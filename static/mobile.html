@@ -8,6 +8,8 @@
   <title>Validator Pro — Mobile</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="dns-prefetch" href="https://unpkg.com" />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -46,9 +48,10 @@
 
     .vp-fade { animation:vp-fade-in .2s ease both; }
 
-    .vp-ticket-card { background:#ffffff; border:1px solid #e6eaef; border-radius:10px; padding:12px 14px; cursor:pointer; transition:box-shadow .15s, border-color .15s; -webkit-user-select:none; user-select:none; }
+    .vp-ticket-card { background:#ffffff; border:1px solid #e6eaef; border-radius:10px; padding:12px 14px; cursor:pointer; transition:box-shadow .15s, border-color .15s; -webkit-user-select:none; user-select:none; touch-action:manipulation; }
     .vp-ticket-card:active { box-shadow:0 0 0 2px #0fb5b540; border-color:#0fb5b5; }
     .vp-ticket-card.selected { border-color:#0fb5b5; box-shadow:0 0 0 2px #0fb5b520; }
+    .vp-checkbox-btn { background:none; border:none; padding:0; margin:0; cursor:pointer; touch-action:manipulation; flex-shrink:0; display:flex; align-items:center; justify-content:center; -webkit-tap-highlight-color:transparent; }
 
     .vp-seg-tab { flex:1; padding:7px 4px; border:none; background:none; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:500; color:#8893a3; border-bottom:2px solid transparent; cursor:pointer; transition:color .15s, border-color .15s; white-space:nowrap; }
     .vp-seg-tab.active { color:#0fb5b5; border-bottom-color:#0fb5b5; }
@@ -362,7 +365,13 @@ function IconValidator({ active }) {
     </svg>
   );
 }
-
+function IconOrphans({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+    </svg>
+  );
+}
 function IconDashboard({ active }) {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -375,6 +384,13 @@ function IconProfile({ active }) {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+function IconConfig({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? T.brand.base : T.fg[3]} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
     </svg>
   );
 }
@@ -489,9 +505,13 @@ function QueueScreen({ token, onOpenTicket }) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(new Set());
   const [bulkMode, setBulkMode] = useState(false);
+  const bulkModeRef   = useRef(false);
   const [bulkLoading, setBulkLoading] = useState('');
+  const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
+  const [bulkToast, setBulkToast] = useState('');
   const longPressRef  = useRef(null);
-  const touchStartPos = useRef(null);  // track touch start position to ignore scroll-taps
+  const longPressKey  = useRef(null);
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
     setLoading(true);
@@ -499,7 +519,7 @@ function QueueScreen({ token, onOpenTicket }) {
       .then(data => { setTickets(Array.isArray(data) ? data : []); setError(''); })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
-  }, [token]);
+  }, [token, refresh]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -532,57 +552,74 @@ function QueueScreen({ token, onOpenTicket }) {
     return 'neutral';
   }
 
-  function startLongPress(key, e) {
-    const touch = e?.touches?.[0];
-    touchStartPos.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
-    longPressRef.current = setTimeout(() => {
-      setBulkMode(true);
-      setSelected(prev => new Set([...prev, key]));
-    }, 600);
-  }
-  function cancelLongPress() {
-    if (longPressRef.current) clearTimeout(longPressRef.current);
-  }
-  function hasMoved(e) {
-    if (!touchStartPos.current) return false;
-    const touch = e?.changedTouches?.[0];
-    if (!touch) return false;
-    const dx = Math.abs(touch.clientX - touchStartPos.current.x);
-    const dy = Math.abs(touch.clientY - touchStartPos.current.y);
-    return dx > 8 || dy > 8;  // 8px threshold — ignore tiny finger wobble
+  function enterBulkMode(key) {
+    bulkModeRef.current = true;
+    setBulkMode(true);
+    setSelected(prev => new Set([...prev, key]));
   }
 
-  function handleCardPress(ticket, e) {
-    cancelLongPress();
-    if (hasMoved(e)) return;  // user was scrolling, not tapping
-    if (bulkMode) {
-      setSelected(prev => {
-        const next = new Set(prev);
-        if (next.has(ticket.key)) next.delete(ticket.key);
-        else next.add(ticket.key);
-        if (next.size === 0) setBulkMode(false);
-        return next;
-      });
-    } else {
-      onOpenTicket(ticket);
-    }
+  function toggleKey(key) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      if (next.size === 0) { bulkModeRef.current = false; setBulkMode(false); }
+      return next;
+    });
+  }
+
+  // Checkbox button click — always intercepts, never opens ticket
+  function handleCheckboxClick(key, e) {
+    e.stopPropagation();
+    if (!bulkModeRef.current) enterBulkMode(key);
+    else toggleKey(key);
+  }
+
+  // Card body click — opens ticket or toggles in bulk mode
+  function handleCardClick(ticket) {
+    if (bulkModeRef.current) toggleKey(ticket.key);
+    else onOpenTicket(ticket);
+  }
+
+  // Long press to enter bulk mode (pointer events — no touch-detection hacks)
+  function onPointerDown(key, e) {
+    if (e.button !== undefined && e.button !== 0) return;
+    longPressKey.current = key;
+    longPressRef.current = setTimeout(() => {
+      if (longPressKey.current === key) enterBulkMode(key);
+    }, 600);
+  }
+  function onPointerUp() {
+    clearTimeout(longPressRef.current);
+    longPressKey.current = null;
   }
 
   async function bulkAction(action) {
     setBulkLoading(action);
     const keys = Array.from(selected);
-    const endpoint = action === 'check' ? '/api/validate' : '/api/ai-audit';
+    setBulkProgress({ done: 0, total: keys.length });
+    const endpoint = action === 'check' ? '/api/bulk-validate' : '/api/bulk-ai-audit';
+    let done = 0;
     try {
-      for (const key of keys) {
-        const ticket = tickets.find(t => t.key === key);
-        if (ticket) {
-          await mapi('POST', endpoint, { client: ticket.client, ticket_key: ticket.key }, token).catch(() => {});
+      await mapi('POST', endpoint, { ticket_keys: keys }, token).catch(async () => {
+        // fallback: serial single-ticket calls
+        for (const key of keys) {
+          const ticket = tickets.find(t => t.key === key);
+          if (ticket) {
+            const ep = action === 'check' ? '/api/validate' : '/api/ai-audit';
+            await mapi('POST', ep, { client: ticket.client, ticket_key: ticket.key }, token).catch(() => {});
+          }
+          done++;
+          setBulkProgress({ done, total: keys.length });
         }
-      }
+      });
     } finally {
       setBulkLoading('');
+      bulkModeRef.current = false;
       setBulkMode(false);
       setSelected(new Set());
+      setBulkProgress({ done: 0, total: 0 });
+      setBulkToast(`${keys.length} ticket${keys.length !== 1 ? 's' : ''} processed`);
+      setTimeout(() => setBulkToast(''), 3000);
     }
   }
 
@@ -593,6 +630,9 @@ function QueueScreen({ token, onOpenTicket }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
           <LogoMark size={22} />
           <div style={{ fontSize: 15, fontWeight: 700, color: T.fg[1], flex: 1 }}>Ticket Queue</div>
+          <button onClick={() => setRefresh(r => r + 1)} disabled={loading} style={{ background: 'none', border: `1px solid ${T.border.base}`, borderRadius: 6, padding: '4px 8px', cursor: 'pointer', color: T.fg[2], fontSize: 14, display: 'flex', alignItems: 'center', opacity: loading ? 0.5 : 1 }}>
+            {loading ? <span className="vp-spinner" style={{ width: 12, height: 12 }} /> : '↻'}
+          </button>
           <MBracket>LIVE</MBracket>
         </div>
         <MInput value={search} onChange={setSearch} placeholder="Search tickets…" icon={
@@ -600,9 +640,16 @@ function QueueScreen({ token, onOpenTicket }) {
         } style={{ marginBottom: 10 }} />
       </div>
 
+      {/* Bulk toast */}
+      {bulkToast ? (
+        <div style={{ position: 'fixed', bottom: 80, left: '50%', transform: 'translateX(-50%)', zIndex: 9999, pointerEvents: 'none', background: T.ok.base, color: '#fff', fontFamily: T.font.sans, fontSize: 13, fontWeight: 700, padding: '10px 22px', borderRadius: 999, boxShadow: T.ok.glow, animation: 'vp-fade-in .18s ease both', whiteSpace: 'nowrap' }}>
+          ✓ {bulkToast}
+        </div>
+      ) : null}
+
       {/* Content */}
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 16px 24px' }}>
-        {!bulkMode && <div className="long-press-hint">Long-press a card to select multiple</div>}
+        {!bulkMode && <div className="long-press-hint">Tap the checkbox on any card to select multiple</div>}
 
         <ErrorBox msg={error} onDismiss={() => setError('')} />
 
@@ -620,25 +667,30 @@ function QueueScreen({ token, onOpenTicket }) {
                 <div
                   key={ticket.key}
                   className={`vp-ticket-card${isSelected ? ' selected' : ''}`}
-                  onTouchStart={e => startLongPress(ticket.key, e)}
-                  onTouchEnd={e => handleCardPress(ticket, e)}
-                  onTouchMove={cancelLongPress}
-                  onMouseDown={() => startLongPress(ticket.key)}
-                  onMouseUp={() => handleCardPress(ticket)}
-                  onMouseLeave={cancelLongPress}
-                  onContextMenu={e => { e.preventDefault(); setBulkMode(true); setSelected(prev => new Set([...prev, ticket.key])); }}
+                  onClick={() => handleCardClick(ticket)}
+                  onPointerDown={e => onPointerDown(ticket.key, e)}
+                  onPointerUp={onPointerUp}
+                  onPointerLeave={onPointerUp}
+                  onContextMenu={e => { e.preventDefault(); enterBulkMode(ticket.key); }}
                 >
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                    {bulkMode && (
-                      <div style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${isSelected ? T.brand.base : T.border.input}`, background: isSelected ? T.brand.base : '#fff', flexShrink: 0, marginTop: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        {isSelected && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="1.8" strokeLinecap="round"/></svg>}
-                      </div>
-                    )}
+                    <button
+                      className="vp-checkbox-btn"
+                      onClick={e => handleCheckboxClick(ticket.key, e)}
+                      style={{ width: 26, height: 26, minWidth: 26, borderRadius: 6, border: `2px solid ${isSelected ? T.brand.base : T.border.input}`, background: isSelected ? T.brand.base : '#fff', marginTop: 1, transition: 'border-color .15s, background .15s' }}
+                    >
+                      {isSelected && <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2" strokeLinecap="round"/></svg>}
+                    </button>
                     <MLed kind={statusKind(ticket.status)} pulse={statusKind(ticket.status) === 'warn'} size={8} style={{ marginTop: 4 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
                         <span style={{ fontSize: 11, fontFamily: T.font.mono, fontWeight: 600, color: T.brand.text }}>{ticket.key}</span>
                         <MBadge kind={statusKind(ticket.status)}>{ticket.status || 'Pending'}</MBadge>
+                        {ticket.ai_status && (
+                          <MBadge kind={ticket.ai_status === 'PASS' || ticket.ai_status === 'Approved' ? 'ok' : ticket.ai_status === 'FAIL' || ticket.ai_status === 'Rejected' ? 'danger' : 'neutral'}>
+                            🤖 {ticket.ai_status}
+                          </MBadge>
+                        )}
                         <span style={{ marginLeft: 'auto', fontSize: 10, fontFamily: T.font.mono, color: dColor, fontWeight: 600, whiteSpace: 'nowrap' }}>
                           {d !== null ? (d === 0 ? 'Today' : d > 0 ? `T-${d}d` : `T+${Math.abs(d)}d`) : '—'}
                         </span>
@@ -661,15 +713,28 @@ function QueueScreen({ token, onOpenTicket }) {
 
       {/* Bulk action bar */}
       {bulkMode && (
-        <div style={{ padding: '10px 16px', background: T.brand.dark, display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 'calc(10px + env(safe-area-inset-bottom,0px))' }}>
-          <span style={{ fontSize: 12, color: '#fff', flex: 1, fontWeight: 600 }}>{selected.size} selected</span>
-          <MButton variant="neutral" size="sm" onClick={() => { setBulkMode(false); setSelected(new Set()); }}>Cancel</MButton>
-          <MButton variant="soft" size="sm" onClick={() => bulkAction('check')} disabled={!!bulkLoading}>
-            {bulkLoading === 'check' ? <Spinner /> : '⚡'} Bulk Check
-          </MButton>
-          <MButton variant="primary" size="sm" onClick={() => bulkAction('ai')} disabled={!!bulkLoading}>
-            {bulkLoading === 'ai' ? <Spinner /> : '🤖'} AI Audit
-          </MButton>
+        <div style={{ background: T.brand.dark, paddingBottom: 'env(safe-area-inset-bottom,0px)' }}>
+          {/* Row 1: counter + cancel + select all */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px 6px' }}>
+            <span style={{ fontSize: 12, color: '#fff', flex: 1, fontWeight: 700 }}>
+              {bulkLoading && bulkProgress.total > 0
+                ? `${bulkProgress.done} / ${bulkProgress.total} done…`
+                : `${selected.size} / ${filtered.length} selected`}
+            </span>
+            <MButton variant="neutral" size="sm" onClick={() => { bulkModeRef.current = false; setBulkMode(false); setSelected(new Set()); }} disabled={!!bulkLoading}>Cancel</MButton>
+            <MButton variant="soft" size="sm" disabled={!!bulkLoading} onClick={() => { const all = new Set(filtered.map(t => t.key)); const allSel = filtered.every(t => selected.has(t.key)); setSelected(allSel ? new Set() : all); if (allSel) { bulkModeRef.current = false; setBulkMode(false); } }}>
+              {filtered.every(t => selected.has(t.key)) ? 'Deselect All' : 'Select All'}
+            </MButton>
+          </div>
+          {/* Row 2: action buttons */}
+          <div style={{ display: 'flex', gap: 8, padding: '0 12px 10px' }}>
+            <MButton variant="soft" size="sm" fullWidth onClick={() => bulkAction('check')} disabled={!!bulkLoading || selected.size === 0}>
+              {bulkLoading === 'check' ? <><Spinner /> Checking…</> : '⚡ Bulk Check'}
+            </MButton>
+            <MButton variant="primary" size="sm" fullWidth onClick={() => bulkAction('ai')} disabled={!!bulkLoading || selected.size === 0}>
+              {bulkLoading === 'ai' ? <><Spinner /> Auditing…</> : '🤖 AI Audit'}
+            </MButton>
+          </div>
         </div>
       )}
     </div>
@@ -681,6 +746,22 @@ function QueueScreen({ token, onOpenTicket }) {
    ═════════════════════════════════════════════════════════════════════════ */
 function ValidatorScreen({ ticket, token, userName, onBack }) {
   const [subTab, setSubTab] = useState('setup');
+  const swipeRef = useRef(null);
+  useEffect(() => {
+    const el = swipeRef.current;
+    if (!el) return;
+    let x0 = null;
+    function onStart(e) { x0 = (e.touches?.[0] || e).clientX; }
+    function onEnd(e) {
+      if (x0 === null) return;
+      const dx = (e.changedTouches?.[0] || e).clientX - x0;
+      if (x0 < 40 && dx > 60) onBack();
+      x0 = null;
+    }
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchend', onEnd, { passive: true });
+    return () => { el.removeEventListener('touchstart', onStart); el.removeEventListener('touchend', onEnd); };
+  }, [onBack]);
   const [enrichData, setEnrichData] = useState(null);
   const [enrichLoading, setEnrichLoading] = useState(false);
   const [enrichError, setEnrichError] = useState('');
@@ -715,8 +796,8 @@ function ValidatorScreen({ ticket, token, userName, onBack }) {
       .then(s => {
         if (!Array.isArray(s)) { setSendouts([]); return; }
         const today = new Date().toISOString().slice(0, 10);
-        const plus7 = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
-        setSendouts(s.filter(x => x.date && x.date >= today && x.date <= plus7));
+        const plus30 = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+        setSendouts(s.filter(x => x.date && x.date >= today && x.date <= plus30));
       })
       .catch(err => setEnrichError(err.message))
       .finally(() => setEnrichLoading(false));
@@ -785,7 +866,7 @@ function ValidatorScreen({ ticket, token, userName, onBack }) {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div ref={swipeRef} style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Approve/Reject toast */}
       {approveToast && (
         <div style={{
@@ -1027,6 +1108,153 @@ function ValidatorScreen({ ticket, token, userName, onBack }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   ORPHANS SCREEN
+   ═════════════════════════════════════════════════════════════════════════ */
+function OrphansScreen({ token }) {
+  const [daysAhead, setDaysAhead] = useState('7');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  async function runScan() {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await mapi('GET', `/api/orphan-scan?days_ahead=${daysAhead}&days_back=0`, null, token);
+      setResult(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function statusKind(s) {
+    if (!s) return 'neutral';
+    if (s === 'no_jira')   return 'danger';
+    if (s === 'no_gsheet') return 'warn';
+    if (s === 'auto')      return 'info';
+    if (s === 'ok')        return 'ok';
+    return 'neutral';
+  }
+  function statusLabel(s) {
+    if (s === 'no_jira')   return 'No JIRA';
+    if (s === 'no_gsheet') return 'No GSheet';
+    if (s === 'auto')      return 'Auto';
+    if (s === 'ok')        return 'OK';
+    return s || '—';
+  }
+  function statusEmoji(s) {
+    if (s === 'no_jira')   return '🔴';
+    if (s === 'no_gsheet') return '🟡';
+    if (s === 'auto')      return '🔵';
+    return '🟢';
+  }
+
+  const groups = result?.results ? (() => {
+    const g = {};
+    result.results.forEach(item => {
+      const k = item.status || 'unknown';
+      if (!g[k]) g[k] = [];
+      g[k].push(item);
+    });
+    return g;
+  })() : null;
+
+  const groupOrder = ['no_jira', 'no_gsheet', 'auto', 'ok'];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ padding: '14px 16px 12px', background: T.bg.surface1, borderBottom: `1px solid ${T.border.base}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: T.fg[1], flex: 1 }}>Orphan Scanner</div>
+          <MLed kind="info" size={8} />
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+          <div style={{ flex: 1 }}>
+            <MOverline style={{ marginBottom: 5 }}>Days Ahead</MOverline>
+            <input type="number" className="vp-select" value={daysAhead} onChange={e => setDaysAhead(e.target.value)} min="0" max="60" style={{ textAlign: 'center' }} />
+          </div>
+          <MButton variant="primary" onClick={runScan} disabled={loading} style={{ flexShrink: 0 }}>
+            {loading ? <Spinner /> : 'Scan'}
+          </MButton>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px 24px' }}>
+        <ErrorBox msg={error} onDismiss={() => setError('')} />
+
+        {loading && <SpinnerLg />}
+
+        {!loading && result && (
+          <>
+            {/* Summary grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 16 }}>
+              {[
+                { label: 'Total', value: result.total ?? (result.results?.length ?? 0), kind: 'neutral' },
+                { label: 'Matched', value: result.matched ?? result.results?.filter(r => r.status === 'ok' || r.status === 'auto').length ?? 0, kind: 'ok' },
+                { label: 'Orphans', value: result.orphans ?? result.results?.filter(r => r.status !== 'ok').length ?? 0, kind: 'danger' },
+              ].map(m => (
+                <MCard key={m.label} padding="12px 10px" style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 22, fontWeight: 700, fontFamily: T.font.mono, color: m.kind === 'neutral' ? T.fg[1] : m.kind === 'ok' ? T.ok.base : T.danger.base }}>{m.value}</div>
+                  <MOverline style={{ marginTop: 3 }}>{m.label}</MOverline>
+                </MCard>
+              ))}
+            </div>
+
+            {/* Grouped results */}
+            {groups && groupOrder.filter(k => groups[k]?.length).map(groupKey => (
+              <div key={groupKey} style={{ marginBottom: 16 }}>
+                <MSectionHeader>{statusEmoji(groupKey)} {statusLabel(groupKey)} ({groups[groupKey].length})</MSectionHeader>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {groups[groupKey].map((item, i) => (
+                    <MCard key={i} padding="12px 14px">
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                        <MBadge kind={statusKind(item.status)}>{statusLabel(item.status)}</MBadge>
+                        {item.config_ok != null && <MBadge kind={item.config_ok ? 'ok' : 'warn'}>{item.config_ok ? 'Config OK' : 'Config !'}</MBadge>}
+                        <span style={{ marginLeft: 'auto', fontSize: 10, fontFamily: T.font.mono, color: T.fg[4] }}>{item.sendout_id || '—'}</span>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: T.fg[1], marginBottom: 3 }}>{item.name || item.client || '—'}</div>
+                      <div style={{ fontSize: 11, color: T.fg[3], marginBottom: item.tags?.length ? 8 : 0 }}>
+                        {item.client && item.name && item.client !== item.name && <span style={{ fontWeight: 600 }}>{item.client} · </span>}
+                        {fmtDate(item.date)}
+                      </div>
+                      {item.tags?.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {item.tags.map((tag, ti) => {
+                            const kind = typeof tag === 'object'
+                              ? (tag.type === 'excl' ? 'excl' : tag.type === 'incl' ? 'incl' : 'neutral')
+                              : 'neutral';
+                            const label = typeof tag === 'object' ? tag.value : tag;
+                            return <MTag key={ti} kind={kind}>{label}</MTag>;
+                          })}
+                        </div>
+                      )}
+                    </MCard>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            {result.results?.length === 0 && (
+              <div style={{ textAlign: 'center', color: T.fg[4], padding: 32, fontSize: 13 }}>No orphans found in this window.</div>
+            )}
+          </>
+        )}
+
+        {!loading && !result && !error && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '40px 20px', textAlign: 'center' }}>
+            <div style={{ fontSize: 40 }}>🔍</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: T.fg[1] }}>Ready to scan</div>
+            <div style={{ fontSize: 12, color: T.fg[3] }}>Set the window above and tap Scan to find unmatched sendouts.</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    DASHBOARD SCREEN
    ═════════════════════════════════════════════════════════════════════════ */
 function MiniStatCard({ label, value, kind='neutral', icon }) {
@@ -1207,11 +1435,15 @@ function ProfileScreen({ user, token, onSignOut }) {
   const [refreshing, setRefreshing] = useState(false);
   const [signOutLoading, setSignOutLoading] = useState(false);
   const [msg, setMsg] = useState('');
+  const [buildVersion, setBuildVersion] = useState('—');
 
   useEffect(() => {
     mapi('GET', '/api/slack/status', null, token)
       .then(s => setSlackStatus(s))
       .catch(() => setSlackStatus(null));
+    mapi('GET', '/api/version', null, token)
+      .then(v => setBuildVersion(v.version || v.build || '—'))
+      .catch(() => setBuildVersion('2026.05 · stable'));
   }, []);
 
   async function refreshGSheet() {
@@ -1306,7 +1538,7 @@ function ProfileScreen({ user, token, onSignOut }) {
         <MCard padding="12px 14px" style={{ marginBottom: 12 }}>
           {[
             { label: 'App', value: 'Validator Pro Mobile' },
-            { label: 'Build', value: '2026.05 · stable' },
+            { label: 'Build', value: buildVersion },
             { label: 'Platform', value: 'FastAPI + React' },
           ].map((row, i, arr) => (
             <div key={row.label} style={{ display: 'flex', alignItems: 'center', padding: '7px 0', borderBottom: i < arr.length - 1 ? `1px solid ${T.border.base}` : 'none' }}>
@@ -1331,6 +1563,228 @@ function ProfileScreen({ user, token, onSignOut }) {
           Sign Out
         </MButton>
       </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CLIENT CONFIG SCREEN
+   ═════════════════════════════════════════════════════════════════════════ */
+const TZ_OPTIONS = [
+  'Europe/Berlin','Europe/London','Europe/Paris','Europe/Warsaw','Europe/Vienna',
+  'Europe/Zurich','Europe/Amsterdam','Europe/Brussels','Europe/Stockholm',
+  'America/New_York','America/Chicago','America/Los_Angeles',
+  'Asia/Dubai','Asia/Singapore','UTC',
+];
+
+function ClientFormModal({ client, token, onSaved, onClose }) {
+  const isNew = !client;
+  const [name,     setName]     = useState(client?.name          || '');
+  const [accountId,setAccountId]= useState(String(client?.account_id || ''));
+  const [tz,       setTz]       = useState(client?.timezone_name  || 'Europe/Berlin');
+  const [reqJira,  setReqJira]  = useState(client?.requires_jira !== false);
+  const [aliasRaw, setAliasRaw] = useState((client?.aliases || []).join('\n'));
+  const [saving,   setSaving]   = useState(false);
+  const [err,      setErr]      = useState('');
+
+  async function save() {
+    if (!name.trim()) { setErr('Name is required'); return; }
+    if (isNew && !accountId) { setErr('Account ID is required'); return; }
+    setSaving(true); setErr('');
+    try {
+      const aliases = aliasRaw.split('\n').map(s => s.trim()).filter(Boolean);
+      if (isNew) {
+        await mapi('POST', '/api/config/clients', {
+          name: name.trim(), account_id: parseInt(accountId) || 0,
+          timezone_name: tz, requires_jira: reqJira,
+          filters: {}, aliases, mappings: {},
+        }, token);
+      } else {
+        await mapi('PUT', `/api/config/clients/${encodeURIComponent(client.name)}`, {
+          timezone_name: tz, requires_jira: reqJira,
+          filters: client.filters || {}, aliases, mappings: client.mappings || {},
+        }, token);
+      }
+      onSaved();
+      onClose();
+    } catch(e) { setErr(e.message); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, zIndex:1000, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'flex-end' }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background:T.bg.surface1, borderRadius:'14px 14px 0 0', width:'100%', maxHeight:'90vh', overflowY:'auto', padding:'20px 18px', paddingBottom:'calc(20px + env(safe-area-inset-bottom,0px))' }}>
+        <div style={{ display:'flex', alignItems:'center', marginBottom:18 }}>
+          <div style={{ fontSize:15, fontWeight:700, color:T.fg[1], flex:1 }}>{isNew ? '＋ New Client' : `Edit — ${client.name}`}</div>
+          <button onClick={onClose} style={{ background:'none', border:'none', fontSize:20, color:T.fg[3], cursor:'pointer', padding:'0 4px' }}>✕</button>
+        </div>
+
+        <ErrorBox msg={err} onDismiss={() => setErr('')} />
+
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          {isNew && (
+            <>
+              <div>
+                <div className="vp-readout-label" style={{ marginBottom:5 }}>Client Name *</div>
+                <MInput value={name} onChange={setName} placeholder="e.g. REWE Germany" />
+              </div>
+              <div>
+                <div className="vp-readout-label" style={{ marginBottom:5 }}>DMA Account ID *</div>
+                <MInput value={accountId} onChange={setAccountId} placeholder="e.g. 83" type="number" />
+              </div>
+            </>
+          )}
+
+          <div>
+            <div className="vp-readout-label" style={{ marginBottom:5 }}>Timezone</div>
+            <select className="vp-select" value={tz} onChange={e => setTz(e.target.value)}>
+              {TZ_OPTIONS.map(z => <option key={z} value={z}>{z}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <div className="vp-readout-label" style={{ marginBottom:8 }}>Requires JIRA</div>
+            <div style={{ display:'flex', gap:12 }}>
+              {[true, false].map(v => (
+                <label key={String(v)} style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', fontSize:13, color:T.fg[2] }}>
+                  <input type="radio" checked={reqJira === v} onChange={() => setReqJira(v)} style={{ accentColor: T.brand.base }} />
+                  {v ? 'Yes' : 'No'}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="vp-readout-label" style={{ marginBottom:5 }}>Aliases <span style={{ textTransform:'none', letterSpacing:0, fontSize:10, color:T.fg[4] }}>(one per line)</span></div>
+            <textarea
+              value={aliasRaw}
+              onChange={e => setAliasRaw(e.target.value)}
+              placeholder={'e.g. REWE GmbH\nREWE AG'}
+              rows={3}
+              style={{ width:'100%', padding:'10px 12px', border:`1.5px solid ${T.border.input}`, borderRadius:8, fontSize:13, fontFamily:T.font.sans, color:T.fg[1], background:'#fff', outline:'none', resize:'vertical', boxSizing:'border-box' }}
+            />
+          </div>
+
+          {!isNew && client?.account_id && (
+            <div>
+              <div className="vp-readout-label" style={{ marginBottom:4 }}>Account ID <span style={{ color:T.fg[4], textTransform:'none', letterSpacing:0 }}>(read-only)</span></div>
+              <div style={{ fontFamily:T.font.mono, fontSize:13, color:T.fg[4], padding:'9px 12px', background:T.bg.surface2, borderRadius:8, border:`1px solid ${T.border.base}` }}>{client.account_id}</div>
+            </div>
+          )}
+
+          <MButton variant="primary" fullWidth onClick={save} disabled={saving} style={{ marginTop:4 }}>
+            {saving ? <><Spinner /> Saving…</> : isNew ? '＋ Create Client' : '✓ Save Changes'}
+          </MButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClientConfigScreen({ token }) {
+  const [clients,    setClients]    = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState('');
+  const [search,     setSearch]     = useState('');
+  const [showModal,  setShowModal]  = useState(false);
+  const [editClient, setEditClient] = useState(null); // null = new
+  const [deleting,   setDeleting]   = useState('');
+  const [toast,      setToast]      = useState('');
+
+  async function load() {
+    setLoading(true);
+    try {
+      const data = await mapi('GET', '/api/config/clients', null, token);
+      setClients(data);
+      setError('');
+    } catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function deleteClient(name) {
+    if (!window.confirm(`Delete custom client "${name}"? This cannot be undone.`)) return;
+    setDeleting(name);
+    try {
+      await mapi('DELETE', `/api/config/clients/${encodeURIComponent(name)}`, null, token);
+      setToast(`"${name}" deleted`);
+      setTimeout(() => setToast(''), 3000);
+      load();
+    } catch(e) { setError(e.message); }
+    finally { setDeleting(''); }
+  }
+
+  const filtered = clients.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+      {/* Header */}
+      <div style={{ padding:'14px 16px 10px', background:T.bg.surface1, borderBottom:`1px solid ${T.border.base}`, flexShrink:0 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+          <div style={{ fontSize:15, fontWeight:700, color:T.fg[1], flex:1 }}>Client Config</div>
+          <MButton variant="primary" size="sm" onClick={() => { setEditClient(null); setShowModal(true); }}>＋ New Client</MButton>
+        </div>
+        <MInput value={search} onChange={setSearch} placeholder="Search clients…" icon={
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        } />
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{ position:'fixed', bottom:80, left:'50%', transform:'translateX(-50%)', zIndex:9999, pointerEvents:'none', background:T.ok.base, color:'#fff', fontFamily:T.font.sans, fontSize:13, fontWeight:700, padding:'10px 22px', borderRadius:999, boxShadow:T.ok.glow, animation:'vp-fade-in .18s ease both', whiteSpace:'nowrap' }}>
+          ✓ {toast}
+        </div>
+      )}
+
+      {/* List */}
+      <div style={{ flex:1, minHeight:0, overflowY:'auto', padding:'12px 16px 24px' }}>
+        <ErrorBox msg={error} onDismiss={() => setError('')} />
+        {loading ? <SpinnerLg /> : filtered.length === 0 ? (
+          <div style={{ textAlign:'center', color:T.fg[4], padding:40, fontSize:13 }}>
+            {search ? 'No clients match.' : 'No clients found.'}
+          </div>
+        ) : filtered.map(c => (
+          <div key={c.name} className="vp-card" style={{ marginBottom:8, padding:'12px 14px' }}>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:8 }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
+                  <span style={{ fontSize:13, fontWeight:700, color:T.fg[1] }}>{c.name}</span>
+                  {c.is_custom && <MBadge kind="brand">custom</MBadge>}
+                  {!c.requires_jira && <MBadge kind="neutral">no jira</MBadge>}
+                </div>
+                <div style={{ fontSize:11, fontFamily:T.font.mono, color:T.fg[3] }}>
+                  {c.account_id ? `ID: ${c.account_id}` : 'No account ID'} · {c.timezone_name}
+                </div>
+                {c.aliases?.length > 0 && (
+                  <div style={{ marginTop:5, display:'flex', flexWrap:'wrap', gap:4 }}>
+                    {c.aliases.slice(0,3).map((a,i) => <MTag key={i} kind="neutral">{a}</MTag>)}
+                    {c.aliases.length > 3 && <MTag kind="neutral">+{c.aliases.length - 3}</MTag>}
+                  </div>
+                )}
+              </div>
+              <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                <MButton variant="soft" size="sm" onClick={() => { setEditClient(c); setShowModal(true); }}>Edit</MButton>
+                {c.is_custom && (
+                  <MButton variant="danger" size="sm" disabled={deleting === c.name} onClick={() => deleteClient(c.name)}>
+                    {deleting === c.name ? <Spinner /> : '✕'}
+                  </MButton>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Modal */}
+      {showModal && (
+        <ClientFormModal
+          client={editClient}
+          token={token}
+          onSaved={() => { load(); setToast(editClient ? `"${editClient.name}" saved` : 'Client created'); setTimeout(() => setToast(''), 3000); }}
+          onClose={() => setShowModal(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1378,7 +1832,9 @@ function MobileApp() {
 
   const tabs = [
     { id: 'validator', label: 'Validator', Icon: IconValidator },
+    { id: 'orphans',   label: 'Orphans',   Icon: IconOrphans   },
     { id: 'dashboard', label: 'Dashboard', Icon: IconDashboard  },
+    { id: 'config',    label: 'Config',    Icon: IconConfig     },
     { id: 'profile',   label: 'Profile',   Icon: IconProfile    },
   ];
 
@@ -1395,8 +1851,14 @@ function MobileApp() {
             ? <ValidatorScreen key={openTicket.key} ticket={openTicket} token={auth.token} userName={auth.name} onBack={handleBack} />
             : <QueueScreen token={auth.token} onOpenTicket={handleOpenTicket} />
         )}
+        {activeTab === 'orphans' && (
+          <OrphansScreen token={auth.token} />
+        )}
         {activeTab === 'dashboard' && (
           <DashboardScreen token={auth.token} />
+        )}
+        {activeTab === 'config' && (
+          <ClientConfigScreen token={auth.token} />
         )}
         {activeTab === 'profile' && (
           <ProfileScreen user={auth} token={auth.token} onSignOut={handleSignOut} />
