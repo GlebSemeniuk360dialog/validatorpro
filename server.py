@@ -1329,6 +1329,30 @@ async def ai_audit(req: AuditRequest, authorization: Optional[str] = Header(None
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
+class DashboardQuestion(BaseModel):
+    question: str
+
+
+@app.post("/api/dashboard/ask")
+async def dashboard_ask(body: DashboardQuestion, authorization: Optional[str] = Header(None)):
+    """Natural-language Q&A over the audit log (read-only)."""
+    session = _get_session(authorization)
+    import dashboard_ai as _dai
+    import asyncio as _aio
+    user_name = session.get("name", "")
+    result = await _aio.get_event_loop().run_in_executor(
+        None,
+        lambda: _dai.answer_question(
+            question=body.question,
+            current_user=user_name,
+            db_path=_al.DB_PATH,
+            api_key=GEMINI_KEY,
+            model=GEMINI_BULK_MODEL,
+        ),
+    )
+    return result
+
+
 @app.get("/api/dashboard")
 async def dashboard(authorization: Optional[str] = Header(None)):
     _get_session(authorization)

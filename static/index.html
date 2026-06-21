@@ -1510,6 +1510,20 @@ function Dashboard({ token }) {
   const [data, setData]     = useState(null);
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
+  const [askQ, setAskQ]     = useState('');
+  const [askA, setAskA]     = useState(null);
+  const [askBusy, setAskBusy] = useState(false);
+
+  async function ask() {
+    const q = askQ.trim();
+    if (!q) return;
+    setAskBusy(true); setAskA(null);
+    try {
+      const r = await api('POST', '/api/dashboard/ask', { question: q }, token);
+      setAskA(r);
+    } catch(e) { setAskA({ error: e.message }); }
+    finally { setAskBusy(false); }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -1542,6 +1556,33 @@ function Dashboard({ token }) {
           {spin ? 'Loading…' : `${d.total||0} total validations recorded`}
         </div>
         <Button variant="ghost" onClick={()=>setRefresh(r=>r+1)} style={{ fontSize:11 }}>↻ Refresh</Button>
+      </div>
+
+      {/* ── Ask AI ────────────────────────────────────────────────────────── */}
+      <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:8, padding:14 }}>
+        <div style={{ fontSize:13, fontWeight:600, color:t.fg[1], marginBottom:8 }}>🤖 Ask the audit log</div>
+        <div style={{ display:'flex', gap:8 }}>
+          <Input value={askQ} onChange={setAskQ}
+            placeholder="e.g. How many tickets did Martina check this week?"
+            onKeyDown={e=>{ if(e.key==='Enter') ask(); }} />
+          <Button onClick={ask} disabled={askBusy}>{askBusy?'Thinking…':'Ask'}</Button>
+        </div>
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:8 }}>
+          {['How many tickets did I check?','Who checked the most tickets?','How many failed this week?','How many did Auto-Audit run today?'].map((s,i)=>(
+            <button key={i} onClick={()=>{ setAskQ(s); }}
+              style={{ fontSize:11, color:t.fg[3], background:t.bg.surface2, border:`1px solid ${t.border.base}`, borderRadius:999, padding:'3px 10px', cursor:'pointer' }}>{s}</button>
+          ))}
+        </div>
+        {askA && (
+          <div style={{ marginTop:12 }}>
+            {askA.error
+              ? <div style={{ fontSize:13, color:t.danger.base }}>⚠ {askA.error}</div>
+              : <div style={{ fontSize:14, color:t.fg[1], lineHeight:1.5 }}>{askA.answer || '(no answer)'}</div>}
+            {askA.sql && (
+              <div style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[4], marginTop:8, wordBreak:'break-all' }}>{askA.sql}</div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Today at a Glance ─────────────────────────────────────────────── */}
