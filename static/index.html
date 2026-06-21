@@ -1537,6 +1537,7 @@ function Dashboard({ token }) {
   const topFailed = d.top_failed_checks || [];
   const byClient = d.by_client || {};
   const byUser = d.by_user || {};
+  const userActivity = d.user_activity || [];
   const clientReqs = d.client_requests || [];
   const daily = d.daily_counts || {};
   const maxFailed = topFailed.length > 0 ? topFailed[0].count : 1;
@@ -1742,6 +1743,29 @@ function Dashboard({ token }) {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* ── Who initiated what (by check type) ────────────────────────────── */}
+      {userActivity.length > 0 && (
+        <div>
+          <SectionHeader style={{ marginTop:0 }}>🙋 Who initiated what</SectionHeader>
+          <div style={{ background:t.bg.surface1, border:`1px solid ${t.border.base}`, borderRadius:6, overflow:'hidden' }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 90px 90px 70px 70px 70px', gap:0, padding:'8px 16px', borderBottom:`1px solid ${t.border.base}`, fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.07em', color:t.fg[3] }}>
+              <span>User</span><span style={{textAlign:'right'}}>Single AI</span><span style={{textAlign:'right'}}>Bulk AI</span><span style={{textAlign:'right'}}>Rule</span><span style={{textAlign:'right'}}>Auto</span><span style={{textAlign:'right'}}>Total</span>
+            </div>
+            {userActivity.map((u,i)=>(
+              <div key={u.user} style={{ display:'grid', gridTemplateColumns:'1fr 90px 90px 70px 70px 70px', gap:0, padding:'9px 16px', borderBottom: i<userActivity.length-1?`1px solid ${t.border.base}`:'none', fontSize:13, alignItems:'center', background: i%2===0?'transparent':t.bg.surface2 }}>
+                <span style={{ fontWeight:600, color:t.fg[1] }}>{u.user}</span>
+                <span style={{ textAlign:'right', fontFamily:t.font.mono, color:t.fg[2] }}>{u.single_ai||'·'}</span>
+                <span style={{ textAlign:'right', fontFamily:t.font.mono, color:t.fg[2] }}>{u.bulk_ai||'·'}</span>
+                <span style={{ textAlign:'right', fontFamily:t.font.mono, color:t.fg[2] }}>{u.rule||'·'}</span>
+                <span style={{ textAlign:'right', fontFamily:t.font.mono, color:t.fg[3] }}>{u.auto||'·'}</span>
+                <span style={{ textAlign:'right', fontFamily:t.font.mono, fontWeight:600, color:t.fg[1] }}>{u.total}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize:11, color:t.fg[4], marginTop:6 }}>Distinct tickets per check type. Single AI = single check, Bulk AI = bulk run, Rule = rule-based bulk, Auto = scheduler.</div>
         </div>
       )}
 

@@ -1367,6 +1367,13 @@ async def dashboard(authorization: Optional[str] = Header(None)):
             logger.warning("dashboard: client_request_stats failed: %s", _cre)
             data["client_requests"] = []
 
+        # Who initiated which check type (from audit DB triggered_by)
+        try:
+            data["user_activity"] = _al.user_activity_by_type()
+        except Exception as _uae:
+            logger.warning("dashboard: user_activity_by_type failed: %s", _uae)
+            data["user_activity"] = []
+
         # ── Queue health (live from cache) ────────────────────────────────────
         from datetime import datetime as _dti, timedelta as _tdi
         queue = _normalized_queue()   # flat dicts with "date" key
@@ -2919,7 +2926,7 @@ async def _job_auto_audit() -> None:
             logger.warning("SCHEDULER auto-audit: %s %s — %s", ticket_key, result.status, result.error_msg)
             write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Needs review")
             review_rows.append(
-                f"❓ <{_jira_link_e}|{ticket_key}> {client} — {jira_date}  _{result.error_msg}_"
+                f"<{_jira_link_e}|{ticket_key}> {client} — {jira_date}  _{result.error_msg}_"
             )
             if result.status == "skipped":
                 skipped_count += 1
@@ -2973,12 +2980,12 @@ async def _job_auto_audit() -> None:
         # (Rejected / Approved / nothing-on-low-confidence-review). Do NOT write
         # again here — a duplicate write based only on issue count would stamp
         # "Approved" on low-confidence passes the pipeline left for human review.
-        conf_str = f" {confidence}%" if confidence >= 0 else ""
+        conf_str = f"{confidence}% " if confidence >= 0 else ""
         if issues > 0:
             failed_labels = [c["label"] for c in (result.checks or []) if not c.get("ok")]
             checks_str = ", ".join(failed_labels[:4])
             failed_rows.append(
-                f"❌{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
+                f"{conf_str}<{jira_link}|{ticket_key}> {client} — {jira_date}"
                 f"  _{checks_str}_  <{app_link}|Open>"
             )
         elif result.status == "review":
@@ -2986,12 +2993,12 @@ async def _job_auto_audit() -> None:
             # (the pipeline deliberately leaves this unwritten).
             write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Needs review")
             review_rows.append(
-                f"⚠️{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
+                f"{conf_str}<{jira_link}|{ticket_key}> {client} — {jira_date}"
                 f"  _low confidence — manual review needed_  <{app_link}|Open>"
             )
         else:
             passed_rows.append(
-                f"✅{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
+                f"{conf_str}<{jira_link}|{ticket_key}> {client} — {jira_date}"
                 f"  <{app_link}|Open>"
             )
 
@@ -2999,11 +3006,11 @@ async def _job_auto_audit() -> None:
     if failed_rows or passed_rows or review_rows:
         sections = []
         if failed_rows:
-            sections.append(f"<!here>\n*❌ Failed ({len(failed_rows)})*\n" + "\n".join(failed_rows))
+            sections.append(f"<!here>\n*Failed ({len(failed_rows)})*\n" + "\n".join(failed_rows))
         if passed_rows:
-            sections.append(f"*✅ Passed ({len(passed_rows)})*\n" + "\n".join(passed_rows))
+            sections.append(f"*Passed ({len(passed_rows)})*\n" + "\n".join(passed_rows))
         if review_rows:
-            sections.append(f"*❓ Needs review ({len(review_rows)})*\n" + "\n".join(review_rows))
+            sections.append(f"*Needs review ({len(review_rows)})*\n" + "\n".join(review_rows))
         _send_slack_block(
             header=(f"🤖 Auto-Audit complete — {len(failed_rows)} failed, "
                     f"{len(passed_rows)} passed, {len(review_rows)} need review"),

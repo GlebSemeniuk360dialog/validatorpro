@@ -241,6 +241,34 @@ def client_request_stats(days: int = 30) -> list[dict]:
     return out
 
 
+def user_activity_by_type(days: Optional[int] = None) -> list:
+    """
+    Per-user breakdown of who initiated which kind of check, for the dashboard.
+    triggered_by → label: manual=Single AI, ai=Bulk AI, manual_rule=Rule, auto=Auto.
+    Counts distinct tickets per (user, type). Optional `days` window.
+    """
+    where, params = "", []
+    if days:
+        from datetime import timedelta
+        cutoff = (datetime.now(_utc.utc) - timedelta(days=days)).isoformat()
+        where = "WHERE created_at >= ?"
+        params = [cutoff]
+    with _conn() as con:
+        rows = con.execute(
+            f"SELECT user, triggered_by, COUNT(DISTINCT ticket_key) AS tickets "
+            f"FROM audit_log {where} GROUP BY user, triggered_by",
+            params,
+        ).fetchall()
+    label = {"manual": "single_ai", "ai": "bulk_ai", "manual_rule": "rule", "auto": "auto"}
+    agg: dict = {}
+    for r in rows:
+        u = r["user"] or "—"
+        d = agg.setdefault(u, {"user": u, "single_ai": 0, "bulk_ai": 0, "rule": 0, "auto": 0, "total": 0})
+        d[label.get(r["triggered_by"], "single_ai")] += r["tickets"]
+        d["total"] += r["tickets"]
+    return sorted(agg.values(), key=lambda x: -x["total"])
+
+
 def was_audited(sendout_id: str = "", ticket_key: str = "") -> Optional[dict]:
     """
     Check if a sendout or ticket was already audited (most recent match).
