@@ -2912,10 +2912,14 @@ async def _job_auto_audit() -> None:
             continue
 
         if result.status == "error":
+            # AI couldn't reach a verdict (no matching sendout, fetch error, etc.)
+            # → flag for a human instead of leaving the JIRA status blank.
             logger.warning("SCHEDULER auto-audit: %s errored — %s", ticket_key, result.error_msg)
+            write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Needs review")
             continue
         if result.status == "skipped":
             logger.info("SCHEDULER auto-audit: %s skipped — %s", ticket_key, result.error_msg)
+            write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Needs review")
             skipped_count += 1
             continue
 
@@ -2976,6 +2980,9 @@ async def _job_auto_audit() -> None:
                 f"  _{checks_str}_  <{app_link}|Open>"
             )
         elif result.status == "review":
+            # Passed checks but AI isn't confident enough → set "Needs review"
+            # (the pipeline deliberately leaves this unwritten).
+            write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Needs review")
             passed_rows.append(
                 f"⚠️{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
                 f"  _low confidence — manual review needed_  <{app_link}|Open>"
