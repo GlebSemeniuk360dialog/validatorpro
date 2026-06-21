@@ -2881,6 +2881,7 @@ async def _job_auto_audit() -> None:
     skipped_count = 0
     passed_rows: list[str] = []   # collected for single summary message
     failed_rows: list[str] = []   # collected for single summary message
+    review_rows: list[str] = []   # errored / no-sendout / low-confidence → Needs review
 
     for issue in imminent[:10]:   # cap at 10 to respect Gemini rate limits (sequential)
         norm       = _normalize_issue(issue)
@@ -2911,16 +2912,17 @@ async def _job_auto_audit() -> None:
             logger.warning("SCHEDULER auto-audit: audit failed for %s: %s", ticket_key, exc)
             continue
 
-        if result.status == "error":
+        _jira_link_e = f"{JIRA_SERVER.rstrip('/')}/browse/{ticket_key}"
+        if result.status in ("error", "skipped"):
             # AI couldn't reach a verdict (no matching sendout, fetch error, etc.)
             # → flag for a human instead of leaving the JIRA status blank.
-            logger.warning("SCHEDULER auto-audit: %s errored — %s", ticket_key, result.error_msg)
+            logger.warning("SCHEDULER auto-audit: %s %s — %s", ticket_key, result.status, result.error_msg)
             write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Needs review")
-            continue
-        if result.status == "skipped":
-            logger.info("SCHEDULER auto-audit: %s skipped — %s", ticket_key, result.error_msg)
-            write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Needs review")
-            skipped_count += 1
+            review_rows.append(
+                f"❓ <{_jira_link_e}|{ticket_key}> {client} — {jira_date}  _{result.error_msg}_"
+            )
+            if result.status == "skipped":
+                skipped_count += 1
             continue
 
         issues     = result.issues_found or 0
@@ -2983,7 +2985,7 @@ async def _job_auto_audit() -> None:
             # Passed checks but AI isn't confident enough → set "Needs review"
             # (the pipeline deliberately leaves this unwritten).
             write_ai_status_to_jira(JIRA_SERVER, JIRA_EMAIL, JIRA_TOKEN, ticket_key, "Needs review")
-            passed_rows.append(
+            review_rows.append(
                 f"⚠️{conf_str}  <{jira_link}|{ticket_key}> {client} — {jira_date}"
                 f"  _low confidence — manual review needed_  <{app_link}|Open>"
             )
@@ -2994,14 +2996,17 @@ async def _job_auto_audit() -> None:
             )
 
     # Single combined summary message
-    if failed_rows or passed_rows:
+    if failed_rows or passed_rows or review_rows:
         sections = []
         if failed_rows:
             sections.append(f"<!here>\n*❌ Failed ({len(failed_rows)})*\n" + "\n".join(failed_rows))
         if passed_rows:
             sections.append(f"*✅ Passed ({len(passed_rows)})*\n" + "\n".join(passed_rows))
+        if review_rows:
+            sections.append(f"*❓ Needs review ({len(review_rows)})*\n" + "\n".join(review_rows))
         _send_slack_block(
-            header=f"🤖 Auto-Audit complete — {len(failed_rows)} failed, {len(passed_rows)} passed",
+            header=(f"🤖 Auto-Audit complete — {len(failed_rows)} failed, "
+                    f"{len(passed_rows)} passed, {len(review_rows)} need review"),
             sections=sections,
         )
 
