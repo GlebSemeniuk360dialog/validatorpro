@@ -2963,7 +2963,7 @@ async def _job_auto_audit() -> None:
             confidence=confidence if confidence >= 0 else None,
         )
         audited_count += 1
-        already_audited_keys.add(ticket_key)
+        _already_audited_keys.add(ticket_key)
 
         params    = {"ticket": ticket_key, "client": client, "sendout": sendout_id}
         app_link  = f"{APP_BASE_URL.rstrip('/')}?{_up.urlencode(params)}"
