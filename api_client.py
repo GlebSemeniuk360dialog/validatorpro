@@ -596,7 +596,9 @@ def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str)
             import re as _re
             if not raw:
                 return []
-            parts = _re.split(r'(?:Card|Karte|Slide)\s*\d+\s*[:\-]', raw, flags=_re.IGNORECASE)
+            # Consume an optional "Carousel "/"Slider " wrapper word so e.g.
+            # "Carousel Card 1:" doesn't leave a phantom leading 'Carousel' card.
+            parts = _re.split(r'(?:Carousel\s+|Slider\s+)?(?:Card|Karte|Slide)\s*\d+\s*[:\-]', raw, flags=_re.IGNORECASE)
             return [p.strip() for p in parts if p.strip()]
 
         bodies_raw = _get(["card body texts", "card bodies", "card text", "body", "text", "copy", "content"],
@@ -617,7 +619,7 @@ def fetch_jira_form_answers(server: str, email: str, token: str, issue_key: str)
             import re as _re
             for item in answers:
                 raw = str(item.get("answer", ""))
-                card_sections = _re.split(r'(?:Card|Karte|Slide)\s*\d+\s*[:\-]', raw, flags=_re.IGNORECASE)
+                card_sections = _re.split(r'(?:Carousel\s+|Slider\s+)?(?:Card|Karte|Slide)\s*\d+\s*[:\-]', raw, flags=_re.IGNORECASE)
                 card_sections = [s.strip() for s in card_sections if s.strip()]
                 if len(card_sections) > 1:
                     bodies = card_sections
