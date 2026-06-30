@@ -3473,15 +3473,41 @@ function ScheduledDayRuleRow({ rule, onChange, onDelete }) {
 }
 
 /** One filter rule row inside a filter set */
+const RULE_TEMPLATES = {
+  tag:           { type:'tag', name:'', mode:'include', value:'' },
+  leaflet_tag:   { type:'leaflet_tag', mode:'include', offset_days:0 },
+  shop_number:   { type:'shop_number', mode:'exclude', values:[] },
+  postalcode:    { type:'postalcode', mode:'include', value:'' },
+  locale:        { type:'locale', mode:'include', value:'' },
+  scheduled_day: { type:'scheduled_day', mode:'exclude', values:['wednesday'] },
+  named:         { type:'named', name:'', mode:'exclude' },
+};
+
 function FilterRuleRow({ rule, onChange, onDelete }) {
+  // Switching type swaps to that type's required fields, carrying over any
+  // overlapping values (mode/name/value/…) so nothing valid is lost.
+  function changeType(newType) {
+    const tmpl = RULE_TEMPLATES[newType] || { type:newType };
+    const carried = {};
+    Object.keys(tmpl).forEach(k=>{ if(k!=='type' && rule[k]!==undefined) carried[k]=rule[k]; });
+    onChange({ ...tmpl, ...carried });
+  }
+  const typeSelect = (
+    <div style={{ display:'grid', gridTemplateColumns:'140px 1fr', gap:8, alignItems:'center' }}>
+      <label style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3], textAlign:'right', paddingRight:4 }}>type</label>
+      <Select value={rule.type||'tag'} onChange={changeType}
+        options={Object.keys(RULE_TEMPLATES).map(x=>({value:x,label:x}))} style={{ fontSize:12 }} />
+    </div>
+  );
   if (rule.type === 'scheduled_day') {
     return <ScheduledDayRuleRow rule={rule} onChange={onChange} onDelete={onDelete} />;
   }
-  const fields = Object.keys(rule);
+  const fields = Object.keys(rule).filter(k=>k!=='type');
   return (
     <div style={{ background:t.bg.surface2, border:`1px solid ${t.border.input}`, borderRadius:4, padding:'10px 12px', display:'flex', flexDirection:'column', gap:8, position:'relative' }}>
       <button onClick={onDelete} title="Remove rule"
         style={{ position:'absolute', top:6, right:8, background:'none', border:'none', cursor:'pointer', color:t.danger.base, fontSize:16, lineHeight:1 }}>×</button>
+      {typeSelect}
       {fields.map(k=>(
         <div key={k} style={{ display:'grid', gridTemplateColumns:'140px 1fr', gap:8, alignItems:'center' }}>
           <label style={{ fontFamily:t.font.mono, fontSize:11, color:t.fg[3], textAlign:'right', paddingRight:4 }}>{k}</label>
@@ -3528,7 +3554,7 @@ function FilterRulesEditor({ setName, entry, onChangeEntry, onDeleteSet }) {
     else onChangeEntry({rules, when: cleaned});
   }
 
-  function addRule() { setRules([...rules, { type:'exact', value:'' }]); setOpen(true); }
+  function addRule() { setRules([...rules, { ...RULE_TEMPLATES.tag }]); setOpen(true); }
   function addScheduledDayRule() { setRules([...rules, { type:'scheduled_day', mode:'exclude', value:'wednesday' }]); setOpen(true); }
 
   const whenKeys = ['is_carousel','day_of_week','request_type','segment'];
