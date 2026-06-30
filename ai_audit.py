@@ -1193,11 +1193,22 @@ def _pick_filter_set(
     if best_score >= 0:
         return best_name, best_rules
 
-    # No conditional match — use plain-list fallbacks
-    for key in (segment, "Standard", next(iter(plain), "")):
-        if key and key in plain:
-            return key, plain[key]
-
+    # No conditional match — use plain-list fallbacks, matching the segment to a
+    # named set case-insensitively (and allowing the set name to be a substring of
+    # a longer segment, e.g. set 'meinALDI' ⊆ segment 'meinALDI App').
+    seg_l = (segment or "").lower()
+    named = [(p, plain[p]) for p in plain if p.lower() != "standard"]
+    if seg_l:
+        for p, rules in named:
+            if p.lower() == seg_l:
+                return p, rules
+        for p, rules in named:
+            if p.lower() in seg_l:
+                return p, rules
+    if "Standard" in plain:
+        return "Standard", plain["Standard"]
+    for p in plain:
+        return p, plain[p]
     return "Standard", []
 
 
